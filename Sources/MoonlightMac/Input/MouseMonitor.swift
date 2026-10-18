@@ -17,9 +17,8 @@ public final class MouseMonitor: @unchecked Sendable {
     private var mouseDisconnectObserver: Any?
     private var isMonitoring = false
 
-    private var subpixelDeltaX: Double = 0.0
-    private var subpixelDeltaY: Double = 0.0
-    private let deltaLock = NSLock()
+    private let mouseQueue = DispatchQueue(label: "com.moonlight-stream.input.mouse", qos: .userInteractive)
+    private var suppressMotionUntil: DispatchTime = .now()
 
     private var hasActiveGCMouse: Bool {
         return !GCMouse.mice().isEmpty
@@ -97,10 +96,16 @@ public final class MouseMonitor: @unchecked Sendable {
     }
 
     private func registerGCMouse(_ mouse: GCMouse) {
+        // Use a dedicated high-priority serial queue for low-latency input (matching SDL / moonlight-qt)
+        mouse.handlerQueue = mouseQueue
         mouse.mouseInput?.mouseMovedHandler = { [weak self] _, deltaX, deltaY in
             guard let self = self, self.isCaptured else { return }
-            // In GameController framework, deltaY is positive upwards; invert to standard downward-positive deltas
-            self.handleRawDelta(deltaX: Double(deltaX), deltaY: Double(-deltaY))
+            // GCMouse reports raw unaccelerated sensor counts (mickeys).
+            // Normalizing by HIDGCMouseRelativeSpeedDivisor (2.5) matches desktop point scale
+            // (as in moonlight-macos-enhanced and moonlight-qt) preventing excessive twitchy sensitivity.
+            let normalizedX = Double(deltaX) / 2.5
+            let normalizedY = Double(-deltaY) / 2.5
+            self.handleRelativeMotion(deltaX: normalizedX, deltaY: normalizedY)
         }
     }
 
@@ -114,36 +119,39 @@ public final class MouseMonitor: @unchecked Sendable {
         }
     }
 
-    private func handleRawDelta(deltaX: Double, deltaY: Double) {
-        guard isCaptured else { return }
+    // Direct, zero-latency scaled delta calculation (matching moonlight-macos-enhanced's HIDScaledRelativeDelta)
+    private func scaledRelativeDelta(_ delta: Double, sensitivity: Double) -> Int16 {
+        guard delta != 0.0 else { return 0 }
+        var scaled = delta * sensitivity
+        if scaled > Double(Int16.max) {
+            scaled = Double(Int16.max)
+        } else if scaled < Double(Int16.min) {
+            scaled = Double(Int16.min)
+        } else if abs(scaled) < 1.0 {
+            // Keep micro-adjustments crisp and responsive immediately without accumulator buffering
+            scaled = scaled > 0.0 ? 1.0 : -1.0
+        }
+        return Int16(lrint(scaled))
+    }
 
-        let scaledX = deltaX * sensitivity
-        let scaledY = deltaY * sensitivity
+    private func handleRelativeMotion(deltaX: Double, deltaY: Double) {
+        guard isCaptured, DispatchTime.now() >= suppressMotionUntil else { return }
 
-        deltaLock.lock()
-        subpixelDeltaX += scaledX
-        subpixelDeltaY += scaledY
-
-        let stepX = Int16(clamping: Int(subpixelDeltaX))
-        let stepY = Int16(clamping: Int(subpixelDeltaY))
+        let stepX = scaledRelativeDelta(deltaX, sensitivity: sensitivity)
+        let stepY = scaledRelativeDelta(deltaY, sensitivity: sensitivity)
 
         if stepX != 0 || stepY != 0 {
-            subpixelDeltaX -= Double(stepX)
-            subpixelDeltaY -= Double(stepY)
-            deltaLock.unlock()
             LiSendMouseMoveEvent(stepX, stepY)
-        } else {
-            deltaLock.unlock()
         }
     }
 
     private func updateCursorAssociation() {
         if isCaptured {
-            // Unpin hardware cursor position to bypass macOS acceleration curves and confines
+            // Suppress synthetic warp motion for 120ms to prevent center-warp jumps
+            suppressMotionUntil = .now() + .milliseconds(120)
             CGAssociateMouseAndMouseCursorPosition(0)
             NSCursor.hide()
 
-            // Center virtual cursor within key window on main actor
             DispatchQueue.main.async {
                 if let window = NSApp.keyWindow {
                     let centerPoint = CGPoint(x: window.frame.midX, y: window.frame.midY)
@@ -161,25 +169,25 @@ public final class MouseMonitor: @unchecked Sendable {
 
         switch event.type {
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
-            // If GCMouse is active, it handles raw motion directly at hardware polling rate
+            // If GCMouse is active, it handles raw motion directly at hardware polling rate on mouseQueue
             if hasActiveGCMouse {
                 return nil
             }
 
             // Fallback for trackpad or when GCMouse is not attached: query unscaled CGEvent delta values
-            var rawDeltaX: Double = 0.0
-            var rawDeltaY: Double = 0.0
+            var rawDeltaX = Double(event.deltaX)
+            var rawDeltaY = Double(event.deltaY)
             if let cg = event.cgEvent {
-                rawDeltaX = cg.getDoubleValueField(.mouseEventDeltaX)
-                rawDeltaY = cg.getDoubleValueField(.mouseEventDeltaY)
-            }
-            if rawDeltaX == 0 && rawDeltaY == 0 {
-                rawDeltaX = Double(event.deltaX)
-                rawDeltaY = Double(event.deltaY)
+                let cgX = cg.getDoubleValueField(.mouseEventDeltaX)
+                let cgY = cg.getDoubleValueField(.mouseEventDeltaY)
+                if cgX != 0 || cgY != 0 {
+                    rawDeltaX = cgX
+                    rawDeltaY = cgY
+                }
             }
 
             if rawDeltaX != 0 || rawDeltaY != 0 {
-                handleRawDelta(deltaX: rawDeltaX, deltaY: rawDeltaY)
+                handleRelativeMotion(deltaX: rawDeltaX, deltaY: rawDeltaY)
             }
             return nil
 
