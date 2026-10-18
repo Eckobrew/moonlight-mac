@@ -37,9 +37,14 @@ public final class MetalStreamView: NSView {
         self.layer = makeBackingLayer()
     }
 
+    public override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        return true
+    }
+
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let window = self.window {
+            window.acceptsMouseMovedEvents = true
             onWindowAttached?(window)
             if let layer = self.metalLayer {
                 MetalStreamRenderer.shared.attachLayer(layer)

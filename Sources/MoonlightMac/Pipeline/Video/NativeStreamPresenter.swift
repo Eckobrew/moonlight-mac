@@ -125,9 +125,14 @@ public final class SampleBufferStreamView: NSView {
         self.wantsLayer = true
     }
 
+    public override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        return true
+    }
+
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let window = self.window {
+            window.acceptsMouseMovedEvents = true
             onWindowAttached?(window)
         }
     }
