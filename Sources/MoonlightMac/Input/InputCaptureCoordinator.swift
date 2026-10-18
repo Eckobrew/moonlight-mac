@@ -13,10 +13,22 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
     public func startCapturing(
         captureMouse: Bool = true,
         swapCommandControl: Bool = false,
-        onEscape: @escaping @Sendable () -> Void
+        onQuit: @escaping @Sendable () -> Void,
+        onToggleMouseCapture: (@Sendable () -> Void)? = nil,
+        onToggleFullscreen: (@Sendable () -> Void)? = nil,
+        onToggleStatsOverlay: (@Sendable () -> Void)? = nil,
+        onToggleMouseMode: (@Sendable () -> Void)? = nil,
+        onMinimize: (@Sendable () -> Void)? = nil,
+        onPaste: (@Sendable () -> Void)? = nil
     ) {
         keyboardMonitor.swapCommandControl = swapCommandControl
-        keyboardMonitor.onEscapeRequested = onEscape
+        keyboardMonitor.onQuitRequested = onQuit
+        keyboardMonitor.onToggleMouseCaptureRequested = onToggleMouseCapture
+        keyboardMonitor.onToggleFullscreenRequested = onToggleFullscreen
+        keyboardMonitor.onToggleStatsOverlayRequested = onToggleStatsOverlay
+        keyboardMonitor.onToggleMouseModeRequested = onToggleMouseMode
+        keyboardMonitor.onMinimizeRequested = onMinimize
+        keyboardMonitor.onPasteRequested = onPaste
         keyboardMonitor.start()
 
         mouseMonitor.start()

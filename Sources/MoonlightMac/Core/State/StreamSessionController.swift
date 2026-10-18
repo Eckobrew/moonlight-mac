@@ -1,5 +1,6 @@
 import Foundation
 import CoreVideo
+import AppKit
 import MoonlightCommonC
 
 // Nonisolated engine holder for high-throughput C callbacks
@@ -21,6 +22,11 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     @Published public private(set) var currentStage: Int = 0
     @Published public private(set) var metrics = PerformanceMetrics()
     @Published public private(set) var sessionError: String?
+    @Published public var showPerformanceOverlay: Bool = true
+
+    public func togglePerformanceOverlay() {
+        showPerformanceOverlay.toggle()
+    }
 
     public var videoDecoder: VideoToolboxDecoder { StreamSessionEngine.shared.videoDecoder }
     public var audioEngine: AudioPlaybackEngine { StreamSessionEngine.shared.audioEngine }
@@ -30,9 +36,11 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     private var streamTask: Task<Void, Never>?
     private var metricsTimer: Timer?
 
+    private let metricsAccumulator = StreamMetricsAccumulator()
+
     private var activeHost: Host?
     private var activeApp: StreamApp?
-    private var activeSettings: StreamSettings?
+    public private(set) var activeSettings: StreamSettings?
 
     private init() {
         StreamSessionEngine.shared.videoDecoder.delegate = self
@@ -45,6 +53,9 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
     public func markConnected() {
         self.currentStageName = "Connected"
+        if let settings = activeSettings {
+            WindowManager.shared.applyStartupWindowMode(settings.windowMode)
+        }
     }
 
     public func handleStageFailed(stage: Int, code: Int) {
@@ -53,39 +64,63 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     }
 
     public func handleTerminated(code: Int) {
-        self.sessionError = code == 0 ? "Session ended gracefully" : "Connection terminated (Error \(code))"
+        self.sessionError = code == 0 ? nil : "Connection terminated (Error \(code))"
         self.stopSession()
+    }
+
+    public func clearError() {
+        self.sessionError = nil
     }
 
     public func startSession(host: Host, app: StreamApp, settings: StreamSettings) async {
         guard !isStreaming else { return }
 
+        // If Native resolution is requested, resolve the native physical resolution of the display the app is running on
+        var effectiveSettings = settings
+        if effectiveSettings.width == 0 || effectiveSettings.height == 0 {
+            let (nativeW, nativeH) = DisplayManager.getNativeResolution()
+            effectiveSettings.width = nativeW
+            effectiveSettings.height = nativeH
+            AppLogger.shared.info("Resolved Native display resolution: \(nativeW)x\(nativeH)", category: "Session")
+        }
+
         self.activeHost = host
         self.activeApp = app
-        self.activeSettings = settings
+        self.activeSettings = effectiveSettings
         self.isStreaming = true
         self.sessionError = nil
         self.currentStageName = "Requesting session from host..."
 
-        // Generate 16-byte random keys for remote input encryption
+        WindowManager.shared.applyStartupWindowMode(effectiveSettings.windowMode)
+
+        // Generate 16-byte random key for remote input AES encryption
         let rikey = CryptoUtils.randomBytes(count: 16)
-        let rikeyId = CryptoUtils.randomBytes(count: 16)
+        let rikeyId = UInt32.random(in: 1...UInt32.max)
         let rikeyHex = CryptoUtils.hexString(rikey)
-        let rikeyIdHex = CryptoUtils.hexString(rikeyId)
 
         do {
-            let sessionUrl = try await SunshineHTTPClient.shared.launchApp(
-                host: host,
-                appId: app.id,
-                settings: settings,
-                rikey: rikeyHex,
-                rikeyId: rikeyIdHex
-            )
+            let sessionUrl: String?
+            if host.currentAppId == app.id {
+                sessionUrl = try await SunshineHTTPClient.shared.resumeApp(
+                    host: host,
+                    settings: effectiveSettings,
+                    rikey: rikeyHex,
+                    rikeyId: rikeyId
+                )
+            } else {
+                sessionUrl = try await SunshineHTTPClient.shared.launchApp(
+                    host: host,
+                    appId: app.id,
+                    settings: effectiveSettings,
+                    rikey: rikeyHex,
+                    rikeyId: rikeyId
+                )
+            }
 
             startLimelightConnection(
                 host: host,
                 sessionUrl: sessionUrl,
-                settings: settings,
+                settings: effectiveSettings,
                 rikey: rikey,
                 rikeyId: rikeyId
             )
@@ -94,9 +129,42 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             inputCoordinator.startCapturing(
                 captureMouse: settings.mouseCaptureMode,
                 swapCommandControl: settings.swapCommandControl,
-                onEscape: { [weak self] in
+                onQuit: { [weak self] in
                     Task { @MainActor [weak self] in
                         self?.stopSession()
+                    }
+                },
+                onToggleMouseCapture: { [weak self] in
+                    Task { @MainActor [weak self] in
+                        self?.inputCoordinator.toggleMouseCapture()
+                    }
+                },
+                onToggleFullscreen: {
+                    Task { @MainActor in
+                        WindowManager.shared.toggleFullscreen()
+                    }
+                },
+                onToggleStatsOverlay: { [weak self] in
+                    Task { @MainActor [weak self] in
+                        self?.togglePerformanceOverlay()
+                    }
+                },
+                onToggleMouseMode: { [weak self] in
+                    Task { @MainActor [weak self] in
+                        self?.inputCoordinator.toggleMouseCapture()
+                    }
+                },
+                onMinimize: {
+                    Task { @MainActor in
+                        NSApp.keyWindow?.miniaturize(nil)
+                    }
+                },
+                onPaste: {
+                    if let text = NSPasteboard.general.string(forType: .string) {
+                        let clean = text.replacingOccurrences(of: "\r\n", with: "\n")
+                        _ = clean.withCString { cStr in
+                            LiSendUtf8TextEvent(cStr, UInt32(strlen(cStr)))
+                        }
                     }
                 }
             )
@@ -105,16 +173,16 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
         } catch {
             self.sessionError = error.localizedDescription
-            self.isStreaming = false
+            self.stopSession()
         }
     }
 
     private func startLimelightConnection(
         host: Host,
-        sessionUrl: String,
+        sessionUrl: String?,
         settings: StreamSettings,
         rikey: Data,
-        rikeyId: Data
+        rikeyId: UInt32
     ) {
         streamTask = Task.detached(priority: .high) { [weak self] in
             var streamConfig = STREAM_CONFIGURATION()
@@ -125,7 +193,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             streamConfig.fps = Int32(settings.fps)
             streamConfig.bitrate = Int32(settings.bitrateMbps * 1000)
             streamConfig.packetSize = Int32(settings.packetSize)
-            streamConfig.streamingRemotely = STREAM_CFG_AUTO
+            streamConfig.streamingRemotely = STREAM_CFG_LOCAL
             streamConfig.supportedVideoFormats = settings.codec.limelightMask
             streamConfig.audioConfiguration = settings.audioMode.limelightValue
             streamConfig.colorSpace = Int32(COLORSPACE_REC_709)
@@ -135,8 +203,9 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             _ = rikey.withUnsafeBytes { raw in
                 memcpy(&streamConfig.remoteInputAesKey, raw.baseAddress!, 16)
             }
-            _ = rikeyId.withUnsafeBytes { raw in
-                memcpy(&streamConfig.remoteInputAesIv, raw.baseAddress!, 16)
+            var riKeyIdNetworkOrder = rikeyId.bigEndian
+            _ = withUnsafeBytes(of: &riKeyIdNetworkOrder) { raw in
+                memcpy(&streamConfig.remoteInputAesIv, raw.baseAddress!, 4)
             }
 
             var serverInfo = SERVER_INFORMATION()
@@ -145,12 +214,14 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             let addressCString = strdup(host.address)!
             let appVersionCString = strdup(host.appVersion)!
             let gfeVersionCString = strdup(host.gfeVersion)!
-            let sessionUrlCString = strdup(sessionUrl)!
+            let sessionUrlCString = (sessionUrl != nil && !sessionUrl!.isEmpty) ? strdup(sessionUrl!) : nil
 
             serverInfo.address = UnsafePointer(addressCString)
             serverInfo.serverInfoAppVersion = UnsafePointer(appVersionCString)
             serverInfo.serverInfoGfeVersion = UnsafePointer(gfeVersionCString)
-            serverInfo.rtspSessionUrl = UnsafePointer(sessionUrlCString)
+            if let sessionUrlCString = sessionUrlCString {
+                serverInfo.rtspSessionUrl = UnsafePointer(sessionUrlCString)
+            }
             serverInfo.serverCodecModeSupport = host.serverCodecModeSupport
 
             var clCallbacks = CONNECTION_LISTENER_CALLBACKS()
@@ -193,7 +264,9 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             free(UnsafeMutableRawPointer(mutating: addressCString))
             free(UnsafeMutableRawPointer(mutating: appVersionCString))
             free(UnsafeMutableRawPointer(mutating: gfeVersionCString))
-            free(UnsafeMutableRawPointer(mutating: sessionUrlCString))
+            if let sessionUrlCString = sessionUrlCString {
+                free(UnsafeMutableRawPointer(mutating: sessionUrlCString))
+            }
 
             Task { @MainActor [weak self] in
                 if result != 0 {
@@ -205,21 +278,29 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     }
 
     public func stopSession() {
+        WindowManager.shared.restoreWindowAfterStream()
+
         guard isStreaming else { return }
         isStreaming = false
         stopMetricsPolling()
-        inputCoordinator.stopCapturing()
 
-        Task.detached(priority: .utility) {
+        // 1. Mark video decoder as stopped under submitLock so any in-flight frame completes and future frames are safely dropped
+        videoDecoder.teardownSession()
+
+        // 2. Stop input capture on next main runloop tick to prevent reentrant NSEvent callback crashes
+        DispatchQueue.main.async { [weak self] in
+            self?.inputCoordinator.stopCapturing()
+        }
+
+        // 3. Stop Limelight C connection on background thread (waits for and joins worker threads)
+        Task.detached(priority: .userInitiated) {
             LiStopConnection()
         }
 
         streamTask?.cancel()
         streamTask = nil
 
-        videoDecoder.teardownSession()
-        audioEngine.stop()
-
+        // 4. Request host to terminate app if activeHost is set
         if let host = activeHost {
             Task {
                 try? await SunshineHTTPClient.shared.quitApp(host: host)
@@ -228,15 +309,28 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     }
 
     private func startMetricsPolling() {
+        metricsTimer?.invalidate()
+        metricsAccumulator.reset()
+
         metricsTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
+
+                let snap = self.metricsAccumulator.snapshot(currentFps: self.metrics.currentFps)
+
                 var estimatedRtt: UInt32 = 0
                 var estimatedRttVar: UInt32 = 0
                 if LiGetEstimatedRttInfo(&estimatedRtt, &estimatedRttVar) {
                     self.metrics.roundTripTimeMs = Double(estimatedRtt)
                 }
-                self.metrics.currentFps = self.renderer.currentRenderFps
+
+                self.metrics.currentFps = snap.fps
+                self.metrics.decodeTimeMs = snap.decodeTime
+                self.metrics.totalFramesRendered = snap.rendered
+                self.metrics.totalFramesReceived = snap.received
+                self.metrics.totalFramesDropped = snap.dropped
+                self.metrics.networkDroppedFrames = snap.netDropped
+
                 if let settings = self.activeSettings {
                     self.metrics.targetFps = settings.fps
                     self.metrics.bitrateMbps = Double(settings.bitrateMbps)
@@ -253,18 +347,16 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
     // MARK: - VideoDecoderDelegate
     public nonisolated func decoderDidOutputPixelBuffer(_ pixelBuffer: CVPixelBuffer, presentationTimeUs: UInt64, decodeTimeMs: Double) {
-        MetalStreamRenderer.shared.setPixelBuffer(pixelBuffer)
-        Task { @MainActor in
-            StreamSessionController.shared.metrics.decodeTimeMs = decodeTimeMs
-            StreamSessionController.shared.metrics.totalFramesRendered += 1
-        }
+        NativeStreamPresenter.shared.enqueue(pixelBuffer: pixelBuffer)
+        metricsAccumulator.recordRender(decodeTimeMs: decodeTimeMs)
     }
 
     public nonisolated func decoderDidDropFrame(frameNumber: Int) {
-        Task { @MainActor in
-            StreamSessionController.shared.metrics.networkDroppedFrames += 1
-            StreamSessionController.shared.metrics.totalFramesDropped += 1
-        }
+        metricsAccumulator.recordDrop()
+    }
+
+    public nonisolated func decoderDidDetectNetworkFrameDrop(count: Int) {
+        metricsAccumulator.recordNetworkDrop(count: count)
     }
 }
 
@@ -344,3 +436,65 @@ private func sessionAudioDecodeAndPlaySample(sampleData: UnsafeMutablePointer<CC
     guard let data = sampleData else { return }
     StreamSessionEngine.shared.audioEngine.decodeAndPlaySample(sampleData: data, sampleLength: Int(sampleLength))
 }
+
+private final class StreamMetricsAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastDecodeTimeMs: Double = 0.0
+    private var framesRendered: UInt64 = 0
+    private var framesReceived: UInt64 = 0
+    private var framesDropped: UInt64 = 0
+    private var networkDropped: Int = 0
+    private var lastFpsSampleTime: TimeInterval = CACurrentMediaTime()
+    private var lastFpsFrameCount: UInt64 = 0
+
+    func recordRender(decodeTimeMs: Double) {
+        lock.lock()
+        self.lastDecodeTimeMs = decodeTimeMs
+        self.framesRendered &+= 1
+        self.framesReceived &+= 1
+        lock.unlock()
+    }
+
+    func recordDrop() {
+        lock.lock()
+        self.framesDropped &+= 1
+        self.framesReceived &+= 1
+        lock.unlock()
+    }
+
+    func recordNetworkDrop(count: Int) {
+        lock.lock()
+        self.networkDropped &+= count
+        lock.unlock()
+    }
+
+    func snapshot(currentFps: Double) -> (rendered: UInt64, received: UInt64, dropped: UInt64, netDropped: Int, decodeTime: Double, fps: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let now = CACurrentMediaTime()
+        let elapsed = now - lastFpsSampleTime
+        var computedFps = currentFps
+        if elapsed >= 0.45 {
+            let delta = framesRendered >= lastFpsFrameCount ? (framesRendered - lastFpsFrameCount) : 0
+            computedFps = Double(delta) / elapsed
+            lastFpsSampleTime = now
+            lastFpsFrameCount = framesRendered
+        }
+
+        return (framesRendered, framesReceived, framesDropped, networkDropped, lastDecodeTimeMs, computedFps)
+    }
+
+    func reset() {
+        lock.lock()
+        lastDecodeTimeMs = 0.0
+        framesRendered = 0
+        framesReceived = 0
+        framesDropped = 0
+        networkDropped = 0
+        lastFpsSampleTime = CACurrentMediaTime()
+        lastFpsFrameCount = 0
+        lock.unlock()
+    }
+}
+

@@ -23,6 +23,18 @@ struct MoonlightMacApp: App {
                 }
             }
             .frame(minWidth: 800, minHeight: 550)
+            .alert("Stream Error", isPresented: Binding(
+                get: { sessionController.sessionError != nil },
+                set: { if !$0 { sessionController.clearError() } }
+            )) {
+                Button("OK", role: .cancel) {
+                    sessionController.clearError()
+                }
+            } message: {
+                if let error = sessionController.sessionError {
+                    Text(error)
+                }
+            }
         }
         .commands {
             CommandGroup(replacing: .newItem) {

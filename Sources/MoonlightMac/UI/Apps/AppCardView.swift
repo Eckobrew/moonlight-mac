@@ -1,14 +1,28 @@
 import SwiftUI
+import AppKit
 
 public struct AppCardView: View {
+    public let host: Host
     public let app: StreamApp
     public let isStreaming: Bool
     public let onLaunch: () -> Void
+    public let onStop: (() -> Void)?
 
-    public init(app: StreamApp, isStreaming: Bool = false, onLaunch: @escaping () -> Void) {
+    @State private var boxArtImage: NSImage?
+    @State private var isLoading = false
+
+    public init(
+        host: Host,
+        app: StreamApp,
+        isStreaming: Bool = false,
+        onLaunch: @escaping () -> Void,
+        onStop: (() -> Void)? = nil
+    ) {
+        self.host = host
         self.app = app
         self.isStreaming = isStreaming
         self.onLaunch = onLaunch
+        self.onStop = onStop
     }
 
     public var body: some View {
@@ -19,35 +33,71 @@ public struct AppCardView: View {
                     .fill(Color(nsColor: .controlBackgroundColor))
                     .aspectRatio(3.0 / 4.0, contentMode: .fit)
 
-                if let url = app.boxArtUrl {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                        default:
-                            fallbackIcon
-                        }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                if let image = boxArtImage {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                } else if isLoading {
+                    ProgressView()
+                        .scaleEffect(0.7)
                 } else {
                     fallbackIcon
                 }
 
                 if isStreaming {
-                    Color.black.opacity(0.4)
+                    Color.black.opacity(0.55)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-                    VStack {
-                        Image(systemName: "play.circle.fill")
-                            .font(.system(size: 36))
-                            .foregroundStyle(.white)
-                        Text("Active")
-                            .font(.caption)
-                            .fontWeight(.bold)
-                            .foregroundStyle(.white)
+                    VStack(spacing: 8) {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 8, height: 8)
+                            Text("RUNNING")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(.black.opacity(0.6), in: Capsule())
+
+                        Spacer()
+
+                        // Action buttons: Resume stream or Stop app
+                        HStack(spacing: 14) {
+                            Button {
+                                onLaunch()
+                            } label: {
+                                Image(systemName: "play.fill")
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 38, height: 38)
+                                    .background(Color.blue, in: Circle())
+                                    .shadow(radius: 4)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Resume stream")
+
+                            if let onStop = onStop {
+                                Button {
+                                    onStop()
+                                } label: {
+                                    Image(systemName: "stop.fill")
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundStyle(.white)
+                                        .frame(width: 38, height: 38)
+                                        .background(Color.red, in: Circle())
+                                        .shadow(radius: 4)
+                                }
+                                .buttonStyle(.plain)
+                                .help("Stop running application")
+                            }
+                        }
+
+                        Spacer()
                     }
+                    .padding(10)
                 }
             }
             .shadow(color: .black.opacity(0.1), radius: 6, x: 0, y: 3)
@@ -62,6 +112,11 @@ public struct AppCardView: View {
         .contentShape(Rectangle())
         .onTapGesture {
             onLaunch()
+        }
+        .task(id: app.id) {
+            isLoading = true
+            boxArtImage = await BoxArtManager.shared.getBoxArt(host: host, app: app)
+            isLoading = false
         }
     }
 

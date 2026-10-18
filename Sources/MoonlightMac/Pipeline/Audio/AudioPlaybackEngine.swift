@@ -100,7 +100,7 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
 
         // If audio converter is available, convert Opus to PCM
         if let converter = audioConverter {
-            let packetDesc = AudioStreamPacketDescription(
+            var packetDesc = AudioStreamPacketDescription(
                 mStartOffset: 0,
                 mVariableFramesInPacket: 0,
                 mDataByteSize: UInt32(sampleLength)
@@ -109,14 +109,9 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
             struct InputDataState {
                 var data: UnsafeRawPointer
                 var size: UInt32
-                var packetDesc: AudioStreamPacketDescription
+                var packetDescPtr: UnsafeMutablePointer<AudioStreamPacketDescription>
+                var isRead: Bool
             }
-
-            var state = InputDataState(
-                data: UnsafeRawPointer(sampleData),
-                size: UInt32(sampleLength),
-                packetDesc: packetDesc
-            )
 
             let outputFrames: UInt32 = 960 // standard 20ms @ 48kHz
             guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: outputFrames) else { return }
@@ -131,39 +126,48 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
                 )
             )
 
-            let status = AudioConverterFillComplexBuffer(
-                converter,
-                { (inConverter, ioNumberDataPackets, ioData, outDataPacketDescription, inUserData) -> OSStatus in
-                    guard let inUserData = inUserData else { return -1 }
-                    let statePtr = inUserData.assumingMemoryBound(to: InputDataState.self)
-                    if statePtr.pointee.size == 0 {
-                        ioNumberDataPackets.pointee = 0
+            withUnsafeMutablePointer(to: &packetDesc) { descPtr in
+                var state = InputDataState(
+                    data: UnsafeRawPointer(sampleData),
+                    size: UInt32(sampleLength),
+                    packetDescPtr: descPtr,
+                    isRead: false
+                )
+
+                let status = AudioConverterFillComplexBuffer(
+                    converter,
+                    { (inConverter, ioNumberDataPackets, ioData, outDataPacketDescription, inUserData) -> OSStatus in
+                        guard let inUserData = inUserData else { return -1 }
+                        let statePtr = inUserData.assumingMemoryBound(to: InputDataState.self)
+                        if statePtr.pointee.isRead || statePtr.pointee.size == 0 {
+                            ioNumberDataPackets.pointee = 0
+                            return noErr
+                        }
+
+                        ioData.pointee.mNumberBuffers = 1
+                        ioData.pointee.mBuffers.mNumberChannels = 2
+                        ioData.pointee.mBuffers.mDataByteSize = statePtr.pointee.size
+                        ioData.pointee.mBuffers.mData = UnsafeMutableRawPointer(mutating: statePtr.pointee.data)
+
+                        if let outDesc = outDataPacketDescription {
+                            outDesc.pointee = statePtr.pointee.packetDescPtr
+                        }
+
+                        ioNumberDataPackets.pointee = 1
+                        statePtr.pointee.isRead = true
                         return noErr
-                    }
+                    },
+                    &state,
+                    &ioOutputDataPackets,
+                    &outputBufferList,
+                    nil
+                )
 
-                    ioData.pointee.mNumberBuffers = 1
-                    ioData.pointee.mBuffers.mNumberChannels = 2
-                    ioData.pointee.mBuffers.mDataByteSize = statePtr.pointee.size
-                    ioData.pointee.mBuffers.mData = UnsafeMutableRawPointer(mutating: statePtr.pointee.data)
-
-                    if let outDesc = outDataPacketDescription {
-                        outDesc.pointee = withUnsafeMutablePointer(to: &statePtr.pointee.packetDesc) { $0 }
-                    }
-
-                    ioNumberDataPackets.pointee = 1
-                    statePtr.pointee.size = 0
-                    return noErr
-                },
-                &state,
-                &ioOutputDataPackets,
-                &outputBufferList,
-                nil
-            )
-
-            if status == noErr && ioOutputDataPackets > 0 {
-                pcmBuffer.frameLength = ioOutputDataPackets
-                AVPacingClock.shared.registerAudioTimestamp(hostTimeUs: UInt64(CACurrentMediaTime() * 1_000_000))
-                player.scheduleBuffer(pcmBuffer, at: nil, options: [], completionHandler: nil)
+                if status == noErr && ioOutputDataPackets > 0 {
+                    pcmBuffer.frameLength = ioOutputDataPackets
+                    AVPacingClock.shared.registerAudioTimestamp(hostTimeUs: UInt64(CACurrentMediaTime() * 1_000_000))
+                    player.scheduleBuffer(pcmBuffer, at: nil, options: [], completionHandler: nil)
+                }
             }
         }
     }

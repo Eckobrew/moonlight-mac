@@ -123,6 +123,11 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         if let curGame = dict["currentgame"], let curGameId = Int(curGame), curGameId != 0 {
             updatedHost.currentAppId = curGameId
             updatedHost.status = .streaming
+        } else {
+            updatedHost.currentAppId = nil
+            if updatedHost.status == .streaming {
+                updatedHost.status = pairStatus ? .online : .pairingRequired
+            }
         }
 
         AppLogger.shared.info("Parsed host [\(updatedHost.name)] - Paired: \(updatedHost.isPaired), Status: \(updatedHost.status)", category: "HTTP")
@@ -153,20 +158,32 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         return apps
     }
 
+    public func fetchBoxArt(host: Host, appId: Int) async throws -> Data {
+        let uniqueId = CertificateManager.shared.uniqueId
+        guard let url = URL(string: "https://\(host.address):\(host.httpsPort)/appasset?uniqueid=\(uniqueId)&appid=\(appId)&AssetType=2&AssetIdx=0") else {
+            throw URLError(.badURL)
+        }
+
+        let (data, response) = try await defaultSession.data(from: url)
+        guard let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 200, !data.isEmpty else {
+            throw URLError(.badServerResponse)
+        }
+        return data
+    }
+
     public func launchApp(
         host: Host,
         appId: Int,
         settings: StreamSettings,
         rikey: String,
-        rikeyId: String
-    ) async throws -> String {
+        rikeyId: UInt32
+    ) async throws -> String? {
         let uniqueId = CertificateManager.shared.uniqueId
-        let uuid = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let mode = "\(settings.width)x\(settings.height)x\(settings.fps)"
         let surroundAudioInfo = settings.audioMode.limelightValue
         let extraParams = LiGetLaunchUrlQueryParameters().map { String(cString: $0) } ?? ""
 
-        var urlString = "https://\(host.address):\(host.httpsPort)/launch?uniqueid=\(uniqueId)&uuid=\(uuid)&appid=\(appId)&mode=\(mode)&additionalflags=0&rikey=\(rikey)&rikeyid=\(rikeyId)&surroundAudioInfo=\(surroundAudioInfo)"
+        var urlString = "https://\(host.address):\(host.httpsPort)/launch?uniqueid=\(uniqueId)&appid=\(appId)&mode=\(mode)&additionalStates=1&sops=0&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=0&surroundAudioInfo=\(surroundAudioInfo)"
         if !extraParams.isEmpty {
             urlString.append(extraParams)
         }
@@ -184,27 +201,40 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         }
 
         let dict = parseSimpleXML(data: data)
-        guard let sessionUrl = dict["sessionUrl0"], !sessionUrl.isEmpty else {
-            AppLogger.shared.error("Launch response missing sessionUrl0", category: "HTTP")
-            throw NSError(domain: "SunshineHTTPClient", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to obtain sessionUrl0 from host launch response"])
+        let statusCode = dict["status_code"] ?? "200"
+        if statusCode != "200" {
+            let statusMsg = dict["status_message"] ?? "Server Error"
+            AppLogger.shared.error("Launch app failed: \(statusMsg) (code \(statusCode))", category: "HTTP")
+            throw NSError(domain: "SunshineHTTPClient", code: Int(statusCode) ?? -1, userInfo: [NSLocalizedDescriptionKey: statusMsg])
         }
 
-        AppLogger.shared.info("Launch succeeded with sessionUrl0: \(sessionUrl)", category: "HTTP")
-        return sessionUrl
+        if let gameSession = dict["gamesession"], gameSession == "0" {
+            AppLogger.shared.error("Host failed to create game session", category: "HTTP")
+            throw NSError(domain: "SunshineHTTPClient", code: -1, userInfo: [NSLocalizedDescriptionKey: "Host failed to launch game session"])
+        }
+
+        let sessionUrl = dict["sessionUrl0"]
+        if let sUrl = sessionUrl, !sUrl.isEmpty {
+            AppLogger.shared.info("Launch succeeded with RTSP sessionUrl0: \(sUrl)", category: "HTTP")
+            return sUrl
+        } else {
+            AppLogger.shared.info("Launch succeeded with direct RTSP connection", category: "HTTP")
+            return nil
+        }
     }
 
     public func resumeApp(
         host: Host,
         settings: StreamSettings,
         rikey: String,
-        rikeyId: String
-    ) async throws -> String {
+        rikeyId: UInt32
+    ) async throws -> String? {
         let uniqueId = CertificateManager.shared.uniqueId
-        let uuid = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let mode = "\(settings.width)x\(settings.height)x\(settings.fps)"
         let surroundAudioInfo = settings.audioMode.limelightValue
         let extraParams = LiGetLaunchUrlQueryParameters().map { String(cString: $0) } ?? ""
 
-        var urlString = "https://\(host.address):\(host.httpsPort)/resume?uniqueid=\(uniqueId)&uuid=\(uuid)&rikey=\(rikey)&rikeyid=\(rikeyId)&surroundAudioInfo=\(surroundAudioInfo)"
+        var urlString = "https://\(host.address):\(host.httpsPort)/resume?uniqueid=\(uniqueId)&mode=\(mode)&additionalStates=1&sops=0&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=0&surroundAudioInfo=\(surroundAudioInfo)"
         if !extraParams.isEmpty {
             urlString.append(extraParams)
         }
@@ -220,17 +250,31 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         }
 
         let dict = parseSimpleXML(data: data)
-        guard let sessionUrl = dict["sessionUrl0"], !sessionUrl.isEmpty else {
-            throw NSError(domain: "SunshineHTTPClient", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to obtain sessionUrl0 from host resume response"])
+        let statusCode = dict["status_code"] ?? "200"
+        if statusCode != "200" {
+            let statusMsg = dict["status_message"] ?? "Server Error"
+            AppLogger.shared.error("Resume app failed: \(statusMsg) (code \(statusCode))", category: "HTTP")
+            throw NSError(domain: "SunshineHTTPClient", code: Int(statusCode) ?? -1, userInfo: [NSLocalizedDescriptionKey: statusMsg])
         }
 
-        return sessionUrl
+        if let resumeStatus = dict["resume"], resumeStatus == "0" {
+            AppLogger.shared.error("Host failed to resume session", category: "HTTP")
+            throw NSError(domain: "SunshineHTTPClient", code: -1, userInfo: [NSLocalizedDescriptionKey: "Host failed to resume session"])
+        }
+
+        let sessionUrl = dict["sessionUrl0"]
+        if let sUrl = sessionUrl, !sUrl.isEmpty {
+            AppLogger.shared.info("Resume succeeded with RTSP sessionUrl0: \(sUrl)", category: "HTTP")
+            return sUrl
+        } else {
+            AppLogger.shared.info("Resume succeeded with direct RTSP connection", category: "HTTP")
+            return nil
+        }
     }
 
     public func quitApp(host: Host) async throws {
         let uniqueId = CertificateManager.shared.uniqueId
-        let uuid = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        guard let url = URL(string: "https://\(host.address):\(host.httpsPort)/cancel?uniqueid=\(uniqueId)&uuid=\(uuid)") else {
+        guard let url = URL(string: "https://\(host.address):\(host.httpsPort)/cancel?uniqueid=\(uniqueId)") else {
             throw URLError(.badURL)
         }
 

@@ -40,26 +40,25 @@ public struct AppGridView: View {
 
                 Spacer()
 
-                Text(host.name)
-                    .font(.headline)
+                HStack(spacing: 8) {
+                    Text(host.name)
+                        .font(.headline)
 
-                if let onRefresh = onRefresh {
-                    Button(action: onRefresh) {
-                        Image(systemName: "arrow.clockwise")
+                    if let onRefresh = onRefresh {
+                        Button(action: onRefresh) {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Refresh applications")
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .help("Refresh applications")
                 }
 
                 Spacer()
 
-                if host.currentAppId != nil && host.currentAppId != 0 {
-                    Button(role: .destructive, action: onQuitCurrentApp) {
-                        Label("Quit Current App", systemImage: "xmark.circle")
-                    }
-                    .buttonStyle(.bordered)
-                }
+                // Balancing element to keep center title symmetrically centered
+                Label("Hosts", systemImage: "chevron.left")
+                    .opacity(0)
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
@@ -87,10 +86,14 @@ public struct AppGridView: View {
                     LazyVGrid(columns: columns, spacing: 24) {
                         ForEach(apps) { app in
                             AppCardView(
+                                host: host,
                                 app: app,
                                 isStreaming: host.currentAppId == app.id,
                                 onLaunch: {
                                     onLaunchApp(app)
+                                },
+                                onStop: {
+                                    onQuitCurrentApp()
                                 }
                             )
                         }

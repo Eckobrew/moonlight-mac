@@ -8,6 +8,7 @@ import MoonlightCommonC
 public protocol VideoDecoderDelegate: AnyObject, Sendable {
     func decoderDidOutputPixelBuffer(_ pixelBuffer: CVPixelBuffer, presentationTimeUs: UInt64, decodeTimeMs: Double)
     func decoderDidDropFrame(frameNumber: Int)
+    func decoderDidDetectNetworkFrameDrop(count: Int)
 }
 
 public final class VideoToolboxDecoder: @unchecked Sendable {
@@ -27,128 +28,206 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
     // Last known good pixel buffer for frame loss concealment
     private var lastDecodedPixelBuffer: CVPixelBuffer?
     private let lock = NSLock()
+    private var lastFrameNumber: Int32 = 0
+
+    // Held for a whole decode submission and by teardownSession. The stream
+    // library calls teardownSession / stop before joining the thread that submits frames,
+    // so this lock ensures no frame is inside VideoToolbox when the session is invalidated.
+    private let submitLock = NSRecursiveLock()
+    private var isStopped = false
 
     public init() {}
 
     public func setup(videoFormat: Int32, width: Int32, height: Int32) -> Int32 {
+        submitLock.lock()
+        defer { submitLock.unlock() }
+
         self.videoFormat = videoFormat
         self.streamWidth = width
         self.streamHeight = height
         self.spsData = nil
         self.ppsData = nil
         self.vpsData = nil
-        teardownSession()
-        AVPacingClock.shared.reset()
+        self.lastFrameNumber = 0
+        self.isStopped = false
+        teardownDecompressionSession()
+        formatDescription = nil
+        lock.lock()
+        lastDecodedPixelBuffer = nil
+        lock.unlock()
         return DR_OK
     }
 
     public func teardownSession() {
-        if let session = decompressionSession {
-            VTDecompressionSessionWaitForAsynchronousFrames(session)
-            VTDecompressionSessionInvalidate(session)
-            decompressionSession = nil
-        }
+        submitLock.lock()
+        defer { submitLock.unlock() }
+
+        isStopped = true
+        teardownDecompressionSession()
         formatDescription = nil
         lock.lock()
         lastDecodedPixelBuffer = nil
         lock.unlock()
     }
 
+    private func teardownDecompressionSession() {
+        if let session = decompressionSession {
+            decompressionSession = nil
+            VTDecompressionSessionWaitForAsynchronousFrames(session)
+            VTDecompressionSessionInvalidate(session)
+        }
+    }
+
     public func submitDecodeUnit(_ decodeUnit: PDECODE_UNIT) -> Int32 {
+        submitLock.lock()
+        defer { submitLock.unlock() }
+
+        guard !isStopped else { return DR_OK }
+
         let du = decodeUnit.pointee
 
-        // Scan buffer chain for parameter sets (SPS, PPS, VPS)
+        // Detect missing network frames
+        if lastFrameNumber != 0 && du.frameNumber > lastFrameNumber + 1 {
+            let missing = Int(du.frameNumber - (lastFrameNumber + 1))
+            delegate?.decoderDidDetectNetworkFrameDrop(count: missing)
+        }
+        lastFrameNumber = du.frameNumber
+
+        // Scan buffer chain for parameter sets (SPS, PPS, VPS) and copy picture data into single contiguous buffer
+        guard du.fullLength > 0 else { return DR_OK }
+        guard let rawData = malloc(Int(du.fullLength))?.assumingMemoryBound(to: UInt8.self) else {
+            return DR_NEED_IDR
+        }
+
         var curEntry: PLENTRY? = du.bufferList
-        var picDataBuffers: [Data] = []
+        var picDataOffset = 0
+        var hasNewParamSets = false
 
         while let entry = curEntry?.pointee {
-            guard let dataPtr = entry.data else { break }
-            let data = Data(bytes: dataPtr, count: Int(entry.length))
-            let cleanNalu = stripStartCode(data)
+            guard let dataPtr = entry.data, entry.length > 0 else {
+                curEntry = entry.next
+                continue
+            }
+            let bytePtr = UnsafeRawPointer(dataPtr).assumingMemoryBound(to: UInt8.self)
+            let length = Int(entry.length)
 
             switch entry.bufferType {
             case BUFFER_TYPE_SPS:
-                self.spsData = cleanNalu
+                self.spsData = extractNaluPayload(from: bytePtr, length: length)
+                hasNewParamSets = true
             case BUFFER_TYPE_PPS:
-                self.ppsData = cleanNalu
+                self.ppsData = extractNaluPayload(from: bytePtr, length: length)
+                hasNewParamSets = true
             case BUFFER_TYPE_VPS:
-                self.vpsData = cleanNalu
+                self.vpsData = extractNaluPayload(from: bytePtr, length: length)
+                hasNewParamSets = true
             case BUFFER_TYPE_PICDATA:
-                picDataBuffers.append(cleanNalu)
+                memcpy(rawData.advanced(by: picDataOffset), bytePtr, length)
+                picDataOffset += length
             default:
-                picDataBuffers.append(cleanNalu)
+                memcpy(rawData.advanced(by: picDataOffset), bytePtr, length)
+                picDataOffset += length
             }
 
             curEntry = entry.next
         }
 
+        // If this decode unit only contained parameter sets and no picture data, we're done
+        if picDataOffset == 0 {
+            free(rawData)
+            if hasNewParamSets {
+                _ = createFormatDescription()
+            }
+            return DR_OK
+        }
+
         // If IDR or format description not yet created, build format description
-        if formatDescription == nil || du.frameType == FRAME_TYPE_IDR {
-            if !createFormatDescription() {
-                // Loss recovery: request keyframe immediately from host
+        if formatDescription == nil || du.frameType == FRAME_TYPE_IDR || hasNewParamSets {
+            if let newDesc = createFormatDescription() {
+                if !updateDecompressionSession(with: newDesc) {
+                    free(rawData)
+                    delegate?.decoderDidDropFrame(frameNumber: Int(du.frameNumber))
+                    return DR_NEED_IDR
+                }
+            } else if formatDescription == nil {
+                free(rawData)
                 delegate?.decoderDidDropFrame(frameNumber: Int(du.frameNumber))
                 return DR_NEED_IDR
             }
         }
 
         guard let formatDesc = formatDescription, let session = decompressionSession else {
+            free(rawData)
             delegate?.decoderDidDropFrame(frameNumber: Int(du.frameNumber))
             return DR_NEED_IDR
         }
 
-        // Check A/V pacing clock before expensive block buffer allocation
-        let currentHostTimeUs = UInt64(CACurrentMediaTime() * 1_000_000)
-        if du.frameType != FRAME_TYPE_IDR && !AVPacingClock.shared.shouldRenderFrame(presentationTimeUs: du.presentationTimeUs, currentHostTimeUs: currentHostTimeUs) {
-            // Frame is late or jittered: conceal with previous frame
-            delegate?.decoderDidDropFrame(frameNumber: Int(du.frameNumber))
-            return DR_OK
-        }
-
-        // Assemble 4-byte big-endian length-prefixed NALUs into CMBlockBuffer
-        var totalLength = 0
-        for buf in picDataBuffers {
-            totalLength += 4 + buf.count
-        }
-        if totalLength == 0 { return DR_OK }
-
-        var blockBuffer: CMBlockBuffer?
+        // Wrap rawData into dataBlockBuffer with kCFAllocatorDefault.
+        // CoreMedia takes ownership of rawData and will call free(rawData) when dataBlockBuffer is released.
+        var dataBlockBuffer: CMBlockBuffer?
         var status = CMBlockBufferCreateWithMemoryBlock(
             allocator: kCFAllocatorDefault,
-            memoryBlock: nil,
-            blockLength: totalLength,
+            memoryBlock: rawData,
+            blockLength: picDataOffset,
             blockAllocator: kCFAllocatorDefault,
             customBlockSource: nil,
             offsetToData: 0,
-            dataLength: totalLength,
+            dataLength: picDataOffset,
             flags: 0,
-            blockBufferOut: &blockBuffer
+            blockBufferOut: &dataBlockBuffer
         )
-        guard status == noErr, let buffer = blockBuffer else {
+        guard status == noErr, let dataBuffer = dataBlockBuffer else {
+            free(rawData)
+            AppLogger.shared.error("CMBlockBufferCreateWithMemoryBlock failed: \(status)")
             return DR_NEED_IDR
         }
 
-        var currentOffset = 0
-        for buf in picDataBuffers {
-            var naluLenBig = UInt32(buf.count).bigEndian
-            _ = withUnsafeBytes(of: &naluLenBig) { ptr in
-                CMBlockBufferReplaceDataBytes(
-                    with: ptr.baseAddress!,
-                    blockBuffer: buffer,
-                    offsetIntoDestination: currentOffset,
-                    dataLength: 4
-                )
-            }
-            currentOffset += 4
+        // Create empty frameBlockBuffer to hold 4-byte length prefixes and references to dataBuffer
+        var frameBlockBuffer: CMBlockBuffer?
+        status = CMBlockBufferCreateEmpty(
+            allocator: kCFAllocatorDefault,
+            capacity: 0,
+            flags: 0,
+            blockBufferOut: &frameBlockBuffer
+        )
+        guard status == noErr, let frameBuffer = frameBlockBuffer else {
+            AppLogger.shared.error("CMBlockBufferCreateEmpty failed: \(status)")
+            return DR_NEED_IDR
+        }
 
-            _ = buf.withUnsafeBytes { ptr in
-                CMBlockBufferReplaceDataBytes(
-                    with: ptr.baseAddress!,
-                    blockBuffer: buffer,
-                    offsetIntoDestination: currentOffset,
-                    dataLength: buf.count
-                )
+        // Scan rawData for Annex-B NAL unit start codes (00 00 01)
+        var lastNaluOffset: Int = -1
+        let scanLimit = picDataOffset - 3
+        if scanLimit >= 0 {
+            for i in 0...scanLimit {
+                if rawData[i] == 0 && rawData[i+1] == 0 && rawData[i+2] == 1 {
+                    if lastNaluOffset != -1 {
+                        appendNalu(
+                            to: frameBuffer,
+                            from: dataBuffer,
+                            data: rawData,
+                            startOffset: lastNaluOffset,
+                            endOffset: i
+                        )
+                    }
+                    lastNaluOffset = i
+                }
             }
-            currentOffset += buf.count
+        }
+
+        if lastNaluOffset != -1 {
+            appendNalu(
+                to: frameBuffer,
+                from: dataBuffer,
+                data: rawData,
+                startOffset: lastNaluOffset,
+                endOffset: picDataOffset
+            )
+        }
+
+        let totalLength = CMBlockBufferGetDataLength(frameBuffer)
+        guard totalLength > 0 else {
+            return DR_OK
         }
 
         // Create CMSampleBuffer
@@ -162,7 +241,7 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         var sampleBuffer: CMSampleBuffer?
         status = CMSampleBufferCreateReady(
             allocator: kCFAllocatorDefault,
-            dataBuffer: buffer,
+            dataBuffer: frameBuffer,
             formatDescription: formatDesc,
             sampleCount: 1,
             sampleTimingEntryCount: 1,
@@ -173,7 +252,22 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         )
 
         guard status == noErr, let sample = sampleBuffer else {
+            AppLogger.shared.error("CMSampleBufferCreateReady failed: \(status)")
             return DR_NEED_IDR
+        }
+
+        // Set sample buffer attachments for immediate display
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true) {
+            let dict = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
+            CFDictionarySetValue(dict, Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(), Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
+            CFDictionarySetValue(dict, Unmanaged.passUnretained(kCMSampleAttachmentKey_IsDependedOnByOthers).toOpaque(), Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
+            if du.frameType == FRAME_TYPE_PFRAME {
+                CFDictionarySetValue(dict, Unmanaged.passUnretained(kCMSampleAttachmentKey_NotSync).toOpaque(), Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
+                CFDictionarySetValue(dict, Unmanaged.passUnretained(kCMSampleAttachmentKey_DependsOnOthers).toOpaque(), Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
+            } else {
+                CFDictionarySetValue(dict, Unmanaged.passUnretained(kCMSampleAttachmentKey_NotSync).toOpaque(), Unmanaged.passUnretained(kCFBooleanFalse).toOpaque())
+                CFDictionarySetValue(dict, Unmanaged.passUnretained(kCMSampleAttachmentKey_DependsOnOthers).toOpaque(), Unmanaged.passUnretained(kCFBooleanFalse).toOpaque())
+            }
         }
 
         let context = DecodeContext(
@@ -182,7 +276,6 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
             submissionTime: CACurrentMediaTime()
         )
 
-        // Decode frame asynchronously with realtime playback flag
         let flags: VTDecodeFrameFlags = [._EnableAsynchronousDecompression, ._1xRealTimePlayback]
         var infoFlagsOut: VTDecodeInfoFlags = []
 
@@ -195,7 +288,7 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         )
 
         if status != noErr {
-            // Immediate error recovery: trigger reference frame refresh on corruption
+            AppLogger.shared.error("VTDecompressionSessionDecodeFrame failed: \(status) (frame: \(du.frameNumber))")
             delegate?.decoderDidDropFrame(frameNumber: Int(du.frameNumber))
             return DR_NEED_IDR
         }
@@ -215,8 +308,8 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         return lastDecodedPixelBuffer
     }
 
-    private func createFormatDescription() -> Bool {
-        guard let sps = spsData, let pps = ppsData else { return false }
+    private func createFormatDescription() -> CMVideoFormatDescription? {
+        guard let sps = spsData, let pps = ppsData else { return nil }
 
         var newFormatDesc: CMVideoFormatDescription?
         var status: OSStatus = -1
@@ -224,59 +317,73 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         let isHevc = (videoFormat & VIDEO_FORMAT_MASK_H265) != 0
 
         if isHevc {
-            guard let vps = vpsData else { return false }
-            let pointers: [UnsafePointer<UInt8>] = [
-                vps.withUnsafeBytes { $0.baseAddress!.assumingMemoryBound(to: UInt8.self) },
-                sps.withUnsafeBytes { $0.baseAddress!.assumingMemoryBound(to: UInt8.self) },
-                pps.withUnsafeBytes { $0.baseAddress!.assumingMemoryBound(to: UInt8.self) }
-            ]
-            let sizes = [vps.count, sps.count, pps.count]
-
-            status = pointers.withUnsafeBufferPointer { ptrs in
-                sizes.withUnsafeBufferPointer { szs in
-                    CMVideoFormatDescriptionCreateFromHEVCParameterSets(
-                        allocator: kCFAllocatorDefault,
-                        parameterSetCount: 3,
-                        parameterSetPointers: ptrs.baseAddress!,
-                        parameterSetSizes: szs.baseAddress!,
-                        nalUnitHeaderLength: 4,
-                        extensions: nil,
-                        formatDescriptionOut: &newFormatDesc
-                    )
+            guard let vps = vpsData else { return nil }
+            status = vps.withUnsafeBytes { vpsBuf in
+                sps.withUnsafeBytes { spsBuf in
+                    pps.withUnsafeBytes { ppsBuf in
+                        let ptrs: [UnsafePointer<UInt8>] = [
+                            vpsBuf.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                            spsBuf.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                            ppsBuf.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                        ]
+                        let sizes = [vps.count, sps.count, pps.count]
+                        return ptrs.withUnsafeBufferPointer { ptrsBuf in
+                            sizes.withUnsafeBufferPointer { sizesBuf in
+                                CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                                    allocator: kCFAllocatorDefault,
+                                    parameterSetCount: 3,
+                                    parameterSetPointers: ptrsBuf.baseAddress!,
+                                    parameterSetSizes: sizesBuf.baseAddress!,
+                                    nalUnitHeaderLength: 4,
+                                    extensions: nil,
+                                    formatDescriptionOut: &newFormatDesc
+                                )
+                            }
+                        }
+                    }
                 }
             }
         } else {
             // H.264
-            let pointers: [UnsafePointer<UInt8>] = [
-                sps.withUnsafeBytes { $0.baseAddress!.assumingMemoryBound(to: UInt8.self) },
-                pps.withUnsafeBytes { $0.baseAddress!.assumingMemoryBound(to: UInt8.self) }
-            ]
-            let sizes = [sps.count, pps.count]
-
-            status = pointers.withUnsafeBufferPointer { ptrs in
-                sizes.withUnsafeBufferPointer { szs in
-                    CMVideoFormatDescriptionCreateFromH264ParameterSets(
-                        allocator: kCFAllocatorDefault,
-                        parameterSetCount: 2,
-                        parameterSetPointers: ptrs.baseAddress!,
-                        parameterSetSizes: szs.baseAddress!,
-                        nalUnitHeaderLength: 4,
-                        formatDescriptionOut: &newFormatDesc
-                    )
+            status = sps.withUnsafeBytes { spsBuf in
+                pps.withUnsafeBytes { ppsBuf in
+                    let ptrs: [UnsafePointer<UInt8>] = [
+                        spsBuf.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                        ppsBuf.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                    ]
+                    let sizes = [sps.count, pps.count]
+                    return ptrs.withUnsafeBufferPointer { ptrsBuf in
+                        sizes.withUnsafeBufferPointer { sizesBuf in
+                            CMVideoFormatDescriptionCreateFromH264ParameterSets(
+                                allocator: kCFAllocatorDefault,
+                                parameterSetCount: 2,
+                                parameterSetPointers: ptrsBuf.baseAddress!,
+                                parameterSetSizes: sizesBuf.baseAddress!,
+                                nalUnitHeaderLength: 4,
+                                formatDescriptionOut: &newFormatDesc
+                            )
+                        }
+                    }
                 }
             }
         }
 
         guard status == noErr, let formatDesc = newFormatDesc else {
-            return false
+            AppLogger.shared.error("Failed to create CMVideoFormatDescription: \(status)")
+            return nil
         }
 
-        self.formatDescription = formatDesc
-        return createDecompressionSession(formatDesc: formatDesc)
+        return formatDesc
     }
 
-    private func createDecompressionSession(formatDesc: CMVideoFormatDescription) -> Bool {
-        teardownSession()
+    private func updateDecompressionSession(with formatDesc: CMVideoFormatDescription) -> Bool {
+        if let session = decompressionSession,
+           VTDecompressionSessionCanAcceptFormatDescription(session, formatDescription: formatDesc) {
+            self.formatDescription = formatDesc
+            return true
+        }
+
+        teardownDecompressionSession()
 
         let is10Bit = (videoFormat & VIDEO_FORMAT_MASK_10BIT) != 0
         let pixelFormat = is10Bit ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
@@ -309,6 +416,7 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         )
 
         guard status == noErr, let decSession = session else {
+            AppLogger.shared.error("VTDecompressionSessionCreate failed with status: \(status)")
             return false
         }
 
@@ -316,16 +424,76 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         VTSessionSetProperty(decSession, key: kVTDecompressionPropertyKey_MaximizePowerEfficiency, value: kCFBooleanFalse)
 
         self.decompressionSession = decSession
+        self.formatDescription = formatDesc
         return true
     }
 
-    private func stripStartCode(_ data: Data) -> Data {
-        if data.count >= 4 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1 {
-            return data.subdata(in: 4..<data.count)
-        } else if data.count >= 3 && data[0] == 0 && data[1] == 0 && data[2] == 1 {
-            return data.subdata(in: 3..<data.count)
+    private func extractNaluPayload(from ptr: UnsafePointer<UInt8>, length: Int) -> Data {
+        if length >= 4 && ptr[0] == 0 && ptr[1] == 0 && ptr[2] == 0 && ptr[3] == 1 {
+            return Data(bytes: ptr.advanced(by: 4), count: length - 4)
+        } else if length >= 3 && ptr[0] == 0 && ptr[1] == 0 && ptr[2] == 1 {
+            return Data(bytes: ptr.advanced(by: 3), count: length - 3)
         }
-        return data
+        return Data(bytes: ptr, count: length)
+    }
+
+    private func appendNalu(
+        to frameBuffer: CMBlockBuffer,
+        from dataBuffer: CMBlockBuffer,
+        data: UnsafePointer<UInt8>,
+        startOffset: Int,
+        endOffset: Int
+    ) {
+        let payloadStart = startOffset + 3
+        var payloadEnd = endOffset
+
+        // Trim trailing zeros (from byte stream padding or preceding 4-byte start codes)
+        while payloadEnd > payloadStart && data[payloadEnd - 1] == 0 {
+            payloadEnd -= 1
+        }
+
+        let naluLength = payloadEnd - payloadStart
+        guard naluLength > 0 else { return }
+
+        let oldOffset = CMBlockBufferGetDataLength(frameBuffer)
+        let prefixSize = 4
+
+        var status = CMBlockBufferAppendMemoryBlock(
+            frameBuffer,
+            memoryBlock: nil,
+            length: prefixSize,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: prefixSize,
+            flags: 0
+        )
+        guard status == noErr else {
+            AppLogger.shared.error("CMBlockBufferAppendMemoryBlock failed: \(status)")
+            return
+        }
+
+        var bigLen = UInt32(naluLength).bigEndian
+        _ = withUnsafeBytes(of: &bigLen) { lenBytes in
+            CMBlockBufferReplaceDataBytes(
+                with: lenBytes.baseAddress!,
+                blockBuffer: frameBuffer,
+                offsetIntoDestination: oldOffset,
+                dataLength: prefixSize
+            )
+        }
+
+        // Attach the data buffer to the frame buffer by reference (zero payload copy)
+        status = CMBlockBufferAppendBufferReference(
+            frameBuffer,
+            targetBBuf: dataBuffer,
+            offsetToData: payloadStart,
+            dataLength: naluLength,
+            flags: 0
+        )
+        if status != noErr {
+            AppLogger.shared.error("CMBlockBufferAppendBufferReference failed: \(status)")
+        }
     }
 }
 
@@ -366,9 +534,11 @@ private func decompressionOutputCallback(
         decoder.storeLastDecodedBuffer(pixelBuffer)
         decoder.delegate?.decoderDidOutputPixelBuffer(pixelBuffer, presentationTimeUs: presentationTimeUs, decodeTimeMs: decodeTimeMs)
     } else {
-        // Frame loss concealment: reuse last valid decoded frame if available
+        AppLogger.shared.warning("VT decompression output error: \(status)")
         if let fallback = decoder.getLastDecodedBuffer() {
             decoder.delegate?.decoderDidOutputPixelBuffer(fallback, presentationTimeUs: presentationTimeUs, decodeTimeMs: decodeTimeMs)
+        } else {
+            decoder.delegate?.decoderDidDropFrame(frameNumber: 0)
         }
     }
 }

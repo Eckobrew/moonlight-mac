@@ -23,6 +23,11 @@ public struct HostGridView: View {
                     onQuitCurrentApp: {
                         Task {
                             try? await SunshineHTTPClient.shared.quitApp(host: selectedHost)
+                            try? await Task.sleep(for: .milliseconds(300))
+                            if let (updatedHost, _) = try? await SunshineHTTPClient.shared.fetchServerInfo(host: selectedHost) {
+                                appState.addOrUpdateHost(updatedHost)
+                            }
+                            await appState.loadApps(for: selectedHost)
                             await appState.refreshHosts()
                         }
                     },
@@ -105,6 +110,23 @@ public struct HostGridView: View {
             // Start mDNS discovery on launch
             BonjourDiscoveryService.shared.startDiscovery()
             await appState.refreshHosts()
+
+            // Periodic auto-refresh every 4 seconds for hosts and apps
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(4))
+                guard !Task.isCancelled else { break }
+
+                if let selectedHost = appState.selectedHost, selectedHost.isPaired {
+                    // On the apps screen: refresh apps and host status (running app, etc.)
+                    await appState.loadApps(for: selectedHost)
+                    if let (updatedHost, _) = try? await SunshineHTTPClient.shared.fetchServerInfo(host: selectedHost) {
+                        appState.addOrUpdateHost(updatedHost)
+                    }
+                } else {
+                    // On the hosts screen: refresh all hosts
+                    await appState.refreshHosts()
+                }
+            }
         }
         .onReceive(BonjourDiscoveryService.shared.$discoveredHosts) { discovered in
             for host in discovered {

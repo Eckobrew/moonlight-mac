@@ -4,7 +4,13 @@ import MoonlightCommonC
 
 public final class KeyboardMonitor: @unchecked Sendable {
     public var swapCommandControl: Bool = false
-    public var onEscapeRequested: (@Sendable () -> Void)?
+    public var onQuitRequested: (@Sendable () -> Void)?
+    public var onToggleMouseCaptureRequested: (@Sendable () -> Void)?
+    public var onToggleFullscreenRequested: (@Sendable () -> Void)?
+    public var onToggleStatsOverlayRequested: (@Sendable () -> Void)?
+    public var onToggleMouseModeRequested: (@Sendable () -> Void)?
+    public var onMinimizeRequested: (@Sendable () -> Void)?
+    public var onPasteRequested: (@Sendable () -> Void)?
 
     private var localMonitor: Any?
     private var isMonitoring = false
@@ -32,10 +38,84 @@ public final class KeyboardMonitor: @unchecked Sendable {
     }
 
     private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
-        // Hotkey: Cmd + Ctrl + Q releases mouse or exits stream
-        if event.modifierFlags.contains([.command, .control]) && event.keyCode == 0x0C { // Q
-            onEscapeRequested?()
-            return nil
+        // Only trigger special key combos on keyDown events
+        if event.type == .keyDown {
+            let isMoonlightCombo = event.modifierFlags.contains([.control, .option, .shift])
+            let isCmdCtrl = event.modifierFlags.contains([.command, .control])
+
+            // Moonlight-Qt Key Combos on macOS: Control + Option + Shift + <Key>
+            if isMoonlightCombo {
+                switch event.keyCode {
+                case 0x0C: // Q: Quit / Disconnect stream
+                    raiseModifierKeys()
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onQuitRequested?()
+                    }
+                    return nil
+
+                case 0x06: // Z: Toggle mouse capture (release or recapture cursor)
+                    raiseModifierKeys()
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onToggleMouseCaptureRequested?()
+                    }
+                    return nil
+
+                case 0x07: // X: Toggle Fullscreen / Windowed
+                    raiseModifierKeys()
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onToggleFullscreenRequested?()
+                    }
+                    return nil
+
+                case 0x01: // S: Toggle Stats Overlay (Performance HUD)
+                    raiseModifierKeys()
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onToggleStatsOverlayRequested?()
+                    }
+                    return nil
+
+                case 0x2E: // M: Toggle Mouse Mode
+                    raiseModifierKeys()
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onToggleMouseModeRequested?()
+                    }
+                    return nil
+
+                case 0x02: // D: Minimize Window
+                    raiseModifierKeys()
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onMinimizeRequested?()
+                    }
+                    return nil
+
+                case 0x09: // V: Type Clipboard Text to Host
+                    raiseModifierKeys()
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onPasteRequested?()
+                    }
+                    return nil
+
+                default:
+                    break
+                }
+            }
+
+            // Fallback shortcuts: Cmd + Ctrl + Q (Quit) and Cmd + Ctrl + B (Toggle Window Mode)
+            if isCmdCtrl {
+                if event.keyCode == 0x0C { // Q
+                    raiseModifierKeys()
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onQuitRequested?()
+                    }
+                    return nil
+                } else if event.keyCode == 0x0B { // B
+                    raiseModifierKeys()
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onToggleFullscreenRequested?()
+                    }
+                    return nil
+                }
+            }
         }
 
         let vkCode = KeycodeMappings.macToWindowsVirtualKey(macKeyCode: event.keyCode, swapCommandControl: swapCommandControl)
@@ -43,9 +123,7 @@ public final class KeyboardMonitor: @unchecked Sendable {
 
         switch event.type {
         case .keyDown:
-            if !event.isARepeat {
-                LiSendKeyboardEvent(vkCode, KEY_ACTION_DOWN, 0)
-            }
+            LiSendKeyboardEvent(vkCode, KEY_ACTION_DOWN, 0)
             return nil // consume event
         case .keyUp:
             LiSendKeyboardEvent(vkCode, KEY_ACTION_UP, 0)
@@ -58,6 +136,14 @@ public final class KeyboardMonitor: @unchecked Sendable {
         default:
             return event
         }
+    }
+
+    /// Releases modifier keys on the host to avoid sticky keys when special combos are consumed
+    private func raiseModifierKeys() {
+        LiSendKeyboardEvent(KeycodeMappings.VK_CONTROL, KEY_ACTION_UP, 0)
+        LiSendKeyboardEvent(KeycodeMappings.VK_MENU, KEY_ACTION_UP, 0)
+        LiSendKeyboardEvent(KeycodeMappings.VK_SHIFT, KEY_ACTION_UP, 0)
+        LiSendKeyboardEvent(KeycodeMappings.VK_LWIN, KEY_ACTION_UP, 0)
     }
 
     private func isModifierKeyDown(event: NSEvent) -> Bool {

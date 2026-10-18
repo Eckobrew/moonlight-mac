@@ -66,17 +66,11 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     }
 
     private func setupPipeline(device: MTLDevice) {
-        let defaultLibrary = (try? device.makeDefaultLibrary(bundle: Bundle.module))
-            ?? (try? device.makeDefaultLibrary(bundle: Bundle.main))
-            ?? device.makeDefaultLibrary()
-
-        guard let defaultLibrary else {
-            // If SPM bundle default library isn't available, compile metal source dynamically
+        if let defaultLib = device.makeDefaultLibrary() {
+            buildPipelines(device: device, library: defaultLib)
+        } else {
             compileShadersFromSource(device: device)
-            return
         }
-
-        buildPipelines(device: device, library: defaultLibrary)
     }
 
     private func compileShadersFromSource(device: MTLDevice) {

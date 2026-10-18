@@ -7,6 +7,7 @@ public struct PerformanceMetrics: Sendable {
     public var roundTripTimeMs: Double
     public var decodeTimeMs: Double
     public var networkDroppedFrames: Int
+    public var totalFramesReceived: UInt64
     public var totalFramesRendered: UInt64
     public var totalFramesDropped: UInt64
     public var currentCodec: String
@@ -19,6 +20,7 @@ public struct PerformanceMetrics: Sendable {
         roundTripTimeMs: Double = 0.0,
         decodeTimeMs: Double = 0.0,
         networkDroppedFrames: Int = 0,
+        totalFramesReceived: UInt64 = 0,
         totalFramesRendered: UInt64 = 0,
         totalFramesDropped: UInt64 = 0,
         currentCodec: String = "HEVC",
@@ -30,6 +32,7 @@ public struct PerformanceMetrics: Sendable {
         self.roundTripTimeMs = roundTripTimeMs
         self.decodeTimeMs = decodeTimeMs
         self.networkDroppedFrames = networkDroppedFrames
+        self.totalFramesReceived = totalFramesReceived
         self.totalFramesRendered = totalFramesRendered
         self.totalFramesDropped = totalFramesDropped
         self.currentCodec = currentCodec
@@ -37,8 +40,8 @@ public struct PerformanceMetrics: Sendable {
     }
 
     public var packetLossPercentage: Double {
-        let total = totalFramesRendered + totalFramesDropped
+        let total = totalFramesReceived + UInt64(networkDroppedFrames)
         guard total > 0 else { return 0.0 }
-        return (Double(totalFramesDropped) / Double(total)) * 100.0
+        return (Double(networkDroppedFrames) / Double(total)) * 100.0
     }
 }

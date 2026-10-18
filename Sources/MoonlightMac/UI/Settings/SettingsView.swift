@@ -5,7 +5,12 @@ public struct SettingsView: View {
     @Binding public var settings: StreamSettings
     public let onSave: () -> Void
 
-    private let resolutions: [(name: String, width: Int, height: Int)] = [
+    private var nativeResolutionLabel: String {
+        let (w, h) = DisplayManager.getNativeResolution()
+        return "Native (\(w)x\(h))"
+    }
+
+    private let standardResolutions: [(name: String, width: Int, height: Int)] = [
         ("720p (1280x720)", 1280, 720),
         ("1080p (1920x1080)", 1920, 1080),
         ("1440p (2560x1440)", 2560, 1440),
@@ -39,8 +44,15 @@ public struct SettingsView: View {
             Form {
                 Section("Video Settings") {
                     Picker("Resolution:", selection: resolutionBinding) {
-                        ForEach(resolutions, id: \.name) { res in
+                        Text(nativeResolutionLabel).tag("Native")
+                        ForEach(standardResolutions, id: \.name) { res in
                             Text(res.name).tag(res.name)
+                        }
+                    }
+
+                    Picker("Display Mode:", selection: $settings.windowMode) {
+                        ForEach(WindowMode.allCases, id: \.self) { mode in
+                            Text(mode.rawValue).tag(mode)
                         }
                     }
 
@@ -89,7 +101,7 @@ public struct SettingsView: View {
                 Section("Input & Mouse Controls") {
                     Toggle("Capture mouse pointer automatically", isOn: $settings.mouseCaptureMode)
                     Toggle("Swap Command and Control keys for Windows shortcuts", isOn: $settings.swapCommandControl)
-                    Text("Tip: Press ⌘ + ⌃ + Q during a stream to release the cursor or exit.")
+                    Text("Shortcuts: ⌃⌥⇧Q: quit | ⌃⌥⇧Z: release cursor | ⌃⌥⇧X: toggle fullscreen | ⌃⌥⇧S: toggle stats")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -103,11 +115,17 @@ public struct SettingsView: View {
     private var resolutionBinding: Binding<String> {
         Binding(
             get: {
-                resolutions.first(where: { $0.width == settings.width && $0.height == settings.height })?.name
+                if settings.width == 0 || settings.height == 0 {
+                    return "Native"
+                }
+                return standardResolutions.first(where: { $0.width == settings.width && $0.height == settings.height })?.name
                     ?? "\(settings.width)x\(settings.height)"
             },
             set: { selectedName in
-                if let match = resolutions.first(where: { $0.name == selectedName }) {
+                if selectedName == "Native" {
+                    settings.width = 0
+                    settings.height = 0
+                } else if let match = standardResolutions.first(where: { $0.name == selectedName }) {
                     settings.width = match.width
                     settings.height = match.height
                 }

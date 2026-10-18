@@ -100,8 +100,12 @@ public final class MouseMonitor: @unchecked Sendable {
 
         case .scrollWheel:
             let scrollY = Int16(clamping: Int(event.scrollingDeltaY * 120))
+            let scrollX = Int16(clamping: Int(event.scrollingDeltaX * 120))
             if scrollY != 0 {
                 LiSendHighResScrollEvent(scrollY)
+            }
+            if scrollX != 0 {
+                LiSendHighResHScrollEvent(scrollX)
             }
             return nil
 

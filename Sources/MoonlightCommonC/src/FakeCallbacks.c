@@ -1,4 +1,6 @@
 #include "Limelight-internal.h"
+#include <stdarg.h>
+#include <stdio.h>
 
 static int fakeDrSetup(int videoFormat, int width, int height, int redrawRate, void* context, int drFlags) { return 0; }
 static void fakeDrStart(void) {}
@@ -33,7 +35,13 @@ static void fakeClStageComplete(int stage) {}
 static void fakeClStageFailed(int stage, int errorCode) {}
 static void fakeClConnectionStarted(void) {}
 static void fakeClConnectionTerminated(int errorCode) {}
-static void fakeClLogMessage(const char* format, ...) {}
+static void fakeClLogMessage(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    vprintf(format, args);
+    fflush(stdout);
+    va_end(args);
+}
 static void fakeClRumble(unsigned short controllerNumber, unsigned short lowFreqMotor, unsigned short highFreqMotor) {}
 static void fakeClConnectionStatusUpdate(int connectionStatus) {}
 static void fakeClSetHdrMode(bool enabled) {}
