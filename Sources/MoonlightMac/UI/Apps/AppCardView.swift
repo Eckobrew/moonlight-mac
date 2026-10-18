@@ -113,6 +113,29 @@ public struct AppCardView: View {
         .onTapGesture {
             onLaunch()
         }
+        .contextMenu {
+            Button {
+                onLaunch()
+            } label: {
+                Label(isStreaming ? "Resume Game" : "Launch Game", systemImage: isStreaming ? "play.fill" : "play")
+            }
+
+            if isStreaming, let onStop = onStop {
+                Button(role: .destructive) {
+                    onStop()
+                } label: {
+                    Label("Stop Game", systemImage: "stop.fill")
+                }
+            }
+
+            Divider()
+
+            Button {
+                GameShortcutManager.shared.createShortcut(for: app, host: host, iconImage: boxArtImage)
+            } label: {
+                Label("Create Desktop Shortcut...", systemImage: "arrow.up.forward.app")
+            }
+        }
         .task(id: app.id) {
             isLoading = true
             boxArtImage = await BoxArtManager.shared.getBoxArt(host: host, app: app)

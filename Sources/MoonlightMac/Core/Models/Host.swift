@@ -12,6 +12,8 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
     public var id: UUID
     public var name: String
     public var address: String
+    public var remoteAddress: String?
+    public var activeAddress: String?
     public var httpsPort: Int
     public var httpPort: Int
     public var status: HostStatus
@@ -28,6 +30,8 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
         id: UUID = UUID(),
         name: String,
         address: String,
+        remoteAddress: String? = nil,
+        activeAddress: String? = nil,
         httpsPort: Int = 47984,
         httpPort: Int = 47989,
         status: HostStatus = .unknown,
@@ -43,6 +47,8 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
         self.id = id
         self.name = name
         self.address = address
+        self.remoteAddress = remoteAddress
+        self.activeAddress = activeAddress
         self.httpsPort = httpsPort
         self.httpPort = httpPort
         self.status = status
@@ -56,12 +62,16 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
         self.lastSeen = lastSeen
     }
 
+    public var effectiveAddress: String {
+        activeAddress ?? address
+    }
+
     public var baseUrlHttps: URL? {
-        URL(string: "https://\(address):\(httpsPort)")
+        URL(string: "https://\(effectiveAddress):\(httpsPort)")
     }
 
     public var baseUrlHttp: URL? {
-        URL(string: "http://\(address):\(httpPort)")
+        URL(string: "http://\(effectiveAddress):\(httpPort)")
     }
 
     public var isOnline: Bool {

@@ -80,6 +80,32 @@ public struct SettingsView: View {
                         )
                     }
 
+                    Toggle("Custom Bitrate for Remote Sessions", isOn: $settings.enableRemoteBitrate)
+                    Text("Uses the standard video bitrate above on your local network, and switches to this custom bitrate when connecting remotely over the Internet or Tailscale.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if settings.enableRemoteBitrate {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Remote Bitrate:")
+                                Spacer()
+                                Text("\(settings.remoteBitrateMbps) Mbps")
+                                    .monospacedDigit()
+                                    .fontWeight(.semibold)
+                            }
+                            Slider(
+                                value: Binding(
+                                    get: { Double(settings.remoteBitrateMbps) },
+                                    set: { settings.remoteBitrateMbps = Int($0) }
+                                ),
+                                in: 2...100,
+                                step: 1
+                            )
+                        }
+                        .padding(.leading, 12)
+                    }
+
                     Picker("Video Codec:", selection: $settings.codec) {
                         ForEach(VideoCodec.allCases, id: \.self) { codec in
                             Text(codec.rawValue).tag(codec)
@@ -128,6 +154,16 @@ public struct SettingsView: View {
 
                     Toggle("Quit game on host when ending stream", isOn: $settings.quitAppOnStop)
                     Text("Terminates the active application on the host PC when you disconnect. Turn off to keep games running in the background.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Toggle("Synchronize clipboard with host", isOn: $settings.enableClipboardSync)
+                    Text("Automatically synchronizes copied text between your Mac and Apollo/Vibepollo/Sunshine hosts over secure HTTPS.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Toggle("Hide unpaired PCs", isOn: $settings.hideUnpairedHosts)
+                    Text("Hides discovered PCs that have not been paired yet, while still displaying paired offline PCs.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

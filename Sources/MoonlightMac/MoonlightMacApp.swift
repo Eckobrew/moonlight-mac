@@ -23,6 +23,9 @@ struct MoonlightMacApp: App {
                 }
             }
             .frame(minWidth: 800, minHeight: 550)
+            .task {
+                handleCommandLineArguments()
+            }
             .alert("Stream Error", isPresented: Binding(
                 get: { sessionController.sessionError != nil },
                 set: { if !$0 { sessionController.clearError() } }
@@ -57,6 +60,27 @@ struct MoonlightMacApp: App {
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }
+        }
+    }
+
+    private func handleCommandLineArguments() {
+        let args = CommandLine.arguments
+        guard let streamIdx = args.firstIndex(of: "stream"), streamIdx + 2 < args.count else {
+            return
+        }
+
+        let hostQuery = args[streamIdx + 1]
+        let appQuery = args[streamIdx + 2]
+
+        if let iconIdx = args.firstIndex(of: "--icon"), iconIdx + 1 < args.count {
+            let iconPath = args[iconIdx + 1]
+            if FileManager.default.fileExists(atPath: iconPath), let img = NSImage(contentsOfFile: iconPath) {
+                NSApp.applicationIconImage = img
+            }
+        }
+
+        Task {
+            await appState.handleCLIStream(hostQuery: hostQuery, appQuery: appQuery)
         }
     }
 }

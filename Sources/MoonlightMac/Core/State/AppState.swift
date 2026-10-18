@@ -59,13 +59,25 @@ public final class AppState: @unchecked Sendable {
     }
 
     public func addOrUpdateHost(_ host: Host) {
-        if let idx = hosts.firstIndex(where: { $0.address == host.address }) {
+        if let idx = hosts.firstIndex(where: {
+            $0.id == host.id ||
+            $0.address == host.address ||
+            ($0.macAddress != nil && host.macAddress != nil && $0.macAddress == host.macAddress) ||
+            ($0.remoteAddress != nil && host.remoteAddress != nil && $0.remoteAddress == host.remoteAddress && !$0.remoteAddress!.isEmpty)
+        }) {
             var merged = host
+            merged.id = hosts[idx].id
+            if merged.remoteAddress == nil {
+                merged.remoteAddress = hosts[idx].remoteAddress
+            }
+            if merged.macAddress == nil {
+                merged.macAddress = hosts[idx].macAddress
+            }
             if host.name == "Searching..." && hosts[idx].name != "Searching..." && !hosts[idx].name.isEmpty {
                 merged.name = hosts[idx].name
             }
             hosts[idx] = merged
-            if selectedHost?.address == host.address {
+            if selectedHost?.id == merged.id || selectedHost?.address == host.address {
                 selectedHost = merged
             }
         } else {
@@ -186,5 +198,70 @@ public final class AppState: @unchecked Sendable {
         StreamSessionController.shared.stopSession()
         self.activeHost = nil
         self.activeApp = nil
+    }
+
+    public func handleCLIStream(hostQuery: String, appQuery: String) async {
+        AppLogger.shared.info("CLI Stream invocation requested for host: '\(hostQuery)', app: '\(appQuery)'", category: "CLI")
+
+        // 1. Locate host in saved hosts or by IP/name
+        var targetHost: Host? = hosts.first(where: {
+            $0.name.localizedCaseInsensitiveCompare(hostQuery) == .orderedSame ||
+            $0.address == hostQuery ||
+            $0.remoteAddress == hostQuery
+        })
+
+        if targetHost == nil {
+            targetHost = hosts.first(where: {
+                $0.name.localizedCaseInsensitiveContains(hostQuery)
+            })
+        }
+
+        if targetHost == nil {
+            targetHost = Host(name: hostQuery, address: hostQuery)
+        }
+
+        guard var host = targetHost else { return }
+
+        // 2. If host is offline, wake via WoL and wait up to 60s
+        if !host.isOnline {
+            if let mac = host.macAddress {
+                AppLogger.shared.info("Target host is offline. Sending Wake-on-LAN packets every 2.5s (up to 60s timeout)...", category: "CLI")
+                for _ in 0..<24 {
+                    try? await WakeOnLAN.wake(macAddress: mac)
+                    try? await Task.sleep(for: .milliseconds(2500))
+                    if let (updated, _) = try? await SunshineHTTPClient.shared.fetchServerInfo(host: host), updated.isOnline {
+                        host = updated
+                        self.addOrUpdateHost(updated)
+                        break
+                    }
+                }
+            }
+        }
+
+        // 3. Verify serverinfo if not already done
+        if let (updated, _) = try? await SunshineHTTPClient.shared.fetchServerInfo(host: host) {
+            host = updated
+            self.addOrUpdateHost(updated)
+        }
+
+        // 4. Fetch apps and find matching app
+        do {
+            let apps = try await SunshineHTTPClient.shared.fetchAppList(host: host)
+            let matchedApp = apps.first(where: {
+                $0.title.localizedCaseInsensitiveCompare(appQuery) == .orderedSame ||
+                String($0.id) == appQuery
+            }) ?? apps.first(where: {
+                $0.title.localizedCaseInsensitiveContains(appQuery)
+            })
+
+            if let app = matchedApp {
+                AppLogger.shared.info("Found app '\(app.title)' (ID: \(app.id)) on '\(host.name)'. Starting stream...", category: "CLI")
+                self.launchStream(host: host, app: app)
+            } else {
+                AppLogger.shared.error("App matching '\(appQuery)' not found on host '\(host.name)'. Available apps: \(apps.map(\.title).joined(separator: ", "))", category: "CLI")
+            }
+        } catch {
+            AppLogger.shared.error("Failed to fetch apps from '\(host.name)': \(error.localizedDescription)", category: "CLI")
+        }
     }
 }

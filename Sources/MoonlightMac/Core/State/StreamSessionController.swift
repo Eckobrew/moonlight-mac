@@ -134,12 +134,16 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
                 }
             }
 
+            let isRemote = await NetworkReachability.isRemoteSession(host: host)
+            self.streamConfigRemotely = isRemote ? Int32(STREAM_CFG_REMOTE) : Int32(STREAM_CFG_LOCAL)
+
             startLimelightConnection(
                 host: host,
                 sessionUrl: sessionUrl,
                 settings: effectiveSettings,
                 rikey: rikey,
-                rikeyId: rikeyId
+                rikeyId: rikeyId,
+                isRemote: isRemote
             )
 
             // Start input capture
@@ -188,6 +192,9 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             )
 
             startMetricsPolling()
+            if let host = activeHost, activeSettings?.enableClipboardSync == true {
+                ClipboardSyncManager.shared.start(host: host)
+            }
 
         } catch {
             self.sessionError = error.localizedDescription
@@ -195,23 +202,37 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         }
     }
 
+    private var streamConfigRemotely: Int32 = STREAM_CFG_LOCAL
+
     private func startLimelightConnection(
         host: Host,
         sessionUrl: String?,
         settings: StreamSettings,
         rikey: Data,
-        rikeyId: UInt32
+        rikeyId: UInt32,
+        isRemote: Bool
     ) {
-        streamTask = Task.detached(priority: .high) { [weak self] in
+        streamTask = Task.detached(priority: .high) {
             var streamConfig = STREAM_CONFIGURATION()
             LiInitializeStreamConfiguration(&streamConfig)
+
+            let remotelyFlag = isRemote ? Int32(STREAM_CFG_REMOTE) : Int32(STREAM_CFG_LOCAL)
+            streamConfig.streamingRemotely = remotelyFlag
+
+            let chosenBitrateMbps: Int
+            if isRemote && settings.enableRemoteBitrate {
+                chosenBitrateMbps = settings.remoteBitrateMbps
+                AppLogger.shared.info("Using custom remote bitrate: \(chosenBitrateMbps) Mbps (connection evaluated as remote)", category: "SESSION")
+            } else {
+                chosenBitrateMbps = settings.bitrateMbps
+                AppLogger.shared.info("Using standard bitrate: \(chosenBitrateMbps) Mbps (connection evaluated as local)", category: "SESSION")
+            }
 
             streamConfig.width = Int32(settings.width)
             streamConfig.height = Int32(settings.height)
             streamConfig.fps = Int32(settings.fps)
-            streamConfig.bitrate = Int32(settings.bitrateMbps * 1000)
+            streamConfig.bitrate = Int32(chosenBitrateMbps * 1000)
             streamConfig.packetSize = Int32(settings.packetSize)
-            streamConfig.streamingRemotely = STREAM_CFG_LOCAL
             streamConfig.supportedVideoFormats = settings.codec.limelightMask
             streamConfig.audioConfiguration = settings.audioMode.limelightValue
             streamConfig.colorSpace = Int32(COLORSPACE_REC_709)
@@ -229,7 +250,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             var serverInfo = SERVER_INFORMATION()
             LiInitializeServerInformation(&serverInfo)
 
-            let addressCString = strdup(host.address)!
+            let addressCString = strdup(host.effectiveAddress)!
             let appVersionCString = strdup(host.appVersion)!
             let gfeVersionCString = strdup(host.gfeVersion)!
             let sessionUrlCString = (sessionUrl != nil && !sessionUrl!.isEmpty) ? strdup(sessionUrl!) : nil
@@ -301,6 +322,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         guard isStreaming else { return }
         isStreaming = false
         stopMetricsPolling()
+        ClipboardSyncManager.shared.stop()
 
         // 1. Mark video decoder as stopped under submitLock so any in-flight frame completes and future frames are safely dropped
         videoDecoder.teardownSession()
@@ -357,7 +379,9 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
                 if let settings = self.activeSettings {
                     self.metrics.targetFps = settings.fps
-                    self.metrics.bitrateMbps = Double(settings.bitrateMbps)
+                    let isRemote = (self.streamConfigRemotely == STREAM_CFG_REMOTE)
+                    let activeBitrate = (isRemote && settings.enableRemoteBitrate) ? settings.remoteBitrateMbps : settings.bitrateMbps
+                    self.metrics.bitrateMbps = Double(activeBitrate)
                     self.metrics.resolution = "\(settings.width)x\(settings.height)"
                     self.metrics.vsyncEnabled = settings.enableVsync
                     self.metrics.pacingEnabled = settings.enableFramePacing

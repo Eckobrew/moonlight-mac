@@ -135,24 +135,37 @@ public struct HostGridView: View {
         }
     }
 
+    private var displayedHosts: [Host] {
+        if appState.settings.hideUnpairedHosts {
+            return appState.hosts.filter { $0.isPaired }
+        }
+        return appState.hosts
+    }
+
     private var hostGridContent: some View {
         ScrollView {
-            if appState.hosts.isEmpty {
+            if displayedHosts.isEmpty {
                 VStack(spacing: 16) {
                     Spacer(minLength: 80)
-                    Image(systemName: "desktopcomputer.trianglebadge.exclamationmark")
+                    Image(systemName: appState.hosts.isEmpty ? "desktopcomputer.trianglebadge.exclamationmark" : "eye.slash")
                         .font(.system(size: 54))
                         .foregroundStyle(.secondary)
-                    Text("No Sunshine or Apollo Hosts Found")
+                    Text(appState.hosts.isEmpty ? "No Sunshine or Apollo Hosts Found" : "All Discovered PCs Are Unpaired")
                         .font(.title2)
                         .fontWeight(.semibold)
-                    Text("Moonlight is searching your local network via Bonjour/mDNS.\nYou can also add a host manually by IP.")
+                    Text(appState.hosts.isEmpty
+                         ? "Moonlight is searching your local network via Bonjour/mDNS.\nYou can also add a host manually by IP."
+                         : "Unpaired PCs are currently hidden by your streaming preferences.\nYou can disable 'Hide unpaired PCs' in Settings.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
 
-                    Button("Add Host Manually") {
-                        appState.isShowingAddHost = true
+                    Button(appState.hosts.isEmpty ? "Add Host Manually" : "Change Setting") {
+                        if appState.hosts.isEmpty {
+                            appState.isShowingAddHost = true
+                        } else {
+                            appState.isShowingSettings = true
+                        }
                     }
                     .buttonStyle(.borderedProminent)
                     .padding(.top, 8)
@@ -161,7 +174,7 @@ public struct HostGridView: View {
                 .padding(40)
             } else {
                 LazyVGrid(columns: columns, spacing: 20) {
-                    ForEach(appState.hosts) { host in
+                    ForEach(displayedHosts) { host in
                         HostCardView(
                             host: host,
                             isSelected: appState.selectedHost?.id == host.id,

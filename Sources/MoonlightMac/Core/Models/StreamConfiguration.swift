@@ -86,6 +86,10 @@ public struct StreamSettings: Codable, Equatable, Sendable {
     public var optimizeGameSettings: Bool
     public var quitAppOnStop: Bool
     public var mouseSensitivity: Double
+    public var enableRemoteBitrate: Bool
+    public var remoteBitrateMbps: Int
+    public var enableClipboardSync: Bool
+    public var hideUnpairedHosts: Bool
 
     public init(
         width: Int = 1920,
@@ -105,7 +109,11 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         enableFramePacing: Bool = false,
         optimizeGameSettings: Bool = true,
         quitAppOnStop: Bool = false,
-        mouseSensitivity: Double = 1.0
+        mouseSensitivity: Double = 1.0,
+        enableRemoteBitrate: Bool = false,
+        remoteBitrateMbps: Int = 15,
+        enableClipboardSync: Bool = false,
+        hideUnpairedHosts: Bool = false
     ) {
         self.width = width
         self.height = height
@@ -125,6 +133,10 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.optimizeGameSettings = optimizeGameSettings
         self.quitAppOnStop = quitAppOnStop
         self.mouseSensitivity = mouseSensitivity
+        self.enableRemoteBitrate = enableRemoteBitrate
+        self.remoteBitrateMbps = remoteBitrateMbps
+        self.enableClipboardSync = enableClipboardSync
+        self.hideUnpairedHosts = hideUnpairedHosts
     }
 
     enum CodingKeys: String, CodingKey {
@@ -133,6 +145,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         case mouseCaptureMode, swapCommandControl, windowMode
         case videoRenderer, enableVsync, enableFramePacing
         case optimizeGameSettings, quitAppOnStop, mouseSensitivity
+        case enableRemoteBitrate, remoteBitrateMbps, enableClipboardSync, hideUnpairedHosts
     }
 
     public init(from decoder: Decoder) throws {
@@ -155,6 +168,10 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.optimizeGameSettings = (try? container.decode(Bool.self, forKey: .optimizeGameSettings)) ?? true
         self.quitAppOnStop = (try? container.decode(Bool.self, forKey: .quitAppOnStop)) ?? false
         self.mouseSensitivity = (try? container.decode(Double.self, forKey: .mouseSensitivity)) ?? 1.0
+        self.enableRemoteBitrate = (try? container.decode(Bool.self, forKey: .enableRemoteBitrate)) ?? false
+        self.remoteBitrateMbps = (try? container.decode(Int.self, forKey: .remoteBitrateMbps)) ?? 15
+        self.enableClipboardSync = (try? container.decode(Bool.self, forKey: .enableClipboardSync)) ?? false
+        self.hideUnpairedHosts = (try? container.decode(Bool.self, forKey: .hideUnpairedHosts)) ?? false
     }
 }
 

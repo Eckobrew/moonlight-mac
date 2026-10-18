@@ -52,17 +52,12 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         }
     }
 
-    public func fetchServerInfo(host: Host) async throws -> (Host, [String: String]) {
-        let uniqueId = CertificateManager.shared.uniqueId
-
-        AppLogger.shared.info("Fetching serverinfo for \(host.address)...", category: "HTTP")
-
-        // 1. Try HTTPS first matching Moonlight-Qt (properly reports pairing status)
+    private func queryServerInfo(address: String, httpsPort: Int, httpPort: Int, uniqueId: String) async -> (Data, Bool)? {
         var responseData: Data?
         var isHttps = false
 
-        if host.httpsPort > 0,
-           let httpsUrl = URL(string: "https://\(host.address):\(host.httpsPort)/serverinfo?uniqueid=\(uniqueId)") {
+        if httpsPort > 0,
+           let httpsUrl = URL(string: "https://\(address):\(httpsPort)/serverinfo?uniqueid=\(uniqueId)") {
             do {
                 let (data, response) = try await defaultSession.data(from: httpsUrl)
                 if let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 200 {
@@ -71,41 +66,69 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
                     if xmlCode == "200" || xmlCode == nil {
                         responseData = data
                         isHttps = true
-                        AppLogger.shared.info("serverinfo returned 200 over HTTPS (mTLS authenticated)", category: "HTTP")
+                        AppLogger.shared.info("serverinfo returned 200 over HTTPS for \(address) (mTLS authenticated)", category: "HTTP")
                     } else {
-                        AppLogger.shared.debug("HTTPS serverinfo returned XML status \(xmlCode ?? "nil") (\(xmlDict["status_message"] ?? "")); host is not paired. Falling back to HTTP.", category: "HTTP")
+                        AppLogger.shared.debug("HTTPS serverinfo for \(address) returned XML status \(xmlCode ?? "nil") (\(xmlDict["status_message"] ?? "")); host is not paired. Falling back to HTTP.", category: "HTTP")
                     }
                 }
             } catch {
-                AppLogger.shared.debug("HTTPS serverinfo failed: \(error.localizedDescription); falling back to HTTP", category: "HTTP")
+                AppLogger.shared.debug("HTTPS serverinfo failed for \(address): \(error.localizedDescription); falling back to HTTP", category: "HTTP")
             }
         }
 
-        // 2. Fall back to HTTP if HTTPS fails or host is not yet paired
         if responseData == nil,
-           let httpUrl = URL(string: "http://\(host.address):\(host.httpPort)/serverinfo?uniqueid=\(uniqueId)") {
+           let httpUrl = URL(string: "http://\(address):\(httpPort)/serverinfo?uniqueid=\(uniqueId)") {
             do {
                 let (data, response) = try await defaultSession.data(from: httpUrl)
                 if let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 200 {
                     responseData = data
-                    AppLogger.shared.info("serverinfo returned 200 over HTTP", category: "HTTP")
+                    AppLogger.shared.info("serverinfo returned 200 over HTTP for \(address)", category: "HTTP")
                 }
             } catch {
-                AppLogger.shared.error("HTTP serverinfo failed for \(host.address): \(error.localizedDescription)", category: "HTTP")
+                AppLogger.shared.error("HTTP serverinfo failed for \(address): \(error.localizedDescription)", category: "HTTP")
             }
         }
 
-        guard let data = responseData else {
+        if let data = responseData {
+            return (data, isHttps)
+        }
+        return nil
+    }
+
+    public func fetchServerInfo(host: Host) async throws -> (Host, [String: String]) {
+        let uniqueId = CertificateManager.shared.uniqueId
+
+        AppLogger.shared.info("Fetching serverinfo for \(host.address)...", category: "HTTP")
+
+        // 1. Try primary address first
+        var successInfo = await queryServerInfo(address: host.address, httpsPort: host.httpsPort, httpPort: host.httpPort, uniqueId: uniqueId)
+        var activeAddr = host.address
+
+        // 2. If primary address failed, attempt fallback to remoteAddress
+        if successInfo == nil,
+           let remote = host.remoteAddress,
+           !remote.isEmpty,
+           remote != host.address {
+            AppLogger.shared.info("Primary address \(host.address) unreachable for host \(host.name). Attempting fallback to remote address \(remote)...", category: "HTTP")
+            if let remoteSuccess = await queryServerInfo(address: remote, httpsPort: host.httpsPort, httpPort: host.httpPort, uniqueId: uniqueId) {
+                successInfo = remoteSuccess
+                activeAddr = remote
+                AppLogger.shared.info("Successfully connected to \(host.name) via remote IP backup: \(remote)", category: "HTTP")
+            }
+        }
+
+        guard let (data, isHttps) = successInfo else {
             throw URLError(.cannotConnectToHost)
         }
 
         let dict = parseSimpleXML(data: data)
         guard dict["appversion"] != nil || dict["uniqueid"] != nil || dict["mac"] != nil || dict["hostname"] != nil else {
-            AppLogger.shared.error("Invalid serverinfo response from \(host.address): missing GameStream/Sunshine metadata", category: "HTTP")
+            AppLogger.shared.error("Invalid serverinfo response from \(activeAddr): missing GameStream/Sunshine metadata", category: "HTTP")
             throw URLError(.badServerResponse)
         }
 
         var updatedHost = host
+        updatedHost.activeAddress = activeAddr
         if let hostname = dict["hostname"], !hostname.isEmpty { updatedHost.name = hostname }
         if let appVersion = dict["appversion"] { updatedHost.appVersion = appVersion }
         if let gfeVersion = dict["GfeVersion"] { updatedHost.gfeVersion = gfeVersion }
@@ -115,6 +138,9 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         }
         if let extPortStr = dict["ExternalPort"], let port = Int(extPortStr), port > 0 {
             updatedHost.httpPort = port
+        }
+        if let extIp = dict["ExternalIP"], !extIp.isEmpty {
+            updatedHost.remoteAddress = extIp
         }
         if let codec = dict["ServerCodecModeSupport"], let codecVal = Int32(codec) {
             updatedHost.serverCodecModeSupport = codecVal
@@ -135,13 +161,13 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
             }
         }
 
-        AppLogger.shared.info("Parsed host [\(updatedHost.name)] - Paired: \(updatedHost.isPaired), Status: \(updatedHost.status)", category: "HTTP")
+        AppLogger.shared.info("Parsed host [\(updatedHost.name)] (Active: \(activeAddr), Remote: \(updatedHost.remoteAddress ?? "none")) - Paired: \(updatedHost.isPaired), Status: \(updatedHost.status)", category: "HTTP")
         return (updatedHost, dict)
     }
 
     public func fetchAppList(host: Host) async throws -> [StreamApp] {
         let uniqueId = CertificateManager.shared.uniqueId
-        guard let url = URL(string: "https://\(host.address):\(host.httpsPort)/applist?uniqueid=\(uniqueId)") else {
+        guard let url = URL(string: "https://\(host.effectiveAddress):\(host.httpsPort)/applist?uniqueid=\(uniqueId)") else {
             throw URLError(.badURL)
         }
 
@@ -165,7 +191,7 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
 
     public func fetchBoxArt(host: Host, appId: Int) async throws -> Data {
         let uniqueId = CertificateManager.shared.uniqueId
-        guard let url = URL(string: "https://\(host.address):\(host.httpsPort)/appasset?uniqueid=\(uniqueId)&appid=\(appId)&AssetType=2&AssetIdx=0") else {
+        guard let url = URL(string: "https://\(host.effectiveAddress):\(host.httpsPort)/appasset?uniqueid=\(uniqueId)&appid=\(appId)&AssetType=2&AssetIdx=0") else {
             throw URLError(.badURL)
         }
 
@@ -189,7 +215,7 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         let sops = settings.optimizeGameSettings ? "1" : "0"
         let extraParams = LiGetLaunchUrlQueryParameters().map { String(cString: $0) } ?? ""
 
-        var urlString = "https://\(host.address):\(host.httpsPort)/launch?uniqueid=\(uniqueId)&appid=\(appId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=0&surroundAudioInfo=\(surroundAudioInfo)"
+        var urlString = "https://\(host.effectiveAddress):\(host.httpsPort)/launch?uniqueid=\(uniqueId)&appid=\(appId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=0&surroundAudioInfo=\(surroundAudioInfo)"
         if !extraParams.isEmpty {
             urlString.append(extraParams)
         }
@@ -241,7 +267,7 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         let sops = settings.optimizeGameSettings ? "1" : "0"
         let extraParams = LiGetLaunchUrlQueryParameters().map { String(cString: $0) } ?? ""
 
-        var urlString = "https://\(host.address):\(host.httpsPort)/resume?uniqueid=\(uniqueId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=0&surroundAudioInfo=\(surroundAudioInfo)"
+        var urlString = "https://\(host.effectiveAddress):\(host.httpsPort)/resume?uniqueid=\(uniqueId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=0&surroundAudioInfo=\(surroundAudioInfo)"
         if !extraParams.isEmpty {
             urlString.append(extraParams)
         }
@@ -281,7 +307,7 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
 
     public func quitApp(host: Host) async throws {
         let uniqueId = CertificateManager.shared.uniqueId
-        guard let url = URL(string: "https://\(host.address):\(host.httpsPort)/cancel?uniqueid=\(uniqueId)") else {
+        guard let url = URL(string: "https://\(host.effectiveAddress):\(host.httpsPort)/cancel?uniqueid=\(uniqueId)") else {
             throw URLError(.badURL)
         }
 
@@ -292,17 +318,51 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
     public func unpair(host: Host) async {
         let uniqueId = CertificateManager.shared.uniqueId
 
-        AppLogger.shared.info("Sending unpair request to \(host.address)...", category: "HTTP")
+        AppLogger.shared.info("Sending unpair request to \(host.effectiveAddress)...", category: "HTTP")
 
         // Send unpair to HTTP port (47989)
-        if let httpUrl = URL(string: "http://\(host.address):\(host.httpPort)/unpair?uniqueid=\(uniqueId)") {
+        if let httpUrl = URL(string: "http://\(host.effectiveAddress):\(host.httpPort)/unpair?uniqueid=\(uniqueId)") {
             _ = try? await defaultSession.data(from: httpUrl)
         }
 
         // Also send unpair to HTTPS port (47984)
         if host.httpsPort > 0,
-           let httpsUrl = URL(string: "https://\(host.address):\(host.httpsPort)/unpair?uniqueid=\(uniqueId)") {
+           let httpsUrl = URL(string: "https://\(host.effectiveAddress):\(host.httpsPort)/unpair?uniqueid=\(uniqueId)") {
             _ = try? await defaultSession.data(from: httpsUrl)
+        }
+    }
+
+    public func getClipboardContent(host: Host) async throws -> String {
+        let uniqueId = CertificateManager.shared.uniqueId
+        guard let url = URL(string: "https://\(host.effectiveAddress):\(host.httpsPort)/actions/clipboard?type=text&uniqueid=\(uniqueId)") else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 2.0
+        let (data, response) = try await defaultSession.data(for: request)
+        guard let httpResp = response as? HTTPURLResponse, (200...299).contains(httpResp.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw NSError(domain: "SunshineHTTPClient", code: code, userInfo: [NSLocalizedDescriptionKey: "Server returned HTTP \(code)"])
+        }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    public func sendClipboardContent(host: Host, text: String) async throws {
+        let uniqueId = CertificateManager.shared.uniqueId
+        let uuid = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        guard let url = URL(string: "https://\(host.effectiveAddress):\(host.httpsPort)/actions/clipboard?uniqueid=\(uniqueId)&uuid=\(uuid)&type=text") else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("text/plain; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.httpBody = text.data(using: .utf8)
+        request.timeoutInterval = 2.0
+
+        let (_, response) = try await defaultSession.data(for: request)
+        guard let httpResp = response as? HTTPURLResponse, (200...299).contains(httpResp.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw NSError(domain: "SunshineHTTPClient", code: code, userInfo: [NSLocalizedDescriptionKey: "Server returned HTTP \(code)"])
         }
     }
 
