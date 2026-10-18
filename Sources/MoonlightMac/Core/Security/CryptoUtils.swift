@@ -46,22 +46,22 @@ public enum CryptoUtils {
     }
 
     public static func aes128EcbEncrypt(data: Data, key: Data) -> Data? {
-        return aesCrypt(operation: CCOperation(kCCEncrypt), mode: CCMode(kCCModeECB), data: data, key: key, iv: nil)
+        return aesCrypt(operation: CCOperation(kCCEncrypt), options: CCOptions(kCCOptionECBMode), data: data, key: key, iv: nil)
     }
 
     public static func aes128EcbDecrypt(data: Data, key: Data) -> Data? {
-        return aesCrypt(operation: CCOperation(kCCDecrypt), mode: CCMode(kCCModeECB), data: data, key: key, iv: nil)
+        return aesCrypt(operation: CCOperation(kCCDecrypt), options: CCOptions(kCCOptionECBMode), data: data, key: key, iv: nil)
     }
 
     public static func aes128CbcEncrypt(data: Data, key: Data, iv: Data) -> Data? {
-        return aesCrypt(operation: CCOperation(kCCEncrypt), mode: CCMode(kCCModeCBC), data: data, key: key, iv: iv)
+        return aesCrypt(operation: CCOperation(kCCEncrypt), options: 0, data: data, key: key, iv: iv)
     }
 
     public static func aes128CbcDecrypt(data: Data, key: Data, iv: Data) -> Data? {
-        return aesCrypt(operation: CCOperation(kCCDecrypt), mode: CCMode(kCCModeCBC), data: data, key: key, iv: iv)
+        return aesCrypt(operation: CCOperation(kCCDecrypt), options: 0, data: data, key: key, iv: iv)
     }
 
-    private static func aesCrypt(operation: CCOperation, mode: CCMode, data: Data, key: Data, iv: Data?) -> Data? {
+    private static func aesCrypt(operation: CCOperation, options: CCOptions, data: Data, key: Data, iv: Data?) -> Data? {
         var outLength: size_t = 0
         let bufferLength = data.count + kCCBlockSizeAES128
         var buffer = Data(count: bufferLength)
@@ -73,7 +73,7 @@ public enum CryptoUtils {
                     return CCCrypt(
                         operation,
                         CCAlgorithm(kCCAlgorithmAES),
-                        0, // no padding for fixed blocks
+                        options,
                         keyBytes.baseAddress,
                         kCCKeySizeAES128,
                         ivPtr,

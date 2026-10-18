@@ -7,6 +7,7 @@ public struct HostCardView: View {
     public let onPair: () -> Void
     public let onWakeOnLan: () -> Void
     public let onDelete: () -> Void
+    public let onUnpair: (() -> Void)?
 
     public init(
         host: Host,
@@ -14,7 +15,8 @@ public struct HostCardView: View {
         onSelect: @escaping () -> Void,
         onPair: @escaping () -> Void,
         onWakeOnLan: @escaping () -> Void,
-        onDelete: @escaping () -> Void
+        onDelete: @escaping () -> Void,
+        onUnpair: (() -> Void)? = nil
     ) {
         self.host = host
         self.isSelected = isSelected
@@ -22,6 +24,7 @@ public struct HostCardView: View {
         self.onPair = onPair
         self.onWakeOnLan = onWakeOnLan
         self.onDelete = onDelete
+        self.onUnpair = onUnpair
     }
 
     public var body: some View {
@@ -85,6 +88,11 @@ public struct HostCardView: View {
                     if host.macAddress != nil {
                         Button(action: onWakeOnLan) {
                             Label("Wake on LAN", systemImage: "bolt.fill")
+                        }
+                    }
+                    if let onUnpair = onUnpair {
+                        Button(action: onUnpair) {
+                            Label("Unpair Host", systemImage: "link.badge.plus")
                         }
                     }
                     Button(role: .destructive, action: onDelete) {

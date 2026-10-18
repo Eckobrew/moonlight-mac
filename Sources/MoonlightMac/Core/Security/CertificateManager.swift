@@ -130,6 +130,18 @@ public final class CertificateManager: @unchecked Sendable {
         return Data(repeating: 0, count: 256)
     }
 
+    /// Extracts the RSA-2048 signature bytes (last 256 bytes of DER) from a PEM certificate string
+    public func getCertificateSignature(fromPem pemString: String) -> Data? {
+        let clean = pemString
+            .replacingOccurrences(of: "-----BEGIN CERTIFICATE-----", with: "")
+            .replacingOccurrences(of: "-----END CERTIFICATE-----", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let der = Data(base64Encoded: clean), der.count >= 256 else { return nil }
+        return der.suffix(256)
+    }
+
     /// Returns SecIdentity for mutual TLS authentication
     public func getClientIdentity() -> SecIdentity? {
         if let cached = cachedIdentity { return cached }

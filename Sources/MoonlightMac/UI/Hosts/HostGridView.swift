@@ -55,6 +55,15 @@ public struct HostGridView: View {
 
             ToolbarItem(placement: .automatic) {
                 Button {
+                    appState.isShowingLogs = true
+                } label: {
+                    Label("Logs", systemImage: "terminal")
+                }
+                .help("View live logs and diagnostics")
+            }
+
+            ToolbarItem(placement: .automatic) {
+                Button {
                     appState.isShowingSettings = true
                 } label: {
                     Label("Settings", systemImage: "gear")
@@ -70,6 +79,9 @@ public struct HostGridView: View {
             SettingsView(settings: $appState.settings) {
                 appState.saveSettings()
             }
+        }
+        .sheet(isPresented: $appState.isShowingLogs) {
+            LogViewerSheet()
         }
         .sheet(isPresented: $appState.isShowingPairing) {
             if let host = appState.selectedHost {
@@ -153,6 +165,11 @@ public struct HostGridView: View {
                             },
                             onDelete: {
                                 appState.removeHost(host)
+                            },
+                            onUnpair: {
+                                Task {
+                                    await appState.unpairHost(host)
+                                }
                             }
                         )
                     }

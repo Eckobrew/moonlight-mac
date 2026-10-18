@@ -16,14 +16,17 @@ public final class BonjourDiscoveryService: ObservableObject, @unchecked Sendabl
     public func startDiscovery() {
         guard !isSearching else { return }
         isSearching = true
+        AppLogger.shared.info("Starting Bonjour mDNS host discovery (_nvstream._tcp)...", category: "DISCOVERY")
 
         let r = NetServiceResolver()
         r.onHostResolved = { [weak self] name, ip, port in
+            AppLogger.shared.info("mDNS resolved host: \(name) at \(ip):\(port)", category: "DISCOVERY")
             Task { @MainActor [weak self] in
                 self?.addOrUpdateDiscoveredHost(name: name, address: ip, httpPort: port)
             }
         }
         r.onSearchStopped = { [weak self] in
+            AppLogger.shared.debug("mDNS search stopped", category: "DISCOVERY")
             Task { @MainActor [weak self] in
                 self?.isSearching = false
             }
@@ -36,6 +39,7 @@ public final class BonjourDiscoveryService: ObservableObject, @unchecked Sendabl
     }
 
     public func stopDiscovery() {
+        AppLogger.shared.info("Stopping host discovery", category: "DISCOVERY")
         resolver?.stop()
         resolver = nil
         probeTask?.cancel()
@@ -59,6 +63,7 @@ public final class BonjourDiscoveryService: ObservableObject, @unchecked Sendabl
                 status: .online
             )
             discoveredHosts.append(newHost)
+            AppLogger.shared.info("Discovered new host candidate: \(name) at \(address)", category: "DISCOVERY")
 
             // Probe serverinfo in background to retrieve accurate hostname and https port
             Task {
@@ -66,6 +71,7 @@ public final class BonjourDiscoveryService: ObservableObject, @unchecked Sendabl
                     await MainActor.run {
                         if let i = self.discoveredHosts.firstIndex(where: { $0.address == address }) {
                             self.discoveredHosts[i] = verified
+                            AppLogger.shared.info("Host \(verified.name) (\(address)) updated - Paired: \(verified.isPaired)", category: "DISCOVERY")
                         }
                     }
                 }

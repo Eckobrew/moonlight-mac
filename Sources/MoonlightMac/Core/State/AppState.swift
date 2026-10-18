@@ -11,6 +11,7 @@ public final class AppState: @unchecked Sendable {
 
     public var isShowingAddHost: Bool = false
     public var isShowingSettings: Bool = false
+    public var isShowingLogs: Bool = false
     public var isShowingPairing: Bool = false
     public var pairingPin: String?
     public var pairingError: String?
@@ -69,6 +70,20 @@ public final class AppState: @unchecked Sendable {
             appsForSelectedHost.removeAll()
         }
         saveHosts()
+    }
+
+    public func unpairHost(_ host: Host) async {
+        AppLogger.shared.info("Unpairing host \(host.name) (\(host.address))...", category: "PAIRING")
+        await SunshineHTTPClient.shared.unpair(host: host)
+        var updated = host
+        updated.isPaired = false
+        updated.status = .pairingRequired
+        addOrUpdateHost(updated)
+        if selectedHost?.id == host.id {
+            selectedHost = updated
+            appsForSelectedHost.removeAll()
+        }
+        AppLogger.shared.info("Host \(host.name) unpaired", category: "PAIRING")
     }
 
     public func refreshHosts() async {
