@@ -8,6 +8,7 @@ public final class CertificateManager: @unchecked Sendable {
     public private(set) var uniqueId: String
 
     private var cachedIdentity: SecIdentity?
+    private var cachedPrivateKey: SecKey?
     private var cachedPemCert: Data?
     private var cachedDerCert: Data?
 
@@ -33,9 +34,9 @@ public final class CertificateManager: @unchecked Sendable {
         return dir
     }
 
-    private var certPath: URL { appSupportDir.appendingPathComponent("client.crt") }
-    private var keyPath: URL { appSupportDir.appendingPathComponent("client.key") }
-    private var p12Path: URL { appSupportDir.appendingPathComponent("client.p12") }
+    public var certPath: URL { appSupportDir.appendingPathComponent("client.crt") }
+    public var keyPath: URL { appSupportDir.appendingPathComponent("client.key") }
+    public var p12Path: URL { appSupportDir.appendingPathComponent("client.p12") }
 
     private func ensureCredentialsExist() {
         let fm = FileManager.default
@@ -80,6 +81,13 @@ public final class CertificateManager: @unchecked Sendable {
     private func loadCredentials() {
         if let certData = try? Data(contentsOf: certPath) {
             self.cachedPemCert = certData
+
+            // Convert PEM to DER
+            if let pemString = String(data: certData, encoding: .utf8) {
+                let lines = pemString.components(separatedBy: "\n").filter { !$0.contains("---") && !$0.isEmpty }
+                let base64 = lines.joined()
+                self.cachedDerCert = Data(base64Encoded: base64)
+            }
         }
 
         if let p12Data = try? Data(contentsOf: p12Path) {
@@ -90,7 +98,11 @@ public final class CertificateManager: @unchecked Sendable {
                let array = items as? [[String: Any]],
                let first = array.first,
                let identity = first[kSecImportItemIdentity as String] {
-                self.cachedIdentity = (identity as! SecIdentity)
+                let id = (identity as! SecIdentity)
+                self.cachedIdentity = id
+                var privKey: SecKey?
+                SecIdentityCopyPrivateKey(id, &privKey)
+                self.cachedPrivateKey = privKey
             }
         }
     }
@@ -102,9 +114,20 @@ public final class CertificateManager: @unchecked Sendable {
         return cachedPemCert ?? Data()
     }
 
-    /// Returns the client certificate in DER format or fallback to PEM
+    /// Returns the client certificate in DER format
     public func getClientCertificateDer() -> Data {
-        return getClientCertificatePem()
+        if let cached = cachedDerCert { return cached }
+        ensureCredentialsExist()
+        return cachedDerCert ?? getClientCertificatePem()
+    }
+
+    /// Returns the certificate signature bytes (last 256 bytes of DER)
+    public func getCertificateSignature() -> Data {
+        let der = getClientCertificateDer()
+        if der.count >= 256 {
+            return der.suffix(256)
+        }
+        return Data(repeating: 0, count: 256)
     }
 
     /// Returns SecIdentity for mutual TLS authentication
@@ -112,5 +135,41 @@ public final class CertificateManager: @unchecked Sendable {
         if let cached = cachedIdentity { return cached }
         ensureCredentialsExist()
         return cachedIdentity
+    }
+
+    /// Signs data with RSA-SHA256 using the client private key
+    public func signData(data: Data) -> Data? {
+        if let privateKey = cachedPrivateKey {
+            var error: Unmanaged<CFError>?
+            if let signature = SecKeyCreateSignature(privateKey, .rsaSignatureMessagePKCS1v15SHA256, data as CFData, &error) {
+                return signature as Data
+            }
+        }
+
+        // Fallback using openssl process
+        let opensslPath = FileManager.default.fileExists(atPath: "/opt/local/bin/openssl") ? "/opt/local/bin/openssl" : "/usr/bin/openssl"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: opensslPath)
+        process.arguments = ["dgst", "-sha256", "-sign", keyPath.path]
+
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        process.standardInput = inputPipe
+        process.standardOutput = outputPipe
+
+        do {
+            try process.run()
+            inputPipe.fileHandleForWriting.write(data)
+            try? inputPipe.fileHandleForWriting.close()
+            let sigData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            if process.terminationStatus == 0 && !sigData.isEmpty {
+                return sigData
+            }
+        } catch {
+            print("OpenSSL signing error: \(error)")
+        }
+
+        return nil
     }
 }

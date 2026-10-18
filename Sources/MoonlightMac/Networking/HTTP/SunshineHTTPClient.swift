@@ -162,16 +162,26 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         _ = try await session.data(from: url)
     }
 
-    public func fetchRaw(urlString: String) async throws -> (Data, [String: String]) {
+    public func unpair(host: Host) async {
+        let uniqueId = CertificateManager.shared.uniqueId
+        if let url = URL(string: "http://\(host.address):\(host.httpPort)/unpair?uniqueid=\(uniqueId)") {
+            _ = try? await session.data(from: url)
+        }
+    }
+
+    public func fetchRaw(urlString: String, timeout: TimeInterval = 10.0) async throws -> (Data, [String: String]) {
         guard let url = URL(string: urlString) else { throw URLError(.badURL) }
-        let (data, _) = try await session.data(from: url)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
+        let (data, _) = try await session.data(for: request)
         return (data, parseSimpleXML(data: data))
     }
 
-    private func parseSimpleXML(data: Data) -> [String: String] {
+    public func parseSimpleXML(data: Data) -> [String: String] {
         guard let xmlString = String(data: data, encoding: .utf8) else { return [:] }
         var result: [String: String] = [:]
 
+        // 1. Match inner tags: <tag>val</tag>
         let pattern = "<([a-zA-Z0-9_-]+)>([^<]*)</\\1>"
         if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
             let nsString = xmlString as NSString
@@ -182,6 +192,21 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
                 result[key] = val
             }
         }
+
+        // 2. Match XML attributes: attr="val" or attr='val' (e.g. status_code="200", paired="1")
+        let attrPattern = "([a-zA-Z0-9_-]+)=[\"']([^\"']*)[\"']"
+        if let regex = try? NSRegularExpression(pattern: attrPattern, options: []) {
+            let nsString = xmlString as NSString
+            let matches = regex.matches(in: xmlString, options: [], range: NSRange(location: 0, length: nsString.length))
+            for match in matches {
+                let key = nsString.substring(with: match.range(at: 1))
+                let val = nsString.substring(with: match.range(at: 2))
+                if result[key] == nil {
+                    result[key] = val
+                }
+            }
+        }
+
         return result
     }
 
