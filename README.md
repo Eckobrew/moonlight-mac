@@ -1,24 +1,52 @@
 # Moonlight for macOS
 
-A high-performance, native macOS client for the [Moonlight](https://moonlight-stream.org) game streaming protocol, engineered from the ground up for low-latency streaming from **Sunshine** and **Apollo** host servers.
+A high-performance, native macOS client for the [Moonlight](https://moonlight-stream.org) game streaming protocol, engineered from the ground up for low-latency streaming from **Sunshine**, **Apollo**, and **Vibepollo** host servers.
 
-Built with **SwiftUI**, **VideoToolbox**, **Metal**, and **CoreAudio**, powered by the battle-tested `moonlight-common-c` core with native Apple CommonCrypto.
+Built natively in Swift with **SwiftUI**, **Metal**, **VideoToolbox**, and **CoreAudio**, powered by the battle-tested `moonlight-common-c` core with native Apple CommonCrypto.
 
 ---
 
-## Features
+## Key Features
 
-- **Hardware-Accelerated Decoding**: Real-time H.264, HEVC (H.265), and AV1 decoding via `VTDecompressionSession` with low-latency decompression attributes.
-- **Zero-Copy Metal Rendering**: Direct binding of decoded `CVPixelBuffer` Y/UV planes to Metal textures using `CVMetalTextureCache` with color space conversion shaders (BT.709 SDR and BT.2020 HDR).
-- **A/V Sync & Frame Pacing**: Microsecond-accurate timestamp correlation via `AVPacingClock`, eliminating A/V drift and micro-stutters.
-- **Low-Latency Input Capture**:
-  - **Mouse**: Raw relative delta tracking (`CGAssociateMouseAndMouseCursorPosition(0)`) bypassing macOS acceleration curves with cursor clipping and window centering.
-  - **Keyboard**: Full macOS keycode mapping to Win32 Virtual Key codes (`VK_*`).
-  - **Gamepad**: Apple `GameController` framework integration with 120Hz polling loop and host rumble haptics.
-  - **Escape Shortcut**: `Cmd + Ctrl + Q` immediately releases captured cursor and keyboard.
-- **Automatic Host Discovery & Pairing**: mDNS / Bonjour network scanning (`_nvstream._tcp`) using `Network.framework`, Wake-on-LAN support, and Sunshine 4-digit PIN challenge-response handshake.
-- **Telemetry HUD**: Lightweight toggleable performance overlay (`Cmd + Shift + H`) reporting real-time FPS, frame decode time (ms), network RTT latency (ms), bitrate, and packet loss %.
-- **Native Apple Crypto**: Custom `PlatformCrypto_Apple.c` leveraging `<CommonCrypto/CommonCryptor.h>`, eliminating any external OpenSSL or MbedTLS dependencies.
+### 🎬 Video & Display Pipeline
+- **Retina High-DPI Precision**: Full 1:1 physical backing scale rendering (`layer.contentsScale = window.backingScaleFactor`), eliminating Retina downsampling blur and delivering crisp text and visuals.
+- **Display Native Resolution Detection**: Resolves your Mac's physical display geometry and accounts for the MacBook camera notch safe area margins (`NSScreen.safeAreaInsets`), ensuring video streams match your display without letterboxing or distortion.
+- **Zero-Copy Metal Rendering**: Decoded `CVPixelBuffer` Y and UV planes are bound directly to Metal textures via `CVMetalTextureCache` with hardware color space conversions for BT.709 SDR and BT.2020 HDR (10-bit color).
+- **Hardware-Accelerated Decoding**: Real-time H.264, HEVC (H.265), and AV1 decoding via Apple's `VTDecompressionSession` with low-latency decompression attributes.
+- **Microsecond Frame Pacing & V-Sync**: Integrated `AVPacingClock` eliminates micro-stutters and A/V drift. V-Sync can be toggled off when using the Metal renderer for minimum input display latency.
+- **High Refresh Rate Support**: Stream up to 240 FPS, fully optimized for Apple ProMotion 120Hz displays.
+
+### ⚡ Ultra-Low Latency Input Capture
+- **Hardware-Level Mouse Polling (`GCMouse`)**: Hooks directly into Apple's GameController `GCMouse` driver to capture unaccelerated hardware counts at native mouse polling rates (1000Hz+), matching `moonlight-qt`.
+- **Sub-Pixel Delta Accumulator**: Preserves fractional mouse deltas across poll intervals, completely eliminating truncation deadzones and floaty mouse feel.
+- **Warpless Relative Mouse Capture**: Relative cursor tracking via `CGAssociateMouseAndMouseCursorPosition(0)` with automated cursor centering and configurable sensitivity multipliers.
+- **Gamepad Integration & Haptics**: Full multi-controller support via Apple `GameController` framework with analog stick deadzones and host rumble haptics.
+- **Keyboard Navigation**: Complete macOS keycode translation to Win32 Virtual Key codes (`VK_*`) with an optional toggle to swap Command and Control keys for seamless Windows gaming shortcuts.
+
+### 🌐 Intelligent Networking & Remote Connectivity
+- **Verified Bonjour / mDNS Discovery**: Background local network scanning (`_nvstream._tcp.local.`) with metadata validation, keeping unverified network devices off your dashboard.
+- **NAT Hairpinning Detection & Remote IP Backup**: Automatically detects when a public IP address loops back to your local gateway to route traffic as local LAN, while preserving Tailscale and WAN connections as remote.
+- **Dual-Bitrate Engine**: Configure separate target bitrates for local network play (up to 150 Mbps) and remote sessions over WAN or Tailscale (up to 100 Mbps).
+- **Wake-on-LAN (WoL)**: Wake sleeping hosts directly from the UI with automatic re-transmission broadcasts and quick double-click waking.
+- **Hide Unpaired PCs Setting**: Filter out unverified local network neighbors while keeping paired offline PCs accessible for Wake-on-LAN.
+- **Cryptographically Persistent Pairing**: Client certificates and pairing states are preserved across reboots and network transitions. Transient network drops or unauthenticated HTTP fallbacks during host sleep never unpair your machines.
+
+### 🛠️ Productivity & Ecosystem Features
+- **Opt-In Bidirectional Clipboard Sync**: Automatically synchronizes text between your Mac clipboard and Apollo, Vibepollo, or Sunshine hosts over authenticated HTTPS (`/actions/clipboard`), with loop prevention and privacy toggles.
+- **Desktop Game Shortcuts**: Right-click any streamable application to generate a standalone `.app` bundle on your macOS Desktop with custom icon selection, embedded game artwork, automated Wake-on-LAN, and direct launch into the game.
+- **Host Behavior Controls**: Toggle "Optimize game settings for streaming" (`sops=1/0`) and "Quit game on host when ending stream" to match your preferred workflow.
+- **In-App Performance HUD & Diagnostics**: Toggleable telemetry overlay (`Cmd + Shift + H` / `Ctrl + Option + Shift + S`) reporting real-time FPS, decode latency (ms), network RTT (ms), bitrate, and packet loss %, plus an integrated live log viewer.
+
+---
+
+## In-Stream Shortcuts
+
+| Shortcut | Description |
+| :--- | :--- |
+| `⌃ ⌥ ⇧ Q` or `⌘ ⌃ Q` | Terminate active stream and return to host grid |
+| `⌃ ⌥ ⇧ Z` | Release mouse cursor capture |
+| `⌃ ⌥ ⇧ X` | Toggle between Fullscreen and Windowed mode |
+| `⌃ ⌥ ⇧ S` or `⌘ ⇧ H` | Toggle Performance & Telemetry HUD overlay |
 
 ---
 
@@ -26,7 +54,7 @@ Built with **SwiftUI**, **VideoToolbox**, **Metal**, and **CoreAudio**, powered 
 
 - **macOS**: 14.0 (Sonoma) or newer (Apple Silicon & Intel)
 - **Xcode**: 15.0+ or Swift 6.0+ Command Line Tools
-- **Host**: Sunshine (recommended) or NVIDIA GeForce Experience / Apollo
+- **Host**: [Sunshine](https://github.com/LizardByte/Sunshine), [Apollo](https://github.com/ClassicOldSong/Apollo), or NVIDIA GeForce Experience
 
 ---
 
@@ -34,7 +62,7 @@ Built with **SwiftUI**, **VideoToolbox**, **Metal**, and **CoreAudio**, powered 
 
 ### 1. Build and Package `.app` Bundle
 
-Run the packaging script to build the release binary, generate the high-resolution app icon, bundle resources, and ad-hoc sign the application:
+Run the packaging script to build the release binary, assemble resources, and apply code signing:
 
 ```bash
 ./Scripts/package_app.sh
@@ -42,18 +70,14 @@ Run the packaging script to build the release binary, generate the high-resoluti
 
 The resulting application will be located at:
 ```
-Products/Moonlight.app
+Products/MoonlightMac.app
 ```
 
-### 2. Launch the Application
+### 2. Install to Applications
 
 ```bash
-open Products/Moonlight.app
-```
-
-Or copy to your Applications folder:
-```bash
-cp -R Products/Moonlight.app /Applications/
+cp -R Products/MoonlightMac.app /Applications/
+open /Applications/MoonlightMac.app
 ```
 
 ### 3. Run Unit Tests
@@ -68,30 +92,34 @@ TMPDIR=/tmp swift test --disable-sandbox
 
 ```
 moonlight-mac/
-├── Package.swift                    # Swift Package definition (C interop + Swift target)
+├── Package.swift                     # Swift Package definition (C bridge + Swift modules)
 ├── Resources/
-│   ├── AppIcon.icns                 # Multi-resolution macOS icon (16x16 up to 1024x1024)
-│   ├── Info.plist                   # App bundle configuration & Bonjour service declarations
-│   └── MoonlightMac.entitlements    # macOS security & network entitlements
+│   ├── AppIcon.icns                  # Multi-resolution macOS icon (up to 1024x1024)
+│   ├── Info.plist                    # App bundle configuration & Bonjour service declarations
+│   └── MoonlightMac.entitlements     # macOS security, network, and sandbox entitlements
 ├── Scripts/
-│   ├── package_app.sh               # Automated release build & .app bundling script
-│   └── generate_icon.swift          # Procedural CoreGraphics icon generator
+│   ├── package_app.sh                # Automated release build & .app bundling script
+│   └── generate_icon.swift           # Procedural CoreGraphics icon generator
 ├── Sources/
-│   ├── MoonlightCommonC/            # C core protocol (moonlight-common-c, nanors FEC, enet)
-│   │   ├── include/Limelight.h      # Public C bridging interface
-│   │   └── src/PlatformCrypto_Apple.c # Native CommonCrypto AES-GCM/CBC backend
+│   ├── MoonlightCommonC/             # C core protocol (moonlight-common-c, nanors FEC, enet)
+│   │   ├── include/Limelight.h       # Public C bridging interface
+│   │   └── src/PlatformCrypto_Apple.c# Native CommonCrypto AES-GCM/CBC backend
 │   └── MoonlightMac/
-│       ├── Core/                    # State models, configs, crypto & X.509 cert generator
-│       ├── Networking/              # mDNS Bonjour discovery, HTTP pairing, Wake-on-LAN
-│       ├── Pipeline/                # VideoToolbox decoder, Metal renderer, A/V sync clock
-│       ├── Input/                   # GameController, raw delta mouse & keyboard monitors
-│       └── UI/                      # SwiftUI host grid, pairing dialog, settings & stream view
+│       ├── Core/                     # AppState, StreamConfiguration, CertificateManager
+│       │   ├── Models/               # Host, Application, StreamConfiguration, PerformanceMetrics
+│       │   ├── State/                # AppState, StreamSessionController
+│       │   ├── Security/             # CertificateManager, CryptoUtils
+│       │   └── Utils/                # DisplayManager, ClipboardSyncManager, GameShortcutManager
+│       ├── Input/                    # GCMouse hardware polling, delta accumulator, keyboard mappings
+│       ├── Networking/               # Bonjour discovery, Sunshine HTTP/HTTPS client, WakeOnLAN
+│       ├── Pipeline/                 # VideoToolbox decoder, Metal renderer, AVPacingClock, CoreAudio
+│       └── UI/                       # SwiftUI host grid, pairing sheets, stream views, performance HUD
 └── Tests/
-    └── MoonlightMacTests/           # Unit tests for crypto, pairing, and configurations
+    └── MoonlightMacTests/            # Unit tests for crypto, pairing, and configurations
 ```
 
 ---
 
 ## License
 
-This project incorporates `moonlight-common-c` licensed under the GNU General Public License v3.0.
+This project incorporates `moonlight-common-c` licensed under the **GNU General Public License v3.0**.
