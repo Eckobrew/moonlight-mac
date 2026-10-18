@@ -69,18 +69,18 @@ public struct HostCardView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack {
-                if !host.isPaired {
-                    Button(action: onPair) {
-                        Label("Pair", systemImage: "link")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.blue)
-                } else if host.status == .offline {
+                if host.status == .offline {
                     Button(action: onWakeOnLan) {
                         Label("Wake Up", systemImage: "bolt.fill")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
+                } else if !host.isPaired {
+                    Button(action: onPair) {
+                        Label("Pair", systemImage: "link")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
                 } else {
                     Button(action: onSelect) {
                         Label("Apps", systemImage: "square.grid.2x2")
@@ -110,7 +110,7 @@ public struct HostCardView: View {
                 .menuStyle(.borderlessButton)
             }
         }
-        .padding(14)
+        .padding(16)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(nsColor: .windowBackgroundColor))
@@ -122,7 +122,7 @@ public struct HostCardView: View {
         )
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
-            if host.isPaired && host.status == .offline {
+            if host.status == .offline {
                 onWakeOnLan()
             } else if host.isPaired {
                 onSelect()

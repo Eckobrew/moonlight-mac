@@ -47,6 +47,13 @@ public final class AppState: @unchecked Sendable {
             // Filter out any phantom or corrupt hosts (must be paired or have valid appVersion)
             self.hosts = decoded.filter { host in
                 host.isPaired || !host.appVersion.isEmpty
+            }.map { host in
+                var restored = host
+                // If an offline host had a recorded MAC address or app version but lost isPaired, restore it
+                if !restored.isPaired && restored.status == .offline && restored.macAddress != nil {
+                    restored.isPaired = true
+                }
+                return restored
             }
             saveHosts()
         }
@@ -67,15 +74,31 @@ public final class AppState: @unchecked Sendable {
         }) {
             var merged = host
             merged.id = hosts[idx].id
-            if merged.remoteAddress == nil {
+            if merged.remoteAddress == nil || merged.remoteAddress?.isEmpty == true {
                 merged.remoteAddress = hosts[idx].remoteAddress
             }
-            if merged.macAddress == nil {
+            if merged.macAddress == nil || merged.macAddress?.isEmpty == true {
                 merged.macAddress = hosts[idx].macAddress
+            }
+            if merged.appVersion.isEmpty && !hosts[idx].appVersion.isEmpty {
+                merged.appVersion = hosts[idx].appVersion
+            }
+            if merged.gfeVersion.isEmpty && !hosts[idx].gfeVersion.isEmpty {
+                merged.gfeVersion = hosts[idx].gfeVersion
             }
             if host.name == "Searching..." && hosts[idx].name != "Searching..." && !hosts[idx].name.isEmpty {
                 merged.name = hosts[idx].name
             }
+
+            // CRITICAL: Pairing is cryptographically persistent.
+            // Never allow a candidate probe, mDNS announcement, or unauthenticated HTTP probe to unpair a paired host.
+            if hosts[idx].isPaired {
+                merged.isPaired = true
+                if merged.status == .pairingRequired {
+                    merged.status = hosts[idx].status == .offline ? .offline : .online
+                }
+            }
+
             hosts[idx] = merged
             if selectedHost?.id == merged.id || selectedHost?.address == host.address {
                 selectedHost = merged
@@ -98,13 +121,14 @@ public final class AppState: @unchecked Sendable {
     public func unpairHost(_ host: Host) async {
         AppLogger.shared.info("Unpairing host \(host.name) (\(host.address))...", category: "PAIRING")
         await SunshineHTTPClient.shared.unpair(host: host)
-        var updated = host
-        updated.isPaired = false
-        updated.status = .pairingRequired
-        addOrUpdateHost(updated)
-        if selectedHost?.id == host.id {
-            selectedHost = updated
-            appsForSelectedHost.removeAll()
+        if let idx = hosts.firstIndex(where: { $0.id == host.id || $0.address == host.address }) {
+            hosts[idx].isPaired = false
+            hosts[idx].status = .pairingRequired
+            if selectedHost?.id == host.id {
+                selectedHost = hosts[idx]
+                appsForSelectedHost.removeAll()
+            }
+            saveHosts()
         }
         AppLogger.shared.info("Host \(host.name) unpaired", category: "PAIRING")
     }
@@ -115,9 +139,28 @@ public final class AppState: @unchecked Sendable {
             do {
                 let (updatedHost, _) = try await SunshineHTTPClient.shared.fetchServerInfo(host: host)
                 await MainActor.run {
-                    self.hosts[idx] = updatedHost
-                    if self.selectedHost?.id == updatedHost.id {
-                        self.selectedHost = updatedHost
+                    var merged = updatedHost
+                    if self.hosts[idx].isPaired {
+                        merged.isPaired = true
+                        if merged.status == .pairingRequired {
+                            merged.status = .online
+                        }
+                    }
+                    if merged.macAddress == nil || merged.macAddress?.isEmpty == true {
+                        merged.macAddress = self.hosts[idx].macAddress
+                    }
+                    if merged.remoteAddress == nil || merged.remoteAddress?.isEmpty == true {
+                        merged.remoteAddress = self.hosts[idx].remoteAddress
+                    }
+                    if merged.appVersion.isEmpty && !self.hosts[idx].appVersion.isEmpty {
+                        merged.appVersion = self.hosts[idx].appVersion
+                    }
+                    if merged.gfeVersion.isEmpty && !self.hosts[idx].gfeVersion.isEmpty {
+                        merged.gfeVersion = self.hosts[idx].gfeVersion
+                    }
+                    self.hosts[idx] = merged
+                    if self.selectedHost?.id == merged.id {
+                        self.selectedHost = merged
                     }
                 }
             } catch {
@@ -139,10 +182,11 @@ public final class AppState: @unchecked Sendable {
             AppLogger.shared.error("Failed to load apps for \(host.name): \(error.localizedDescription)", category: "HTTP")
             if let nsError = error as NSError?, nsError.code == 401 {
                 await MainActor.run {
-                    var updated = host
-                    updated.isPaired = false
-                    updated.status = .pairingRequired
-                    self.addOrUpdateHost(updated)
+                    if let idx = self.hosts.firstIndex(where: { $0.id == host.id || $0.address == host.address }) {
+                        self.hosts[idx].isPaired = false
+                        self.hosts[idx].status = .pairingRequired
+                        self.saveHosts()
+                    }
                     self.selectedHost = nil
                 }
             }

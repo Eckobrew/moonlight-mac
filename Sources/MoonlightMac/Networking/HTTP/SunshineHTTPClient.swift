@@ -130,9 +130,9 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         var updatedHost = host
         updatedHost.activeAddress = activeAddr
         if let hostname = dict["hostname"], !hostname.isEmpty { updatedHost.name = hostname }
-        if let appVersion = dict["appversion"] { updatedHost.appVersion = appVersion }
-        if let gfeVersion = dict["GfeVersion"] { updatedHost.gfeVersion = gfeVersion }
-        if let mac = dict["mac"] { updatedHost.macAddress = mac }
+        if let appVersion = dict["appversion"], !appVersion.isEmpty { updatedHost.appVersion = appVersion }
+        if let gfeVersion = dict["GfeVersion"], !gfeVersion.isEmpty { updatedHost.gfeVersion = gfeVersion }
+        if let mac = dict["mac"], !mac.isEmpty { updatedHost.macAddress = mac }
         if let httpsPortStr = dict["HttpsPort"], let port = Int(httpsPortStr), port > 0 {
             updatedHost.httpsPort = port
         }
@@ -146,10 +146,23 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
             updatedHost.serverCodecModeSupport = codecVal
         }
 
-        // PairStatus is only true if verified over authenticated HTTPS or XML PairStatus is 1
-        let pairStatus = isHttps && (dict["PairStatus"] == "1" || isHttps)
-        updatedHost.isPaired = pairStatus
-        updatedHost.status = pairStatus ? .online : .pairingRequired
+        // Determine pairing and reachability:
+        // 1. If this host was already paired, it MUST remain paired!
+        //    (Only explicit unpairHost or HTTP 401 on an authenticated endpoint can unpair a host).
+        // 2. Over plain HTTP fallback, Sunshine/GameStream cannot authenticate client certificates and
+        //    always returns PairStatus 0. Therefore, HTTP fallback must never clear isPaired.
+        // 3. For new/unpaired hosts, an HTTPS response with PairStatus == 1 confirms pairing.
+        let isConfirmedPaired: Bool
+        if host.isPaired {
+            isConfirmedPaired = true
+        } else if isHttps && dict["PairStatus"] == "1" {
+            isConfirmedPaired = true
+        } else {
+            isConfirmedPaired = false
+        }
+
+        updatedHost.isPaired = isConfirmedPaired
+        updatedHost.status = isConfirmedPaired ? .online : .pairingRequired
 
         if let curGame = dict["currentgame"], let curGameId = Int(curGame), curGameId != 0 {
             updatedHost.currentAppId = curGameId
@@ -157,7 +170,7 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         } else {
             updatedHost.currentAppId = nil
             if updatedHost.status == .streaming {
-                updatedHost.status = pairStatus ? .online : .pairingRequired
+                updatedHost.status = isConfirmedPaired ? .online : .pairingRequired
             }
         }
 
