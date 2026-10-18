@@ -316,7 +316,8 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         guard let xmlString = String(data: data, encoding: .utf8) else { return [] }
         var apps: [StreamApp] = []
 
-        let appBlockPattern = "(?s)<app>(.*?)</app>"
+        // Match <App>...</App> or <app>...</app> case-insensitively
+        let appBlockPattern = "(?si)<app>(.*?)</app>"
         guard let appBlockRegex = try? NSRegularExpression(pattern: appBlockPattern, options: []) else { return [] }
 
         let nsString = xmlString as NSString
@@ -325,10 +326,22 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         for match in matches {
             let appContent = nsString.substring(with: match.range(at: 1))
             let appDict = parseSimpleXML(data: appContent.data(using: .utf8) ?? Data())
-            if let title = appDict["AppTitle"], let idStr = appDict["ID"], let appId = Int(idStr) {
-                let isCollector = appDict["IsAppCollectorGame"] == "1"
+
+            let rawTitle = appDict["AppTitle"] ?? appDict["apptitle"]
+            let rawId = appDict["ID"] ?? appDict["id"]
+
+            if let idStr = rawId, let appId = Int(idStr.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                let unescapedTitle = (rawTitle ?? "Unknown App")
+                    .replacingOccurrences(of: "&apos;", with: "'")
+                    .replacingOccurrences(of: "&quot;", with: "\"")
+                    .replacingOccurrences(of: "&amp;", with: "&")
+                    .replacingOccurrences(of: "&lt;", with: "<")
+                    .replacingOccurrences(of: "&gt;", with: ">")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                let isCollector = (appDict["IsAppCollectorGame"] ?? appDict["isappcollectorgame"]) == "1"
                 let boxArtUrl = URL(string: "https://\(host.address):\(host.httpsPort)/appasset?uniqueid=\(CertificateManager.shared.uniqueId)&appid=\(appId)&AssetType=2&AssetIdx=0")
-                apps.append(StreamApp(id: appId, title: title, isAppCollectorGame: isCollector, boxArtUrl: boxArtUrl))
+                apps.append(StreamApp(id: appId, title: unescapedTitle, isAppCollectorGame: isCollector, boxArtUrl: boxArtUrl))
             }
         }
 

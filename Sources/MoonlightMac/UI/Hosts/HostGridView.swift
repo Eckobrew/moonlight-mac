@@ -28,6 +28,11 @@ public struct HostGridView: View {
                     },
                     onBack: {
                         appState.selectedHost = nil
+                    },
+                    onRefresh: {
+                        Task {
+                            await appState.loadApps(for: selectedHost)
+                        }
                     }
                 )
             } else {

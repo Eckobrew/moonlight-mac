@@ -6,6 +6,7 @@ public struct AppGridView: View {
     public let onLaunchApp: (StreamApp) -> Void
     public let onQuitCurrentApp: () -> Void
     public let onBack: () -> Void
+    public let onRefresh: (() -> Void)?
 
     private let columns = [
         GridItem(.adaptive(minimum: 140, maximum: 180), spacing: 20)
@@ -16,13 +17,15 @@ public struct AppGridView: View {
         apps: [StreamApp],
         onLaunchApp: @escaping (StreamApp) -> Void,
         onQuitCurrentApp: @escaping () -> Void,
-        onBack: @escaping () -> Void
+        onBack: @escaping () -> Void,
+        onRefresh: (() -> Void)? = nil
     ) {
         self.host = host
         self.apps = apps
         self.onLaunchApp = onLaunchApp
         self.onQuitCurrentApp = onQuitCurrentApp
         self.onBack = onBack
+        self.onRefresh = onRefresh
     }
 
     public var body: some View {
@@ -39,6 +42,15 @@ public struct AppGridView: View {
 
                 Text(host.name)
                     .font(.headline)
+
+                if let onRefresh = onRefresh {
+                    Button(action: onRefresh) {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Refresh applications")
+                }
 
                 Spacer()
 
