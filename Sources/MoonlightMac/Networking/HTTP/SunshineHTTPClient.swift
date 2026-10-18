@@ -252,13 +252,16 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         AppLogger.shared.debug("HTTP GET: \(urlString) (timeout: \(Int(timeout))s)", category: "HTTP")
 
         let sessionToUse = usePairingSession ? pairingSession : defaultSession
-        let (data, response) = try await sessionToUse.data(for: request)
-
-        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-        let parsed = parseSimpleXML(data: data)
-
-        AppLogger.shared.debug("HTTP \(statusCode) response: \(parsed)", category: "HTTP")
-        return (data, parsed)
+        do {
+            let (data, response) = try await sessionToUse.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let parsed = parseSimpleXML(data: data)
+            AppLogger.shared.debug("HTTP \(statusCode) response: \(parsed)", category: "HTTP")
+            return (data, parsed)
+        } catch {
+            AppLogger.shared.error("HTTP GET failed for \(urlString): \(error.localizedDescription)", category: "HTTP")
+            throw error
+        }
     }
 
     public func parseSimpleXML(data: Data) -> [String: String] {
