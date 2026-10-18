@@ -4,6 +4,9 @@ A high-performance, native macOS client for the [Moonlight](https://moonlight-st
 
 Built natively in Swift with **SwiftUI**, **Metal**, **VideoToolbox**, and **CoreAudio**, powered by the battle-tested `moonlight-common-c` core with native Apple CommonCrypto.
 
+> [!NOTE]
+> **Disclaimer**: The whole thing is vibe coded by a monkey who has no idea what he's doing.
+
 ---
 
 ## Key Features
