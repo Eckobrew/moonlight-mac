@@ -37,30 +37,6 @@ public final class CertificateManager: @unchecked Sendable {
     public var certPath: URL { appSupportDir.appendingPathComponent("client.crt") }
     public var keyPath: URL { appSupportDir.appendingPathComponent("client.key") }
     public var p12Path: URL { appSupportDir.appendingPathComponent("client.p12") }
-    public var keychainPath: URL { appSupportDir.appendingPathComponent("moonlight.keychain-db") }
-    private var appKeychain: SecKeychain?
-
-    private func getOrOpenAppKeychain() -> SecKeychain? {
-        if let kc = appKeychain { return kc }
-        let path = keychainPath.path
-        var kc: SecKeychain?
-        if !FileManager.default.fileExists(atPath: path) {
-            let status = SecKeychainCreate(path, 9, "moonlight", false, nil, &kc)
-            if status != errSecSuccess {
-                AppLogger.shared.error("Failed to create private keychain: \(status)", category: "SECURITY")
-            }
-        } else {
-            let status = SecKeychainOpen(path, &kc)
-            if status != errSecSuccess {
-                AppLogger.shared.error("Failed to open private keychain: \(status)", category: "SECURITY")
-            }
-        }
-        if let kc = kc {
-            SecKeychainUnlock(kc, 9, "moonlight", true)
-            self.appKeychain = kc
-        }
-        return kc
-    }
 
     private func ensureCredentialsExist() {
         let fm = FileManager.default
@@ -115,22 +91,24 @@ public final class CertificateManager: @unchecked Sendable {
         }
 
         if let p12Data = try? Data(contentsOf: p12Path) {
-            var options: [String: Any] = [kSecImportExportPassphrase as String: "moonlight"]
-            if let kc = getOrOpenAppKeychain() {
-                options[kSecImportExportKeychain as String] = kc
-            }
+            // Use kSecImportToMemoryOnly matching modern macOS and Qt 6.8+
+            // This prevents ANY interaction with user or system keychains, completely eliminating password prompts.
+            let options: [String: Any] = [
+                kSecImportExportPassphrase as String: "moonlight",
+                "kSecImportToMemoryOnly": true
+            ]
             var items: CFArray?
             let status = SecPKCS12Import(p12Data as CFData, options as CFDictionary, &items)
             if status == errSecSuccess,
                let array = items as? [[String: Any]],
                let first = array.first,
                let identity = first[kSecImportItemIdentity as String] {
-                let id = (identity as! SecIdentity)
-                self.cachedIdentity = id
+                let secIdentity = (identity as! SecIdentity)
+                self.cachedIdentity = secIdentity
                 var privKey: SecKey?
-                SecIdentityCopyPrivateKey(id, &privKey)
+                SecIdentityCopyPrivateKey(secIdentity, &privKey)
                 self.cachedPrivateKey = privKey
-                AppLogger.shared.info("Loaded client identity successfully from private keychain", category: "SECURITY")
+                AppLogger.shared.info("Loaded client identity into memory without keychain prompts", category: "SECURITY")
             } else {
                 AppLogger.shared.error("SecPKCS12Import failed with status: \(status)", category: "SECURITY")
             }
