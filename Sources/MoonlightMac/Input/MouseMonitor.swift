@@ -16,6 +16,8 @@ public final class MouseMonitor: @unchecked Sendable {
     private var isMonitoring = false
     private var seenWarp = false
     private var suppressWarpUntil: DispatchTime = .now()
+    private var fractionalX: Double = 0.0
+    private var fractionalY: Double = 0.0
 
     public init() {}
 
@@ -42,11 +44,14 @@ public final class MouseMonitor: @unchecked Sendable {
         if isCaptured {
             isCaptured = false
         }
+        NSEvent.isMouseCoalescingEnabled = true
         if let monitor = localMonitor {
             NSEvent.removeMonitor(monitor)
             localMonitor = nil
         }
         isMonitoring = false
+        fractionalX = 0.0
+        fractionalY = 0.0
     }
 
     // MARK: - Relative Mouse Capture (Matches Moonlight-Qt SDL Cocoa Backend)
@@ -66,6 +71,9 @@ public final class MouseMonitor: @unchecked Sendable {
     @MainActor
     private func applyCursorAssociation() {
         if isCaptured {
+            // Disable mouse coalescing so high-polling-rate mice deliver every single movement immediately without OS lag
+            NSEvent.isMouseCoalescingEnabled = false
+
             // Ensure the streaming window receives continuous uncoalesced mouseMoved events
             if let window = NSApp.keyWindow ?? NSApp.mainWindow {
                 window.acceptsMouseMovedEvents = true
@@ -85,8 +93,13 @@ public final class MouseMonitor: @unchecked Sendable {
             // Disassociate cursor position to allow infinite relative mouse travel
             CGAssociateMouseAndMouseCursorPosition(0)
             NSCursor.hide()
+            fractionalX = 0.0
+            fractionalY = 0.0
         } else {
+            NSEvent.isMouseCoalescingEnabled = true
             seenWarp = false
+            fractionalX = 0.0
+            fractionalY = 0.0
             CGAssociateMouseAndMouseCursorPosition(1)
             NSCursor.unhide()
         }
@@ -122,25 +135,16 @@ public final class MouseMonitor: @unchecked Sendable {
                 deltaY *= sensitivity
             }
 
-            // Direct scaled delta: snap micro-movements (< 1.0) to +/- 1 so slow aim is never dropped
-            var stepX: Int16 = 0
-            var stepY: Int16 = 0
+            // Sub-pixel fractional accumulator: accumulates micro-movements across uncoalesced events
+            // and emits exact integer steps without dropping movement or artificially accelerating slow aim
+            fractionalX += deltaX
+            fractionalY += deltaY
 
-            if deltaX != 0.0 {
-                if abs(deltaX) < 1.0 {
-                    stepX = deltaX > 0 ? 1 : -1
-                } else {
-                    stepX = Int16(clamping: Int(lrint(deltaX)))
-                }
-            }
+            let stepX = Int16(clamping: Int(fractionalX))
+            let stepY = Int16(clamping: Int(fractionalY))
 
-            if deltaY != 0.0 {
-                if abs(deltaY) < 1.0 {
-                    stepY = deltaY > 0 ? 1 : -1
-                } else {
-                    stepY = Int16(clamping: Int(lrint(deltaY)))
-                }
-            }
+            fractionalX -= Double(stepX)
+            fractionalY -= Double(stepY)
 
             if stepX != 0 || stepY != 0 {
                 LiSendMouseMoveEvent(stepX, stepY)

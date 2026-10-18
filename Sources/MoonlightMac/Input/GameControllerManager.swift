@@ -5,7 +5,10 @@ import MoonlightCommonC
 public final class GameControllerManager: @unchecked Sendable {
     public static let shared = GameControllerManager()
 
-    private var pollTimer: Timer?
+    private let queue = DispatchQueue(label: "com.moonlight-stream.input.gamecontroller", qos: .userInteractive)
+    private var pollTimer: DispatchSourceTimer?
+    private var isRunning = false
+    private let lock = NSLock()
     private var connectedControllers: [GCController] = []
 
     // Controller button flags (matching XInput / Moonlight controller mask)
@@ -28,6 +31,16 @@ public final class GameControllerManager: @unchecked Sendable {
     private init() {}
 
     public func start() {
+        lock.lock()
+        guard !isRunning else {
+            lock.unlock()
+            return
+        }
+        isRunning = true
+        connectedControllers = GCController.controllers()
+        let hasControllers = !connectedControllers.isEmpty
+        lock.unlock()
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleControllerDidConnect(_:)),
@@ -41,39 +54,76 @@ public final class GameControllerManager: @unchecked Sendable {
             object: nil
         )
 
-        connectedControllers = GCController.controllers()
-
-        // 120Hz polling loop for sub-millisecond controller response
-        DispatchQueue.main.async { [weak self] in
-            self?.pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 120.0, repeats: true) { [weak self] _ in
-                self?.pollConnectedControllers()
-            }
+        if hasControllers {
+            startPolling()
         }
     }
 
     public func stop() {
-        pollTimer?.invalidate()
-        pollTimer = nil
         NotificationCenter.default.removeObserver(self)
+        lock.lock()
+        isRunning = false
         connectedControllers.removeAll()
+        lock.unlock()
+        stopPolling()
+    }
+
+    private func startPolling() {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            if self.pollTimer != nil { return }
+            let timer = DispatchSource.makeTimerSource(queue: self.queue)
+            timer.schedule(deadline: .now(), repeating: .milliseconds(8), leeway: .milliseconds(1))
+            timer.setEventHandler { [weak self] in
+                self?.pollConnectedControllers()
+            }
+            timer.resume()
+            self.pollTimer = timer
+        }
+    }
+
+    private func stopPolling() {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            self.pollTimer?.cancel()
+            self.pollTimer = nil
+        }
     }
 
     @objc private func handleControllerDidConnect(_ notification: Notification) {
         if let controller = notification.object as? GCController {
+            lock.lock()
             if !connectedControllers.contains(controller) {
                 connectedControllers.append(controller)
+            }
+            let shouldStart = isRunning
+            lock.unlock()
+
+            if shouldStart {
+                startPolling()
             }
         }
     }
 
     @objc private func handleControllerDidDisconnect(_ notification: Notification) {
         if let controller = notification.object as? GCController {
+            lock.lock()
             connectedControllers.removeAll(where: { $0 == controller })
+            let isEmpty = connectedControllers.isEmpty
+            lock.unlock()
+
+            if isEmpty {
+                stopPolling()
+            }
         }
     }
 
     private func pollConnectedControllers() {
-        for (index, controller) in connectedControllers.prefix(4).enumerated() {
+        lock.lock()
+        let controllers = connectedControllers
+        lock.unlock()
+
+        for (index, controller) in controllers.prefix(4).enumerated() {
             guard let gamepad = controller.extendedGamepad else { continue }
 
             var buttonFlags: Int16 = 0
@@ -121,8 +171,12 @@ public final class GameControllerManager: @unchecked Sendable {
     }
 
     public func rumble(controllerNumber: UInt16, lowFreqMotor: UInt16, highFreqMotor: UInt16) {
-        guard Int(controllerNumber) < connectedControllers.count else { return }
-        let controller = connectedControllers[Int(controllerNumber)]
+        lock.lock()
+        let controllers = connectedControllers
+        lock.unlock()
+
+        guard Int(controllerNumber) < controllers.count else { return }
+        let controller = controllers[Int(controllerNumber)]
 
         if let haptics = controller.haptics {
             // Optional Apple haptics feedback if supported on controller

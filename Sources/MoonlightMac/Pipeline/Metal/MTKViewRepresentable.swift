@@ -18,6 +18,12 @@ public final class MetalStreamView: NSView {
         layer.pixelFormat = .bgra8Unorm
         layer.framebufferOnly = false
         layer.presentsWithTransaction = false
+        if #available(macOS 10.13, *) {
+            layer.allowsNextDrawableTimeout = true
+        }
+        if #available(macOS 10.15, *) {
+            layer.maximumDrawableCount = 2
+        }
         return layer
     }
 

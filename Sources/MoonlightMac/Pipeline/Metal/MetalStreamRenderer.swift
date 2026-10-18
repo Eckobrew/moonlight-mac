@@ -228,12 +228,13 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
 
         if #available(macOS 10.13, *) {
             layer.displaySyncEnabled = self.enableVsync
+            layer.allowsNextDrawableTimeout = true
         }
         if #available(macOS 10.15, *) {
-            layer.maximumDrawableCount = self.enableVsync ? 3 : 2
+            layer.maximumDrawableCount = 2
         }
 
-        AppLogger.shared.info("[MetalStreamRenderer] CAMetalLayer configured: displaySyncEnabled=\(self.enableVsync), maxDrawables=\(self.enableVsync ? 3 : 2)")
+        AppLogger.shared.info("[MetalStreamRenderer] CAMetalLayer configured: displaySyncEnabled=\(self.enableVsync), maxDrawables=2, allowsNextDrawableTimeout=true")
     }
 
     /// Render a decoded or paced frame immediately to the Metal layer.
