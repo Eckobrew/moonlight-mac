@@ -56,7 +56,14 @@ public final class AppState: @unchecked Sendable {
 
     public func addOrUpdateHost(_ host: Host) {
         if let idx = hosts.firstIndex(where: { $0.address == host.address }) {
-            hosts[idx] = host
+            var merged = host
+            if host.name == "Searching..." && hosts[idx].name != "Searching..." && !hosts[idx].name.isEmpty {
+                merged.name = hosts[idx].name
+            }
+            hosts[idx] = merged
+            if selectedHost?.address == host.address {
+                selectedHost = merged
+            }
         } else {
             hosts.append(host)
         }
@@ -113,7 +120,16 @@ public final class AppState: @unchecked Sendable {
                 self.appsForSelectedHost = apps
             }
         } catch {
-            print("Failed to load apps: \(error)")
+            AppLogger.shared.error("Failed to load apps for \(host.name): \(error.localizedDescription)", category: "HTTP")
+            if let nsError = error as NSError?, nsError.code == 401 {
+                await MainActor.run {
+                    var updated = host
+                    updated.isPaired = false
+                    updated.status = .pairingRequired
+                    self.addOrUpdateHost(updated)
+                    self.selectedHost = nil
+                }
+            }
         }
     }
 

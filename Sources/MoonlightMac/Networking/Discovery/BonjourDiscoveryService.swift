@@ -51,7 +51,9 @@ public final class BonjourDiscoveryService: ObservableObject, @unchecked Sendabl
 
     public func addOrUpdateDiscoveredHost(name: String, address: String, httpPort: Int = 47989) {
         if let idx = discoveredHosts.firstIndex(where: { $0.address == address }) {
-            discoveredHosts[idx].name = name
+            if name != "Searching..." && !name.isEmpty {
+                discoveredHosts[idx].name = name
+            }
             discoveredHosts[idx].lastSeen = Date()
             discoveredHosts[idx].status = .online
         } else {

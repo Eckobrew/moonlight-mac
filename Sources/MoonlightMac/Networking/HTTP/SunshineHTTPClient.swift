@@ -61,9 +61,15 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
             do {
                 let (data, response) = try await defaultSession.data(from: httpsUrl)
                 if let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 200 {
-                    responseData = data
-                    isHttps = true
-                    AppLogger.shared.info("serverinfo returned 200 over HTTPS (mTLS authenticated)", category: "HTTP")
+                    let xmlDict = parseSimpleXML(data: data)
+                    let xmlCode = xmlDict["status_code"]
+                    if xmlCode == "200" || xmlCode == nil {
+                        responseData = data
+                        isHttps = true
+                        AppLogger.shared.info("serverinfo returned 200 over HTTPS (mTLS authenticated)", category: "HTTP")
+                    } else {
+                        AppLogger.shared.debug("HTTPS serverinfo returned XML status \(xmlCode ?? "nil") (\(xmlDict["status_message"] ?? "")); host is not paired. Falling back to HTTP.", category: "HTTP")
+                    }
                 }
             } catch {
                 AppLogger.shared.debug("HTTPS serverinfo failed: \(error.localizedDescription); falling back to HTTP", category: "HTTP")
@@ -104,8 +110,8 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
             updatedHost.serverCodecModeSupport = codecVal
         }
 
-        // PairStatus is 1 if verified via HTTPS or if XML PairStatus == 1
-        let pairStatus = isHttps || (dict["PairStatus"] == "1")
+        // PairStatus is only true if verified over authenticated HTTPS or XML PairStatus is 1
+        let pairStatus = isHttps && (dict["PairStatus"] == "1" || isHttps)
         updatedHost.isPaired = pairStatus
         updatedHost.status = pairStatus ? .online : .pairingRequired
 
@@ -128,8 +134,14 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         AppLogger.shared.info("Fetching applist from \(url.absoluteString)...", category: "HTTP")
         let (data, response) = try await defaultSession.data(from: url)
         if let httpResp = response as? HTTPURLResponse, httpResp.statusCode != 200 {
-            AppLogger.shared.error("applist returned status \(httpResp.statusCode)", category: "HTTP")
+            AppLogger.shared.error("applist returned HTTP status \(httpResp.statusCode)", category: "HTTP")
             throw URLError(.badServerResponse)
+        }
+
+        let dict = parseSimpleXML(data: data)
+        if dict["status_code"] == "401" {
+            AppLogger.shared.error("applist failed: Host reported client not authorized (401). Host must be paired.", category: "HTTP")
+            throw NSError(domain: "SunshineHTTPClient", code: 401, userInfo: [NSLocalizedDescriptionKey: "Client is not authorized. Please pair with this host first."])
         }
 
         let apps = parseAppListXML(data: data, host: host)

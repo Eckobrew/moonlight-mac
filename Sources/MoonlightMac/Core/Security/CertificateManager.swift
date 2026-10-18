@@ -37,6 +37,30 @@ public final class CertificateManager: @unchecked Sendable {
     public var certPath: URL { appSupportDir.appendingPathComponent("client.crt") }
     public var keyPath: URL { appSupportDir.appendingPathComponent("client.key") }
     public var p12Path: URL { appSupportDir.appendingPathComponent("client.p12") }
+    public var keychainPath: URL { appSupportDir.appendingPathComponent("moonlight.keychain-db") }
+    private var appKeychain: SecKeychain?
+
+    private func getOrOpenAppKeychain() -> SecKeychain? {
+        if let kc = appKeychain { return kc }
+        let path = keychainPath.path
+        var kc: SecKeychain?
+        if !FileManager.default.fileExists(atPath: path) {
+            let status = SecKeychainCreate(path, 9, "moonlight", false, nil, &kc)
+            if status != errSecSuccess {
+                AppLogger.shared.error("Failed to create private keychain: \(status)", category: "SECURITY")
+            }
+        } else {
+            let status = SecKeychainOpen(path, &kc)
+            if status != errSecSuccess {
+                AppLogger.shared.error("Failed to open private keychain: \(status)", category: "SECURITY")
+            }
+        }
+        if let kc = kc {
+            SecKeychainUnlock(kc, 9, "moonlight", true)
+            self.appKeychain = kc
+        }
+        return kc
+    }
 
     private func ensureCredentialsExist() {
         let fm = FileManager.default
@@ -91,7 +115,10 @@ public final class CertificateManager: @unchecked Sendable {
         }
 
         if let p12Data = try? Data(contentsOf: p12Path) {
-            let options: [String: Any] = [kSecImportExportPassphrase as String: "moonlight"]
+            var options: [String: Any] = [kSecImportExportPassphrase as String: "moonlight"]
+            if let kc = getOrOpenAppKeychain() {
+                options[kSecImportExportKeychain as String] = kc
+            }
             var items: CFArray?
             let status = SecPKCS12Import(p12Data as CFData, options as CFDictionary, &items)
             if status == errSecSuccess,
@@ -103,6 +130,9 @@ public final class CertificateManager: @unchecked Sendable {
                 var privKey: SecKey?
                 SecIdentityCopyPrivateKey(id, &privKey)
                 self.cachedPrivateKey = privKey
+                AppLogger.shared.info("Loaded client identity successfully from private keychain", category: "SECURITY")
+            } else {
+                AppLogger.shared.error("SecPKCS12Import failed with status: \(status)", category: "SECURITY")
             }
         }
     }
