@@ -75,6 +75,12 @@ public struct HostCardView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.blue)
+                } else if host.status == .offline {
+                    Button(action: onWakeOnLan) {
+                        Label("Wake Up", systemImage: "bolt.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
                 } else {
                     Button(action: onSelect) {
                         Label("Apps", systemImage: "square.grid.2x2")
@@ -115,7 +121,16 @@ public struct HostCardView: View {
                 .stroke(isSelected ? Color.accentColor : Color.gray.opacity(0.15), lineWidth: isSelected ? 2 : 1)
         )
         .contentShape(Rectangle())
-        .onTapGesture {
+        .onTapGesture(count: 2) {
+            if host.isPaired && host.status == .offline {
+                onWakeOnLan()
+            } else if host.isPaired {
+                onSelect()
+            } else {
+                onPair()
+            }
+        }
+        .onTapGesture(count: 1) {
             onSelect()
         }
     }

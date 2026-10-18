@@ -120,8 +120,32 @@ public struct SettingsView: View {
                     }
                 }
 
+                Section("Host & Streaming Behavior") {
+                    Toggle("Optimize game settings for streaming", isOn: $settings.optimizeGameSettings)
+                    Text("Allows the host PC to automatically adjust in-game graphical settings for optimal streaming performance.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Toggle("Quit game on host when ending stream", isOn: $settings.quitAppOnStop)
+                    Text("Terminates the active application on the host PC when you disconnect. Turn off to keep games running in the background.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Input & Mouse Controls") {
                     Toggle("Capture mouse pointer automatically", isOn: $settings.mouseCaptureMode)
+
+                    HStack {
+                        Text("Mouse Sensitivity:")
+                        Slider(value: $settings.mouseSensitivity, in: 0.25...3.0, step: 0.05)
+                        Text(String(format: "%.2fx", settings.mouseSensitivity))
+                            .monospacedDigit()
+                            .frame(width: 45, alignment: .trailing)
+                    }
+                    Text("Adjusts raw hardware mouse movement speed sent to the host PC.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
                     Toggle("Swap Command and Control keys for Windows shortcuts", isOn: $settings.swapCommandControl)
                     Text("Shortcuts: ⌃⌥⇧Q: quit | ⌃⌥⇧Z: release cursor | ⌃⌥⇧X: toggle fullscreen | ⌃⌥⇧S: toggle stats")
                         .font(.caption)
@@ -131,7 +155,7 @@ public struct SettingsView: View {
             .formStyle(.grouped)
             .padding(.horizontal, 16)
         }
-        .frame(width: 480, height: 580)
+        .frame(width: 500, height: 640)
     }
 
     private var resolutionBinding: Binding<String> {

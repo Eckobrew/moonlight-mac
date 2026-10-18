@@ -83,6 +83,9 @@ public struct StreamSettings: Codable, Equatable, Sendable {
     public var videoRenderer: VideoRendererMode
     public var enableVsync: Bool
     public var enableFramePacing: Bool
+    public var optimizeGameSettings: Bool
+    public var quitAppOnStop: Bool
+    public var mouseSensitivity: Double
 
     public init(
         width: Int = 1920,
@@ -99,7 +102,10 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         windowMode: WindowMode = .fullscreenDesktop,
         videoRenderer: VideoRendererMode = .metal,
         enableVsync: Bool = true,
-        enableFramePacing: Bool = false
+        enableFramePacing: Bool = false,
+        optimizeGameSettings: Bool = true,
+        quitAppOnStop: Bool = false,
+        mouseSensitivity: Double = 1.0
     ) {
         self.width = width
         self.height = height
@@ -116,6 +122,9 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.videoRenderer = videoRenderer
         self.enableVsync = enableVsync
         self.enableFramePacing = enableFramePacing
+        self.optimizeGameSettings = optimizeGameSettings
+        self.quitAppOnStop = quitAppOnStop
+        self.mouseSensitivity = mouseSensitivity
     }
 
     enum CodingKeys: String, CodingKey {
@@ -123,6 +132,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         case codec, audioMode, enableHdr, fullRangeColor
         case mouseCaptureMode, swapCommandControl, windowMode
         case videoRenderer, enableVsync, enableFramePacing
+        case optimizeGameSettings, quitAppOnStop, mouseSensitivity
     }
 
     public init(from decoder: Decoder) throws {
@@ -142,6 +152,9 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.videoRenderer = (try? container.decode(VideoRendererMode.self, forKey: .videoRenderer)) ?? .metal
         self.enableVsync = (try? container.decode(Bool.self, forKey: .enableVsync)) ?? true
         self.enableFramePacing = (try? container.decode(Bool.self, forKey: .enableFramePacing)) ?? false
+        self.optimizeGameSettings = (try? container.decode(Bool.self, forKey: .optimizeGameSettings)) ?? true
+        self.quitAppOnStop = (try? container.decode(Bool.self, forKey: .quitAppOnStop)) ?? false
+        self.mouseSensitivity = (try? container.decode(Double.self, forKey: .mouseSensitivity)) ?? 1.0
     }
 }
 

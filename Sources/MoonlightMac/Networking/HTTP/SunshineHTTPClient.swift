@@ -100,6 +100,11 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         }
 
         let dict = parseSimpleXML(data: data)
+        guard dict["appversion"] != nil || dict["uniqueid"] != nil || dict["mac"] != nil || dict["hostname"] != nil else {
+            AppLogger.shared.error("Invalid serverinfo response from \(host.address): missing GameStream/Sunshine metadata", category: "HTTP")
+            throw URLError(.badServerResponse)
+        }
+
         var updatedHost = host
         if let hostname = dict["hostname"], !hostname.isEmpty { updatedHost.name = hostname }
         if let appVersion = dict["appversion"] { updatedHost.appVersion = appVersion }
@@ -181,9 +186,10 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         let uniqueId = CertificateManager.shared.uniqueId
         let mode = "\(settings.width)x\(settings.height)x\(settings.fps)"
         let surroundAudioInfo = settings.audioMode.limelightValue
+        let sops = settings.optimizeGameSettings ? "1" : "0"
         let extraParams = LiGetLaunchUrlQueryParameters().map { String(cString: $0) } ?? ""
 
-        var urlString = "https://\(host.address):\(host.httpsPort)/launch?uniqueid=\(uniqueId)&appid=\(appId)&mode=\(mode)&additionalStates=1&sops=0&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=0&surroundAudioInfo=\(surroundAudioInfo)"
+        var urlString = "https://\(host.address):\(host.httpsPort)/launch?uniqueid=\(uniqueId)&appid=\(appId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=0&surroundAudioInfo=\(surroundAudioInfo)"
         if !extraParams.isEmpty {
             urlString.append(extraParams)
         }
@@ -232,9 +238,10 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         let uniqueId = CertificateManager.shared.uniqueId
         let mode = "\(settings.width)x\(settings.height)x\(settings.fps)"
         let surroundAudioInfo = settings.audioMode.limelightValue
+        let sops = settings.optimizeGameSettings ? "1" : "0"
         let extraParams = LiGetLaunchUrlQueryParameters().map { String(cString: $0) } ?? ""
 
-        var urlString = "https://\(host.address):\(host.httpsPort)/resume?uniqueid=\(uniqueId)&mode=\(mode)&additionalStates=1&sops=0&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=0&surroundAudioInfo=\(surroundAudioInfo)"
+        var urlString = "https://\(host.address):\(host.httpsPort)/resume?uniqueid=\(uniqueId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=0&surroundAudioInfo=\(surroundAudioInfo)"
         if !extraParams.isEmpty {
             urlString.append(extraParams)
         }

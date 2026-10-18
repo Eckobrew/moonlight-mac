@@ -145,6 +145,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             // Start input capture
             inputCoordinator.startCapturing(
                 captureMouse: settings.mouseCaptureMode,
+                mouseSensitivity: settings.mouseSensitivity,
                 swapCommandControl: settings.swapCommandControl,
                 onQuit: { [weak self] in
                     Task { @MainActor [weak self] in
@@ -322,9 +323,10 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         streamTask?.cancel()
         streamTask = nil
 
-        // 5. Request host to terminate app if activeHost is set
-        if let host = activeHost {
+        // 5. Request host to terminate app only if activeSettings?.quitAppOnStop is enabled
+        if let host = activeHost, activeSettings?.quitAppOnStop == true {
             Task {
+                AppLogger.shared.info("Quitting game on host as quitAppOnStop is enabled", category: "SESSION")
                 try? await SunshineHTTPClient.shared.quitApp(host: host)
             }
         }

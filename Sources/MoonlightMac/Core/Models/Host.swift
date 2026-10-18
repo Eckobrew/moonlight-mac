@@ -63,4 +63,8 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
     public var baseUrlHttp: URL? {
         URL(string: "http://\(address):\(httpPort)")
     }
+
+    public var isOnline: Bool {
+        status == .online || status == .streaming
+    }
 }

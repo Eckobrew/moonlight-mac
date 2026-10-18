@@ -44,7 +44,11 @@ public final class AppState: @unchecked Sendable {
     public func loadHosts() {
         if let data = UserDefaults.standard.data(forKey: hostsKey),
            let decoded = try? JSONDecoder().decode([Host].self, from: data) {
-            self.hosts = decoded
+            // Filter out any phantom or corrupt hosts (must be paired or have valid appVersion)
+            self.hosts = decoded.filter { host in
+                host.isPaired || !host.appVersion.isEmpty
+            }
+            saveHosts()
         }
     }
 

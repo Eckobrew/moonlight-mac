@@ -165,44 +165,57 @@ public struct HostGridView: View {
                         HostCardView(
                             host: host,
                             isSelected: appState.selectedHost?.id == host.id,
-                            onSelect: {
-                                appState.selectedHost = host
-                                if host.isPaired {
-                                    Task {
-                                        await appState.loadApps(for: host)
-                                    }
-                                } else {
-                                    Task {
-                                        await appState.startPairing(for: host)
-                                    }
-                                }
-                            },
-                            onPair: {
-                                appState.selectedHost = host
-                                Task {
-                                    await appState.startPairing(for: host)
-                                }
-                            },
-                            onWakeOnLan: {
-                                if let mac = host.macAddress {
-                                    Task {
-                                        try? await WakeOnLAN.wake(macAddress: mac)
-                                    }
-                                }
-                            },
-                            onDelete: {
-                                appState.removeHost(host)
-                            },
-                            onUnpair: {
-                                Task {
-                                    await appState.unpairHost(host)
-                                }
-                            }
+                            onSelect: { selectHost(host) },
+                            onPair: { pairHost(host) },
+                            onWakeOnLan: { wakeHost(host) },
+                            onDelete: { appState.removeHost(host) },
+                            onUnpair: { unpairHost(host) }
                         )
                     }
                 }
                 .padding(24)
             }
+        }
+    }
+
+    private func selectHost(_ host: Host) {
+        appState.selectedHost = host
+        if host.isPaired {
+            Task {
+                await appState.loadApps(for: host)
+            }
+        } else {
+            Task {
+                await appState.startPairing(for: host)
+            }
+        }
+    }
+
+    private func pairHost(_ host: Host) {
+        appState.selectedHost = host
+        Task {
+            await appState.startPairing(for: host)
+        }
+    }
+
+    private func wakeHost(_ host: Host) {
+        guard let mac = host.macAddress else { return }
+        Task {
+            AppLogger.shared.info("Sending Wake-on-LAN magic packet to \(host.name) (\(mac))...", category: "WOL")
+            try? await WakeOnLAN.wake(macAddress: mac)
+            for _ in 0..<5 {
+                try? await Task.sleep(for: .seconds(2))
+                await appState.refreshHosts()
+                if let current = appState.hosts.first(where: { $0.id == host.id }), current.isOnline {
+                    break
+                }
+            }
+        }
+    }
+
+    private func unpairHost(_ host: Host) {
+        Task {
+            await appState.unpairHost(host)
         }
     }
 }

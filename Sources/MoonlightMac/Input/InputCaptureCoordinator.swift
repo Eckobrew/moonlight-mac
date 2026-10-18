@@ -12,6 +12,7 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
 
     public func startCapturing(
         captureMouse: Bool = true,
+        mouseSensitivity: Double = 1.0,
         swapCommandControl: Bool = false,
         onQuit: @escaping @Sendable () -> Void,
         onToggleMouseCapture: (@Sendable () -> Void)? = nil,
@@ -31,6 +32,7 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         keyboardMonitor.onPasteRequested = onPaste
         keyboardMonitor.start()
 
+        mouseMonitor.sensitivity = mouseSensitivity
         mouseMonitor.start()
         mouseMonitor.isCaptured = captureMouse
 
