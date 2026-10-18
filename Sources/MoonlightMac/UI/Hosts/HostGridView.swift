@@ -91,9 +91,7 @@ public struct HostGridView: View {
         }
         .onReceive(BonjourDiscoveryService.shared.$discoveredHosts) { discovered in
             for host in discovered {
-                if !appState.hosts.contains(where: { $0.address == host.address }) {
-                    appState.addOrUpdateHost(host)
-                }
+                appState.addOrUpdateHost(host)
             }
         }
     }

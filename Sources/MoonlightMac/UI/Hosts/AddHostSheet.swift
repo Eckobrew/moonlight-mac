@@ -5,7 +5,7 @@ public struct AddHostSheet: View {
 
     @State private var hostName: String = ""
     @State private var hostAddress: String = ""
-    @State private var httpsPort: String = "47989"
+    @State private var httpPort: String = "47989"
     @State private var isTesting: Bool = false
     @State private var errorMessage: String?
 
@@ -29,7 +29,7 @@ public struct AddHostSheet: View {
             Form {
                 TextField("Host Name (optional):", text: $hostName, prompt: Text("e.g. Gaming PC"))
                 TextField("IP Address / Hostname:", text: $hostAddress, prompt: Text("192.168.1.100"))
-                TextField("HTTPS Port:", text: $httpsPort, prompt: Text("47989"))
+                TextField("Port (optional):", text: $httpPort, prompt: Text("47989"))
             }
             .formStyle(.grouped)
 
@@ -61,7 +61,7 @@ public struct AddHostSheet: View {
 
     private func submitHost() {
         let cleanAddress = hostAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-        let portInt = Int(httpsPort) ?? 47989
+        let portInt = Int(httpPort) ?? 47989
         let name = hostName.isEmpty ? cleanAddress : hostName
 
         isTesting = true
@@ -70,7 +70,8 @@ public struct AddHostSheet: View {
         let newHost = Host(
             name: name,
             address: cleanAddress,
-            httpsPort: portInt,
+            httpsPort: 47984,
+            httpPort: portInt,
             status: .unknown
         )
 

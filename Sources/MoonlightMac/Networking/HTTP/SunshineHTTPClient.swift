@@ -11,7 +11,7 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
-    // Bypass certificate validation since Sunshine and Apollo generate self-signed certs
+    // Handle server trust and mutual TLS client certificate authentication
     public func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
@@ -20,6 +20,13 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
            let serverTrust = challenge.protectionSpace.serverTrust {
             completionHandler(.useCredential, URLCredential(trust: serverTrust))
+        } else if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodClientCertificate {
+            if let identity = CertificateManager.shared.getClientIdentity() {
+                let credential = URLCredential(identity: identity, certificates: nil, persistence: .forSession)
+                completionHandler(.useCredential, credential)
+            } else {
+                completionHandler(.performDefaultHandling, nil)
+            }
         } else {
             completionHandler(.performDefaultHandling, nil)
         }
@@ -27,21 +34,35 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
 
     public func fetchServerInfo(host: Host) async throws -> (Host, [String: String]) {
         let uniqueId = CertificateManager.shared.uniqueId
-        guard let url = URL(string: "https://\(host.address):\(host.httpsPort)/serverinfo?uniqueid=\(uniqueId)") else {
-            throw URLError(.badURL)
+
+        // 1. Prioritize HTTP on host.httpPort (default 47989) matching Moonlight-Qt
+        var responseData: Data?
+        if let httpUrl = URL(string: "http://\(host.address):\(host.httpPort)/serverinfo?uniqueid=\(uniqueId)"),
+           let (httpData, response) = try? await session.data(from: httpUrl),
+           let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 200 {
+            responseData = httpData
+        } else if let httpsUrl = URL(string: "https://\(host.address):\(host.httpsPort)/serverinfo?uniqueid=\(uniqueId)"),
+                  let (httpsData, response) = try? await session.data(from: httpsUrl),
+                  let httpsResp = response as? HTTPURLResponse, httpsResp.statusCode == 200 {
+            responseData = httpsData
         }
 
-        let (data, response) = try await session.data(from: url)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw URLError(.badServerResponse)
+        guard let data = responseData else {
+            throw URLError(.cannotConnectToHost)
         }
 
         let dict = parseSimpleXML(data: data)
         var updatedHost = host
-        if let hostname = dict["hostname"] { updatedHost.name = hostname }
+        if let hostname = dict["hostname"], !hostname.isEmpty { updatedHost.name = hostname }
         if let appVersion = dict["appversion"] { updatedHost.appVersion = appVersion }
         if let gfeVersion = dict["GfeVersion"] { updatedHost.gfeVersion = gfeVersion }
         if let mac = dict["mac"] { updatedHost.macAddress = mac }
+        if let httpsPortStr = dict["HttpsPort"], let port = Int(httpsPortStr), port > 0 {
+            updatedHost.httpsPort = port
+        }
+        if let extPortStr = dict["ExternalPort"], let port = Int(extPortStr), port > 0 {
+            updatedHost.httpPort = port
+        }
         if let codec = dict["ServerCodecModeSupport"], let codecVal = Int32(codec) {
             updatedHost.serverCodecModeSupport = codecVal
         }

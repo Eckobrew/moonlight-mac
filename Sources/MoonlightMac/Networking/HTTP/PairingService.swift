@@ -18,8 +18,8 @@ public final class PairingService: @unchecked Sendable {
         onPinGenerated: @escaping @Sendable (String) -> Void
     ) async throws -> Bool {
         let uniqueId = CertificateManager.shared.uniqueId
-        let clientCertDer = CertificateManager.shared.getClientCertificateDer()
-        let clientCertHex = CryptoUtils.hexString(clientCertDer)
+        let clientCertPem = CertificateManager.shared.getClientCertificatePem()
+        let clientCertHex = CryptoUtils.hexString(clientCertPem)
 
         let pin = String(format: "%04d", Int.random(in: 1000...9999))
         let clientSalt = CryptoUtils.randomBytes(count: 16)
