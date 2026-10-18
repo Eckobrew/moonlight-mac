@@ -388,10 +388,11 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         let is10Bit = (videoFormat & VIDEO_FORMAT_MASK_10BIT) != 0
         let pixelFormat = is10Bit ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
 
+        // Do not constrain width/height here; allow VideoToolbox to output CVPixelBuffers at the
+        // full native resolution of the incoming video stream (from the SPS parameter set),
+        // preventing unwanted downscaling or blur when the host overrides resolution.
         let destinationAttributes: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: pixelFormat,
-            kCVPixelBufferWidthKey: streamWidth,
-            kCVPixelBufferHeightKey: streamHeight,
             kCVPixelBufferMetalCompatibilityKey: true,
             kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary
         ]

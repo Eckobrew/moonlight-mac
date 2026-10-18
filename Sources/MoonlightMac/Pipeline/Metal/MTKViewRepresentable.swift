@@ -18,6 +18,8 @@ public final class MetalStreamView: NSView {
         layer.pixelFormat = .bgra8Unorm
         layer.framebufferOnly = false
         layer.presentsWithTransaction = false
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        layer.contentsScale = scale
         if #available(macOS 10.13, *) {
             layer.allowsNextDrawableTimeout = true
         }
@@ -49,12 +51,41 @@ public final class MetalStreamView: NSView {
 
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        updateDrawableSize()
         if let window = self.window {
             window.acceptsMouseMovedEvents = true
             onWindowAttached?(window)
             if let layer = self.metalLayer {
                 MetalStreamRenderer.shared.attachLayer(layer)
             }
+        }
+    }
+
+    public override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateDrawableSize()
+    }
+
+    public override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        updateDrawableSize()
+    }
+
+    public override func layout() {
+        super.layout()
+        updateDrawableSize()
+    }
+
+    private func updateDrawableSize() {
+        guard let layer = self.metalLayer else { return }
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        layer.contentsScale = scale
+        let targetSize = CGSize(
+            width: max(1, bounds.width * scale),
+            height: max(1, bounds.height * scale)
+        )
+        if layer.drawableSize != targetSize {
+            layer.drawableSize = targetSize
         }
     }
 }

@@ -36,6 +36,13 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     private var positionBuffer: MTLBuffer?
     private var texCoordBuffer: MTLBuffer?
 
+    // Aspect-ratio scaling cache
+    private var lastFrameWidth: Int = -1
+    private var lastFrameHeight: Int = -1
+    private var lastDrawableWidth: Int = -1
+    private var lastDrawableHeight: Int = -1
+    private var isVideoLetterboxed: Bool = false
+
     // FPS calculation
     private var frameCount: UInt64 = 0
     private var lastFpsTimestamp: TimeInterval = CACurrentMediaTime()
@@ -87,6 +94,58 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             length: texCoords.count * MemoryLayout<Float>.size,
             options: .storageModeShared
         )
+    }
+
+    /// Dynamically scales video vertices to maintain exact aspect ratio, matching moonlight-qt StreamUtils::scaleSourceToDestinationSurface
+    private func updateVideoVertices(frameWidth: Int, frameHeight: Int, drawableWidth: Int, drawableHeight: Int) {
+        guard frameWidth > 0, frameHeight > 0, drawableWidth > 0, drawableHeight > 0 else { return }
+
+        let dstH = Int(ceil(Double(drawableWidth) * Double(frameHeight) / Double(frameWidth)))
+        let dstW = Int(ceil(Double(drawableHeight) * Double(frameWidth) / Double(frameHeight)))
+
+        var finalDstX = 0
+        var finalDstY = 0
+        var finalDstW = drawableWidth
+        var finalDstH = drawableHeight
+
+        if dstH > drawableHeight {
+            finalDstX = (drawableWidth - dstW) / 2
+            finalDstW = dstW
+        } else {
+            finalDstY = (drawableHeight - dstH) / 2
+            finalDstH = dstH
+        }
+
+        self.isVideoLetterboxed = (finalDstW != drawableWidth || finalDstH != drawableHeight)
+
+        let ndcX0 = (Float(finalDstX) / (Float(drawableWidth) / 2.0)) - 1.0
+        let ndcX1 = (Float(finalDstX + finalDstW) / (Float(drawableWidth) / 2.0)) - 1.0
+        let ndcY0 = 1.0 - (Float(finalDstY + finalDstH) / (Float(drawableHeight) / 2.0))
+        let ndcY1 = 1.0 - (Float(finalDstY) / (Float(drawableHeight) / 2.0))
+
+        let positions: [Float] = [
+            ndcX0, ndcY0,
+            ndcX1, ndcY0,
+            ndcX0, ndcY1,
+            ndcX1, ndcY0,
+            ndcX1, ndcY1,
+            ndcX0, ndcY1
+        ]
+
+        if let buffer = positionBuffer, buffer.length >= positions.count * MemoryLayout<Float>.size {
+            buffer.contents().copyMemory(from: positions, byteCount: positions.count * MemoryLayout<Float>.size)
+        } else if let device = self.device {
+            positionBuffer = device.makeBuffer(
+                bytes: positions,
+                length: positions.count * MemoryLayout<Float>.size,
+                options: .storageModeShared
+            )
+        }
+
+        self.lastFrameWidth = frameWidth
+        self.lastFrameHeight = frameHeight
+        self.lastDrawableWidth = drawableWidth
+        self.lastDrawableHeight = drawableHeight
     }
 
     private func setupPipeline(device: MTLDevice) {
@@ -226,6 +285,15 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         layer.framebufferOnly = false
         layer.presentsWithTransaction = false
 
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        layer.contentsScale = scale
+        if layer.bounds.width > 0 && layer.bounds.height > 0 {
+            layer.drawableSize = CGSize(
+                width: layer.bounds.width * scale,
+                height: layer.bounds.height * scale
+            )
+        }
+
         if #available(macOS 10.13, *) {
             layer.displaySyncEnabled = self.enableVsync
             layer.allowsNextDrawableTimeout = true
@@ -234,7 +302,7 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             layer.maximumDrawableCount = 2
         }
 
-        AppLogger.shared.info("[MetalStreamRenderer] CAMetalLayer configured: displaySyncEnabled=\(self.enableVsync), maxDrawables=2, allowsNextDrawableTimeout=true")
+        AppLogger.shared.info("[MetalStreamRenderer] CAMetalLayer configured: displaySyncEnabled=\(self.enableVsync), maxDrawables=2, allowsNextDrawableTimeout=true, contentsScale=\(scale)")
     }
 
     /// Render a decoded or paced frame immediately to the Metal layer.
@@ -256,6 +324,13 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         let is10Bit = CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+
+        let drawableWidth = Int(layer.drawableSize.width)
+        let drawableHeight = Int(layer.drawableSize.height)
+
+        if width != lastFrameWidth || height != lastFrameHeight || drawableWidth != lastDrawableWidth || drawableHeight != lastDrawableHeight {
+            updateVideoVertices(frameWidth: width, frameHeight: height, drawableWidth: drawableWidth, drawableHeight: drawableHeight)
+        }
 
         let yFormat: MTLPixelFormat = is10Bit ? .r16Unorm : .r8Unorm
         let uvFormat: MTLPixelFormat = is10Bit ? .rg16Unorm : .rg8Unorm
@@ -296,7 +371,8 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
 
         let renderPassDesc = MTLRenderPassDescriptor()
         renderPassDesc.colorAttachments[0].texture = drawable.texture
-        renderPassDesc.colorAttachments[0].loadAction = .dontCare
+        renderPassDesc.colorAttachments[0].loadAction = isVideoLetterboxed ? .clear : .dontCare
+        renderPassDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         renderPassDesc.colorAttachments[0].storeAction = .store
 
         guard let cmdBuffer = queue.makeCommandBuffer(),
@@ -338,6 +414,11 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         self.currentPixelBuffer = nil
         self.frameCount = 0
         self.currentRenderFps = 0.0
+        self.lastFrameWidth = -1
+        self.lastFrameHeight = -1
+        self.lastDrawableWidth = -1
+        self.lastDrawableHeight = -1
+        self.isVideoLetterboxed = false
         lock.unlock()
     }
 
