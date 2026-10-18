@@ -13,18 +13,29 @@ public final class CertificateManager: @unchecked Sendable {
     private var cachedDerCert: Data?
 
     private init() {
+        // Disallow macOS Security framework from displaying Keychain UI password prompts
+        SecKeychainSetUserInteractionAllowed(false)
+
         if let storedId = UserDefaults.standard.string(forKey: uniqueIdKey), !storedId.isEmpty {
-            self.uniqueId = storedId
+            self.uniqueId = storedId.lowercased()
         } else {
-            // Moonlight uses 16-character hex unique ID
-            var bytes = [UInt8](repeating: 0, count: 8)
-            _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-            let newId = bytes.map { String(format: "%02x", $0) }.joined().uppercased()
+            let uid = UInt64.random(in: 0...UInt64.max)
+            let newId = String(format: "%016llx", uid)
             UserDefaults.standard.set(newId, forKey: uniqueIdKey)
             self.uniqueId = newId
         }
 
         ensureCredentialsExist()
+    }
+
+    @discardableResult
+    public func regenerateUniqueId() -> String {
+        let uid = UInt64.random(in: 0...UInt64.max)
+        let newId = String(format: "%016llx", uid)
+        UserDefaults.standard.set(newId, forKey: uniqueIdKey)
+        self.uniqueId = newId
+        AppLogger.shared.info("Regenerated client uniqueId: \(newId)", category: "SECURITY")
+        return newId
     }
 
     private var appSupportDir: URL {
@@ -93,10 +104,15 @@ public final class CertificateManager: @unchecked Sendable {
         if let p12Data = try? Data(contentsOf: p12Path) {
             // Use kSecImportToMemoryOnly matching modern macOS and Qt 6.8+
             // This prevents ANY interaction with user or system keychains, completely eliminating password prompts.
-            let options: [String: Any] = [
-                kSecImportExportPassphrase as String: "moonlight",
-                "kSecImportToMemoryOnly": true
+            var options: [String: Any] = [
+                kSecImportExportPassphrase as String: "moonlight"
             ]
+            if #available(macOS 15.0, *) {
+                options[kSecImportToMemoryOnly as String] = kCFBooleanTrue
+            } else if let sym = dlsym(dlopen(nil, RTLD_NOW), "kSecImportToMemoryOnly") {
+                let memKey = sym.assumingMemoryBound(to: CFString.self).pointee
+                options[memKey as String] = kCFBooleanTrue
+            }
             var items: CFArray?
             let status = SecPKCS12Import(p12Data as CFData, options as CFDictionary, &items)
             if status == errSecSuccess,

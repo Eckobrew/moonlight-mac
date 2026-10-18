@@ -5,20 +5,22 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
     public static let shared = SunshineHTTPClient()
 
     private lazy var defaultSession: URLSession = {
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 8.0
-        config.timeoutIntervalForResource = 15.0
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 6.0
+        config.timeoutIntervalForResource = 10.0
         config.httpShouldSetCookies = false
-        config.httpMaximumConnectionsPerHost = 4
+        config.httpMaximumConnectionsPerHost = 16
+        config.httpAdditionalHeaders = ["Connection": "close"]
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
     private lazy var pairingSession: URLSession = {
-        let config = URLSessionConfiguration.default
+        let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 180.0
         config.timeoutIntervalForResource = 180.0
         config.httpShouldSetCookies = false
-        config.httpMaximumConnectionsPerHost = 2
+        config.httpMaximumConnectionsPerHost = 8
+        config.httpAdditionalHeaders = ["Connection": "close"]
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
@@ -33,9 +35,13 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
             AppLogger.shared.debug("Accepting server trust for host: \(challenge.protectionSpace.host)", category: "HTTP")
             completionHandler(.useCredential, URLCredential(trust: serverTrust))
         } else if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodClientCertificate {
+            SecKeychainSetUserInteractionAllowed(false)
             if let identity = CertificateManager.shared.getClientIdentity() {
                 AppLogger.shared.debug("Providing client mTLS certificate identity to: \(challenge.protectionSpace.host)", category: "HTTP")
-                let credential = URLCredential(identity: identity, certificates: nil, persistence: .forSession)
+                var cert: SecCertificate?
+                SecIdentityCopyCertificate(identity, &cert)
+                let certs = cert != nil ? [cert!] : nil
+                let credential = URLCredential(identity: identity, certificates: certs, persistence: .forSession)
                 completionHandler(.useCredential, credential)
             } else {
                 AppLogger.shared.warning("Client certificate challenge received but no identity found", category: "HTTP")
@@ -48,7 +54,6 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
 
     public func fetchServerInfo(host: Host) async throws -> (Host, [String: String]) {
         let uniqueId = CertificateManager.shared.uniqueId
-        let uuid = UUID().uuidString.replacingOccurrences(of: "-", with: "")
 
         AppLogger.shared.info("Fetching serverinfo for \(host.address)...", category: "HTTP")
 
@@ -57,7 +62,7 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         var isHttps = false
 
         if host.httpsPort > 0,
-           let httpsUrl = URL(string: "https://\(host.address):\(host.httpsPort)/serverinfo?uniqueid=\(uniqueId)&uuid=\(uuid)") {
+           let httpsUrl = URL(string: "https://\(host.address):\(host.httpsPort)/serverinfo?uniqueid=\(uniqueId)") {
             do {
                 let (data, response) = try await defaultSession.data(from: httpsUrl)
                 if let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 200 {
@@ -78,7 +83,7 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
 
         // 2. Fall back to HTTP if HTTPS fails or host is not yet paired
         if responseData == nil,
-           let httpUrl = URL(string: "http://\(host.address):\(host.httpPort)/serverinfo?uniqueid=\(uniqueId)&uuid=\(uuid)") {
+           let httpUrl = URL(string: "http://\(host.address):\(host.httpPort)/serverinfo?uniqueid=\(uniqueId)") {
             do {
                 let (data, response) = try await defaultSession.data(from: httpUrl)
                 if let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 200 {
@@ -126,8 +131,7 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
 
     public func fetchAppList(host: Host) async throws -> [StreamApp] {
         let uniqueId = CertificateManager.shared.uniqueId
-        let uuid = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        guard let url = URL(string: "https://\(host.address):\(host.httpsPort)/applist?uniqueid=\(uniqueId)&uuid=\(uuid)") else {
+        guard let url = URL(string: "https://\(host.address):\(host.httpsPort)/applist?uniqueid=\(uniqueId)") else {
             throw URLError(.badURL)
         }
 
@@ -236,18 +240,17 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
 
     public func unpair(host: Host) async {
         let uniqueId = CertificateManager.shared.uniqueId
-        let uuid = UUID().uuidString.replacingOccurrences(of: "-", with: "")
 
         AppLogger.shared.info("Sending unpair request to \(host.address)...", category: "HTTP")
 
         // Send unpair to HTTP port (47989)
-        if let httpUrl = URL(string: "http://\(host.address):\(host.httpPort)/unpair?uniqueid=\(uniqueId)&uuid=\(uuid)") {
+        if let httpUrl = URL(string: "http://\(host.address):\(host.httpPort)/unpair?uniqueid=\(uniqueId)") {
             _ = try? await defaultSession.data(from: httpUrl)
         }
 
         // Also send unpair to HTTPS port (47984)
         if host.httpsPort > 0,
-           let httpsUrl = URL(string: "https://\(host.address):\(host.httpsPort)/unpair?uniqueid=\(uniqueId)&uuid=\(uuid)") {
+           let httpsUrl = URL(string: "https://\(host.address):\(host.httpsPort)/unpair?uniqueid=\(uniqueId)") {
             _ = try? await defaultSession.data(from: httpsUrl)
         }
     }
