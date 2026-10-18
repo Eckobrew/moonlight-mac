@@ -86,6 +86,28 @@ public struct SettingsView: View {
                         }
                     }
 
+                    Picker("Renderer:", selection: $settings.videoRenderer) {
+                        ForEach(VideoRendererMode.allCases, id: \.self) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+
+                    Toggle("Enable V-Sync", isOn: $settings.enableVsync)
+                    Text("Synchronizes frame presentation with the display refresh rate to eliminate tearing. Turn off to minimize input latency.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if !settings.enableVsync && settings.videoRenderer == .native {
+                        Label("Disabling V-Sync requires the Metal renderer for unlocked display presentation.", systemImage: "info.circle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+
+                    Toggle("Enable Frame Pacing", isOn: $settings.enableFramePacing)
+                    Text("Paces frames to display refresh cycles to eliminate micro-stutter and judder. Turn off for lowest latency.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
                     Toggle("Enable HDR (10-bit color)", isOn: $settings.enableHdr)
                     Toggle("Full Dynamic Range Color", isOn: $settings.fullRangeColor)
                 }

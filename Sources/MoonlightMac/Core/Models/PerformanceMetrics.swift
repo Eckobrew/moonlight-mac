@@ -12,6 +12,8 @@ public struct PerformanceMetrics: Sendable {
     public var totalFramesDropped: UInt64
     public var currentCodec: String
     public var resolution: String
+    public var vsyncEnabled: Bool
+    public var pacingEnabled: Bool
 
     public init(
         currentFps: Double = 0.0,
@@ -24,7 +26,9 @@ public struct PerformanceMetrics: Sendable {
         totalFramesRendered: UInt64 = 0,
         totalFramesDropped: UInt64 = 0,
         currentCodec: String = "HEVC",
-        resolution: String = "1920x1080"
+        resolution: String = "1920x1080",
+        vsyncEnabled: Bool = true,
+        pacingEnabled: Bool = false
     ) {
         self.currentFps = currentFps
         self.targetFps = targetFps
@@ -37,6 +41,8 @@ public struct PerformanceMetrics: Sendable {
         self.totalFramesDropped = totalFramesDropped
         self.currentCodec = currentCodec
         self.resolution = resolution
+        self.vsyncEnabled = vsyncEnabled
+        self.pacingEnabled = pacingEnabled
     }
 
     public var packetLossPercentage: Double {

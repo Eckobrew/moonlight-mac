@@ -40,6 +40,8 @@ public struct PerformanceHUDView: View {
                 )
                 metricRow(label: "Codec", value: metrics.currentCodec)
                 metricRow(label: "Resolution", value: metrics.resolution)
+                metricRow(label: "V-Sync", value: metrics.vsyncEnabled ? "On" : "Off (Unlocked)")
+                metricRow(label: "Pacing", value: metrics.pacingEnabled ? "On (CVDisplayLink)" : "Off (Immediate)")
             }
         }
         .padding(12)

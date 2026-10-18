@@ -14,6 +14,10 @@ public final class WindowManager: ObservableObject {
 
     private init() {}
 
+    public var currentWindow: NSWindow? {
+        targetWindow()
+    }
+
     private func targetWindow(provided: NSWindow? = nil) -> NSWindow? {
         return provided ?? NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) })
     }

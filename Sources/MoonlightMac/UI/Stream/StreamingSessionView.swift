@@ -13,14 +13,26 @@ public struct StreamingSessionView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            // Native hardware direct-scanout stream view (AVSampleBufferDisplayLayer)
-            SampleBufferViewRepresentable(
-                onWindowAttached: { window in
-                    let mode = sessionController.activeSettings?.windowMode ?? .fullscreenDesktop
-                    WindowManager.shared.applyStartupWindowMode(mode, for: window)
-                }
-            )
-            .ignoresSafeArea()
+            // Stream view: Metal (default with VSync/tearing control) or Native AVSampleBufferDisplayLayer
+            if sessionController.activeSettings?.videoRenderer == .native {
+                SampleBufferViewRepresentable(
+                    onWindowAttached: { window in
+                        let mode = sessionController.activeSettings?.windowMode ?? .fullscreenDesktop
+                        WindowManager.shared.applyStartupWindowMode(mode, for: window)
+                        FramePacer.shared.updateWindow(window)
+                    }
+                )
+                .ignoresSafeArea()
+            } else {
+                MetalStreamViewRepresentable(
+                    onWindowAttached: { window in
+                        let mode = sessionController.activeSettings?.windowMode ?? .fullscreenDesktop
+                        WindowManager.shared.applyStartupWindowMode(mode, for: window)
+                        FramePacer.shared.updateWindow(window)
+                    }
+                )
+                .ignoresSafeArea()
+            }
 
             // Connecting progress indicator
             if sessionController.currentStageName != "Connected" {

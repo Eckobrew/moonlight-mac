@@ -62,6 +62,10 @@ public enum WindowMode: String, Codable, CaseIterable, Sendable {
     }
 }
 
+public enum VideoRendererMode: String, Codable, CaseIterable, Sendable {
+    case metal = "Metal"
+    case native = "Native (AVSampleBuffer)"
+}
 
 public struct StreamSettings: Codable, Equatable, Sendable {
     public var width: Int
@@ -76,6 +80,9 @@ public struct StreamSettings: Codable, Equatable, Sendable {
     public var mouseCaptureMode: Bool
     public var swapCommandControl: Bool
     public var windowMode: WindowMode
+    public var videoRenderer: VideoRendererMode
+    public var enableVsync: Bool
+    public var enableFramePacing: Bool
 
     public init(
         width: Int = 1920,
@@ -89,7 +96,10 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         fullRangeColor: Bool = false,
         mouseCaptureMode: Bool = true,
         swapCommandControl: Bool = false,
-        windowMode: WindowMode = .fullscreenDesktop
+        windowMode: WindowMode = .fullscreenDesktop,
+        videoRenderer: VideoRendererMode = .metal,
+        enableVsync: Bool = true,
+        enableFramePacing: Bool = false
     ) {
         self.width = width
         self.height = height
@@ -103,12 +113,16 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.mouseCaptureMode = mouseCaptureMode
         self.swapCommandControl = swapCommandControl
         self.windowMode = windowMode
+        self.videoRenderer = videoRenderer
+        self.enableVsync = enableVsync
+        self.enableFramePacing = enableFramePacing
     }
 
     enum CodingKeys: String, CodingKey {
         case width, height, fps, bitrateMbps, packetSize
         case codec, audioMode, enableHdr, fullRangeColor
         case mouseCaptureMode, swapCommandControl, windowMode
+        case videoRenderer, enableVsync, enableFramePacing
     }
 
     public init(from decoder: Decoder) throws {
@@ -125,5 +139,9 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.mouseCaptureMode = try container.decode(Bool.self, forKey: .mouseCaptureMode)
         self.swapCommandControl = try container.decode(Bool.self, forKey: .swapCommandControl)
         self.windowMode = (try? container.decode(WindowMode.self, forKey: .windowMode)) ?? .fullscreenDesktop
+        self.videoRenderer = (try? container.decode(VideoRendererMode.self, forKey: .videoRenderer)) ?? .metal
+        self.enableVsync = (try? container.decode(Bool.self, forKey: .enableVsync)) ?? true
+        self.enableFramePacing = (try? container.decode(Bool.self, forKey: .enableFramePacing)) ?? false
     }
 }
+

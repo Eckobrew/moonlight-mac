@@ -1,8 +1,16 @@
+import AppKit
+import CoreVideo
 import Foundation
 import Metal
 import MetalKit
-import CoreVideo
 
+/// High-performance zero-copy Metal video renderer for Moonlight.
+///
+/// Features:
+/// - Opt-out VSync: Controls `CAMetalLayer.displaySyncEnabled` allowing unlocked presentation / tearing.
+/// - Zero-copy CVPixelBuffer plane mapping via `CVMetalTextureCache`.
+/// - Hardware-accelerated BT.709 (SDR) and BT.2020 (HDR10) color space conversion shaders.
+/// - Event-driven presentation: Renders only when a new decoded or paced frame arrives.
 public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
     public static let shared = MetalStreamRenderer()
 
@@ -13,10 +21,16 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     private var textureCache: CVMetalTextureCache?
     private var samplerState: MTLSamplerState?
 
-    // Current frame buffer protected by lock
     private let lock = NSLock()
-    private var currentPixelBuffer: CVPixelBuffer?
+    public weak var metalLayer: CAMetalLayer?
+    public weak var mtkView: MTKView?
+
     public var isHdrActive: Bool = false
+    public var enableVsync: Bool = true {
+        didSet {
+            updateVsyncSettings()
+        }
+    }
 
     // Geometry buffers for full-screen quad (2 triangles)
     private var positionBuffer: MTLBuffer?
@@ -27,10 +41,13 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     private var lastFpsTimestamp: TimeInterval = CACurrentMediaTime()
     public private(set) var currentRenderFps: Double = 0.0
 
+    // Cached pixel buffer for manual draw calls
+    private var currentPixelBuffer: CVPixelBuffer?
+
     public override init() {
         super.init()
         guard let mtlDevice = MTLCreateSystemDefaultDevice() else {
-            print("Failed to get default Metal device")
+            AppLogger.shared.error("[MetalStreamRenderer] Failed to get default Metal device")
             return
         }
         self.device = mtlDevice
@@ -43,7 +60,6 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     }
 
     private func setupBuffers(device: MTLDevice) {
-        // Full screen quad coordinates
         let positions: [Float] = [
             -1.0, -1.0,
              1.0, -1.0,
@@ -61,8 +77,16 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             0.0, 0.0
         ]
 
-        positionBuffer = device.makeBuffer(bytes: positions, length: positions.count * MemoryLayout<Float>.size, options: .storageModeShared)
-        texCoordBuffer = device.makeBuffer(bytes: texCoords, length: texCoords.count * MemoryLayout<Float>.size, options: .storageModeShared)
+        positionBuffer = device.makeBuffer(
+            bytes: positions,
+            length: positions.count * MemoryLayout<Float>.size,
+            options: .storageModeShared
+        )
+        texCoordBuffer = device.makeBuffer(
+            bytes: texCoords,
+            length: texCoords.count * MemoryLayout<Float>.size,
+            options: .storageModeShared
+        )
     }
 
     private func setupPipeline(device: MTLDevice) {
@@ -74,7 +98,6 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     }
 
     private func compileShadersFromSource(device: MTLDevice) {
-        // Metal source fallback for direct SPM builds
         let metalSource = """
         #include <metal_stdlib>
         using namespace metal;
@@ -115,6 +138,12 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             return float4(clamp(rgb, 0.0, 1.0), 1.0);
         }
 
+        constant float3x3 kColorConversion2020 = float3x3(
+            float3(1.164384,  1.164384,  1.164384),
+            float3(0.000000, -0.187326,  2.141770),
+            float3(1.678674, -0.650424,  0.000000)
+        );
+
         fragment float4 streamFragmentShaderBT2020(
             VertexOutput in [[stage_in]],
             texture2d<float, access::sample> textureY [[texture(0)]],
@@ -124,7 +153,7 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             float y = textureY.sample(textureSampler, in.texCoord).r;
             float2 uv = textureUV.sample(textureSampler, in.texCoord).rg;
             float3 yuv = float3(y, uv) + kColorOffset709;
-            float3 rgb = kColorConversion709 * yuv;
+            float3 rgb = kColorConversion2020 * yuv;
             return float4(clamp(rgb, 0.0, 1.0), 1.0);
         }
         """
@@ -133,7 +162,7 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             let library = try device.makeLibrary(source: metalSource, options: nil)
             buildPipelines(device: device, library: library)
         } catch {
-            print("Failed to compile metal shaders dynamically: \(error)")
+            AppLogger.shared.error("[MetalStreamRenderer] Shader compilation failed: \(error)")
         }
     }
 
@@ -162,42 +191,81 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         self.samplerState = device.makeSamplerState(descriptor: desc)
     }
 
-    public func setPixelBuffer(_ pixelBuffer: CVPixelBuffer) {
+    /// Attach a CAMetalLayer and configure V-Sync / display synchronization.
+    public func attachLayer(_ layer: CAMetalLayer) {
         lock.lock()
-        self.currentPixelBuffer = pixelBuffer
+        self.metalLayer = layer
+        applyLayerVsyncSettings(layer)
         lock.unlock()
     }
 
-    public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
-
-    public func draw(in view: MTKView) {
+    @MainActor
+    public func attachMTKView(_ view: MTKView) {
         lock.lock()
-        let pixelBuffer = self.currentPixelBuffer
+        self.mtkView = view
+        if let layer = view.layer as? CAMetalLayer {
+            self.metalLayer = layer
+            applyLayerVsyncSettings(layer)
+        }
+        lock.unlock()
+    }
+
+    private func updateVsyncSettings() {
+        lock.lock()
+        guard let layer = metalLayer else {
+            lock.unlock()
+            return
+        }
+        applyLayerVsyncSettings(layer)
+        lock.unlock()
+    }
+
+    private func applyLayerVsyncSettings(_ layer: CAMetalLayer) {
+        layer.device = self.device
+        layer.pixelFormat = .bgra8Unorm
+        layer.framebufferOnly = false
+        layer.presentsWithTransaction = false
+
+        if #available(macOS 10.13, *) {
+            layer.displaySyncEnabled = self.enableVsync
+        }
+        if #available(macOS 10.15, *) {
+            layer.maximumDrawableCount = self.enableVsync ? 3 : 2
+        }
+
+        AppLogger.shared.info("[MetalStreamRenderer] CAMetalLayer configured: displaySyncEnabled=\(self.enableVsync), maxDrawables=\(self.enableVsync ? 3 : 2)")
+    }
+
+    /// Render a decoded or paced frame immediately to the Metal layer.
+    public func render(pixelBuffer: CVPixelBuffer) {
+        lock.lock()
+        self.currentPixelBuffer = pixelBuffer
+        guard let layer = self.metalLayer,
+              let queue = self.commandQueue,
+              let cache = self.textureCache else {
+            lock.unlock()
+            return
+        }
         lock.unlock()
 
-        guard let buffer = pixelBuffer,
-              let cache = textureCache,
-              let renderPassDesc = view.currentRenderPassDescriptor,
-              let drawable = view.currentDrawable,
-              let queue = commandQueue else {
+        guard let drawable = layer.nextDrawable() else {
             return
         }
 
-        let width = CVPixelBufferGetWidth(buffer)
-        let height = CVPixelBufferGetHeight(buffer)
-        let is10Bit = CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let is10Bit = CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
 
         let yFormat: MTLPixelFormat = is10Bit ? .r16Unorm : .r8Unorm
         let uvFormat: MTLPixelFormat = is10Bit ? .rg16Unorm : .rg8Unorm
 
-        // Zero-copy texture creation directly from CVPixelBuffer planes via CVMetalTextureCache
         var cvTextureY: CVMetalTexture?
         var cvTextureUV: CVMetalTexture?
 
         let statusY = CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             cache,
-            buffer,
+            pixelBuffer,
             nil,
             yFormat,
             width,
@@ -209,7 +277,7 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         let statusUV = CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             cache,
-            buffer,
+            pixelBuffer,
             nil,
             uvFormat,
             width / 2,
@@ -219,10 +287,16 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         )
 
         guard statusY == kCVReturnSuccess, statusUV == kCVReturnSuccess,
-              let texY = CVMetalTextureGetTexture(cvTextureY!),
-              let texUV = CVMetalTextureGetTexture(cvTextureUV!) else {
+              let cvY = cvTextureY, let cvUV = cvTextureUV,
+              let texY = CVMetalTextureGetTexture(cvY),
+              let texUV = CVMetalTextureGetTexture(cvUV) else {
             return
         }
+
+        let renderPassDesc = MTLRenderPassDescriptor()
+        renderPassDesc.colorAttachments[0].texture = drawable.texture
+        renderPassDesc.colorAttachments[0].loadAction = .dontCare
+        renderPassDesc.colorAttachments[0].storeAction = .store
 
         guard let cmdBuffer = queue.makeCommandBuffer(),
               let encoder = cmdBuffer.makeRenderCommandEncoder(descriptor: renderPassDesc) else {
@@ -244,7 +318,10 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         cmdBuffer.present(drawable)
         cmdBuffer.commit()
 
-        // Track FPS
+        recordFps()
+    }
+
+    private func recordFps() {
         frameCount += 1
         let now = CACurrentMediaTime()
         let elapsed = now - lastFpsTimestamp
@@ -252,6 +329,27 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             currentRenderFps = Double(frameCount) / elapsed
             frameCount = 0
             lastFpsTimestamp = now
+        }
+    }
+
+    public func reset() {
+        lock.lock()
+        self.currentPixelBuffer = nil
+        self.frameCount = 0
+        self.currentRenderFps = 0.0
+        lock.unlock()
+    }
+
+    // MARK: - MTKViewDelegate (event-driven fallback)
+    public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+
+    public func draw(in view: MTKView) {
+        lock.lock()
+        let buffer = self.currentPixelBuffer
+        lock.unlock()
+
+        if let buf = buffer {
+            render(pixelBuffer: buf)
         }
     }
 }

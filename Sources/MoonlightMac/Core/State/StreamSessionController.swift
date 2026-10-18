@@ -117,6 +117,23 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
                 )
             }
 
+            MetalStreamRenderer.shared.enableVsync = effectiveSettings.enableVsync
+            MetalStreamRenderer.shared.isHdrActive = effectiveSettings.enableHdr
+
+            let displayID = (WindowManager.shared.currentWindow?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+            let useNativeRenderer = effectiveSettings.videoRenderer == .native
+
+            FramePacer.shared.configure(
+                enabled: effectiveSettings.enableFramePacing,
+                displayID: displayID
+            ) { pixelBuffer in
+                if useNativeRenderer {
+                    NativeStreamPresenter.shared.enqueue(pixelBuffer: pixelBuffer)
+                } else {
+                    MetalStreamRenderer.shared.render(pixelBuffer: pixelBuffer)
+                }
+            }
+
             startLimelightConnection(
                 host: host,
                 sessionUrl: sessionUrl,
@@ -287,12 +304,17 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         // 1. Mark video decoder as stopped under submitLock so any in-flight frame completes and future frames are safely dropped
         videoDecoder.teardownSession()
 
-        // 2. Stop input capture on next main runloop tick to prevent reentrant NSEvent callback crashes
+        // 2. Stop FramePacer and flush video presenters
+        FramePacer.shared.stop()
+        NativeStreamPresenter.shared.flush()
+        MetalStreamRenderer.shared.reset()
+
+        // 3. Stop input capture on next main runloop tick to prevent reentrant NSEvent callback crashes
         DispatchQueue.main.async { [weak self] in
             self?.inputCoordinator.stopCapturing()
         }
 
-        // 3. Stop Limelight C connection on background thread (waits for and joins worker threads)
+        // 4. Stop Limelight C connection on background thread (waits for and joins worker threads)
         Task.detached(priority: .userInitiated) {
             LiStopConnection()
         }
@@ -300,7 +322,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         streamTask?.cancel()
         streamTask = nil
 
-        // 4. Request host to terminate app if activeHost is set
+        // 5. Request host to terminate app if activeHost is set
         if let host = activeHost {
             Task {
                 try? await SunshineHTTPClient.shared.quitApp(host: host)
@@ -335,6 +357,8 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
                     self.metrics.targetFps = settings.fps
                     self.metrics.bitrateMbps = Double(settings.bitrateMbps)
                     self.metrics.resolution = "\(settings.width)x\(settings.height)"
+                    self.metrics.vsyncEnabled = settings.enableVsync
+                    self.metrics.pacingEnabled = settings.enableFramePacing
                 }
             }
         }
@@ -347,7 +371,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
     // MARK: - VideoDecoderDelegate
     public nonisolated func decoderDidOutputPixelBuffer(_ pixelBuffer: CVPixelBuffer, presentationTimeUs: UInt64, decodeTimeMs: Double) {
-        NativeStreamPresenter.shared.enqueue(pixelBuffer: pixelBuffer)
+        FramePacer.shared.submit(pixelBuffer: pixelBuffer)
         metricsAccumulator.recordRender(decodeTimeMs: decodeTimeMs)
     }
 
