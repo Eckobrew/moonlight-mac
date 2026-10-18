@@ -1,0 +1,91 @@
+import SwiftUI
+
+public struct AppGridView: View {
+    public let host: Host
+    public let apps: [StreamApp]
+    public let onLaunchApp: (StreamApp) -> Void
+    public let onQuitCurrentApp: () -> Void
+    public let onBack: () -> Void
+
+    private let columns = [
+        GridItem(.adaptive(minimum: 140, maximum: 180), spacing: 20)
+    ]
+
+    public init(
+        host: Host,
+        apps: [StreamApp],
+        onLaunchApp: @escaping (StreamApp) -> Void,
+        onQuitCurrentApp: @escaping () -> Void,
+        onBack: @escaping () -> Void
+    ) {
+        self.host = host
+        self.apps = apps
+        self.onLaunchApp = onLaunchApp
+        self.onQuitCurrentApp = onQuitCurrentApp
+        self.onBack = onBack
+    }
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            // Header bar
+            HStack {
+                Button(action: onBack) {
+                    Label("Hosts", systemImage: "chevron.left")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.blue)
+
+                Spacer()
+
+                Text(host.name)
+                    .font(.headline)
+
+                Spacer()
+
+                if host.currentAppId != nil && host.currentAppId != 0 {
+                    Button(role: .destructive, action: onQuitCurrentApp) {
+                        Label("Quit Current App", systemImage: "xmark.circle")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .overlay(Divider(), alignment: .bottom)
+
+            // Grid
+            if apps.isEmpty {
+                VStack(spacing: 16) {
+                    Spacer()
+                    Image(systemName: "app.dashed")
+                        .font(.system(size: 48))
+                        .foregroundStyle(.secondary)
+                    Text("No applications found on host")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                    Text("Check your Sunshine or Apollo Applications configuration.")
+                        .font(.subheadline)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 24) {
+                        ForEach(apps) { app in
+                            AppCardView(
+                                app: app,
+                                isStreaming: host.currentAppId == app.id,
+                                onLaunch: {
+                                    onLaunchApp(app)
+                                }
+                            )
+                        }
+                    }
+                    .padding(24)
+                }
+            }
+        }
+    }
+}

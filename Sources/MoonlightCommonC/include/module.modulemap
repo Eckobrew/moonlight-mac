@@ -1,0 +1,4 @@
+module MoonlightCommonC [system] {
+    header "Limelight.h"
+    export *
+}
