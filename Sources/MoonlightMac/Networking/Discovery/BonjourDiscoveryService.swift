@@ -50,7 +50,8 @@ public final class BonjourDiscoveryService: ObservableObject, @unchecked Sendabl
             address: address,
             httpsPort: 47984,
             httpPort: httpPort,
-            status: .online
+            status: .unknown,
+            isPaired: false
         )
 
         Task {
@@ -60,7 +61,10 @@ public final class BonjourDiscoveryService: ObservableObject, @unchecked Sendabl
             }
 
             await MainActor.run {
-                if let idx = self.discoveredHosts.firstIndex(where: { $0.address == address }) {
+                if let idx = self.discoveredHosts.firstIndex(where: {
+                    $0.address == address ||
+                    ($0.serverId != nil && verified.serverId != nil && $0.serverId == verified.serverId)
+                }) {
                     self.discoveredHosts[idx] = verified
                 } else {
                     self.discoveredHosts.append(verified)

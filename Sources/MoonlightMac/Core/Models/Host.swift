@@ -21,6 +21,7 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
     public var gfeVersion: String
     public var appVersion: String
     public var macAddress: String?
+    public var serverId: String?
     public var serverCodecModeSupport: Int32
     public var isPaired: Bool
     public var currentAppId: Int?
@@ -39,6 +40,7 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
         gfeVersion: String = "",
         appVersion: String = "",
         macAddress: String? = nil,
+        serverId: String? = nil,
         serverCodecModeSupport: Int32 = 0,
         isPaired: Bool = false,
         currentAppId: Int? = nil,
@@ -56,6 +58,7 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
         self.gfeVersion = gfeVersion
         self.appVersion = appVersion
         self.macAddress = macAddress
+        self.serverId = serverId
         self.serverCodecModeSupport = serverCodecModeSupport
         self.isPaired = isPaired
         self.currentAppId = currentAppId

@@ -52,14 +52,24 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         }
     }
 
-    private func queryServerInfo(address: String, httpsPort: Int, httpPort: Int, uniqueId: String) async -> (Data, Bool)? {
+    public static func isValidMacAddress(_ mac: String) -> Bool {
+        let clean = mac.filter { $0.isHexDigit }
+        guard clean.count == 12 else { return false }
+        if clean.allSatisfy({ $0 == "0" }) { return false }
+        if clean.allSatisfy({ $0 == "f" || $0 == "F" }) { return false }
+        return true
+    }
+
+    private func queryServerInfo(address: String, httpsPort: Int, httpPort: Int, uniqueId: String, timeout: TimeInterval = 2.0) async -> (Data, Bool)? {
         var responseData: Data?
         var isHttps = false
 
         if httpsPort > 0,
            let httpsUrl = URL(string: "https://\(address):\(httpsPort)/serverinfo?uniqueid=\(uniqueId)") {
             do {
-                let (data, response) = try await defaultSession.data(from: httpsUrl)
+                var request = URLRequest(url: httpsUrl)
+                request.timeoutInterval = timeout
+                let (data, response) = try await defaultSession.data(for: request)
                 if let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 200 {
                     let xmlDict = parseSimpleXML(data: data)
                     let xmlCode = xmlDict["status_code"]
@@ -79,13 +89,15 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         if responseData == nil,
            let httpUrl = URL(string: "http://\(address):\(httpPort)/serverinfo?uniqueid=\(uniqueId)") {
             do {
-                let (data, response) = try await defaultSession.data(from: httpUrl)
+                var request = URLRequest(url: httpUrl)
+                request.timeoutInterval = timeout
+                let (data, response) = try await defaultSession.data(for: request)
                 if let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 200 {
                     responseData = data
                     AppLogger.shared.info("serverinfo returned 200 over HTTP for \(address)", category: "HTTP")
                 }
             } catch {
-                AppLogger.shared.error("HTTP serverinfo failed for \(address): \(error.localizedDescription)", category: "HTTP")
+                AppLogger.shared.debug("HTTP serverinfo failed for \(address): \(error.localizedDescription)", category: "HTTP")
             }
         }
 
@@ -132,7 +144,10 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         if let hostname = dict["hostname"], !hostname.isEmpty { updatedHost.name = hostname }
         if let appVersion = dict["appversion"], !appVersion.isEmpty { updatedHost.appVersion = appVersion }
         if let gfeVersion = dict["GfeVersion"], !gfeVersion.isEmpty { updatedHost.gfeVersion = gfeVersion }
-        if let mac = dict["mac"], !mac.isEmpty { updatedHost.macAddress = mac }
+        if let uid = dict["uniqueid"], !uid.isEmpty { updatedHost.serverId = uid }
+        if let mac = dict["mac"], !mac.isEmpty, SunshineHTTPClient.isValidMacAddress(mac) {
+            updatedHost.macAddress = mac
+        }
         if let httpsPortStr = dict["HttpsPort"], let port = Int(httpsPortStr), port > 0 {
             updatedHost.httpsPort = port
         }

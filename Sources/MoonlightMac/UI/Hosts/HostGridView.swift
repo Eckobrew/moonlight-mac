@@ -116,6 +116,9 @@ public struct HostGridView: View {
                 try? await Task.sleep(for: .seconds(4))
                 guard !Task.isCancelled else { break }
 
+                // Avoid competing with low-latency streaming UDP traffic when active
+                guard !StreamSessionController.shared.isStreaming else { continue }
+
                 if let selectedHost = appState.selectedHost, selectedHost.isPaired {
                     // On the apps screen: refresh apps and host status (running app, etc.)
                     await appState.loadApps(for: selectedHost)

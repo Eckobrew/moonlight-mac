@@ -63,15 +63,32 @@ public final class AppState: @unchecked Sendable {
         }
     }
 
+    private func isSameHost(_ a: Host, _ b: Host) -> Bool {
+        if a.id == b.id {
+            return true
+        }
+        if let uidA = a.serverId, let uidB = b.serverId,
+           !uidA.isEmpty, !uidB.isEmpty {
+            return uidA.caseInsensitiveCompare(uidB) == .orderedSame
+        }
+        if a.address.caseInsensitiveCompare(b.address) == .orderedSame {
+            return true
+        }
+        if let macA = a.macAddress, let macB = b.macAddress,
+           SunshineHTTPClient.isValidMacAddress(macA),
+           SunshineHTTPClient.isValidMacAddress(macB) {
+            return macA.caseInsensitiveCompare(macB) == .orderedSame
+        }
+        return false
+    }
+
     public func addOrUpdateHost(_ host: Host) {
-        if let idx = hosts.firstIndex(where: {
-            $0.id == host.id ||
-            $0.address == host.address ||
-            ($0.macAddress != nil && host.macAddress != nil && $0.macAddress == host.macAddress) ||
-            ($0.remoteAddress != nil && host.remoteAddress != nil && $0.remoteAddress == host.remoteAddress && !$0.remoteAddress!.isEmpty)
-        }) {
+        if let idx = hosts.firstIndex(where: { isSameHost($0, host) }) {
             var merged = host
             merged.id = hosts[idx].id
+            if merged.serverId == nil || merged.serverId?.isEmpty == true {
+                merged.serverId = hosts[idx].serverId
+            }
             if merged.remoteAddress == nil || merged.remoteAddress?.isEmpty == true {
                 merged.remoteAddress = hosts[idx].remoteAddress
             }
@@ -132,38 +149,57 @@ public final class AppState: @unchecked Sendable {
     }
 
     public func refreshHosts() async {
-        for idx in hosts.indices {
-            let host = hosts[idx]
-            do {
-                let (updatedHost, _) = try await SunshineHTTPClient.shared.fetchServerInfo(host: host)
-                await MainActor.run {
-                    var merged = updatedHost
-                    if self.hosts[idx].isPaired {
-                        merged.isPaired = true
-                        if merged.status == .pairingRequired {
-                            merged.status = .online
-                        }
-                    }
-                    if merged.macAddress == nil || merged.macAddress?.isEmpty == true {
-                        merged.macAddress = self.hosts[idx].macAddress
-                    }
-                    if merged.remoteAddress == nil || merged.remoteAddress?.isEmpty == true {
-                        merged.remoteAddress = self.hosts[idx].remoteAddress
-                    }
-                    if merged.appVersion.isEmpty && !self.hosts[idx].appVersion.isEmpty {
-                        merged.appVersion = self.hosts[idx].appVersion
-                    }
-                    if merged.gfeVersion.isEmpty && !self.hosts[idx].gfeVersion.isEmpty {
-                        merged.gfeVersion = self.hosts[idx].gfeVersion
-                    }
-                    self.hosts[idx] = merged
-                    if self.selectedHost?.id == merged.id {
-                        self.selectedHost = merged
+        let currentHosts = hosts
+        guard !currentHosts.isEmpty else { return }
+
+        await withTaskGroup(of: (UUID, Host?, (any Error)?).self) { group in
+            for host in currentHosts {
+                group.addTask {
+                    do {
+                        let (updated, _) = try await SunshineHTTPClient.shared.fetchServerInfo(host: host)
+                        return (host.id, updated, nil)
+                    } catch {
+                        return (host.id, nil, error)
                     }
                 }
-            } catch {
+            }
+
+            for await (hostId, updatedHost, _) in group {
                 await MainActor.run {
-                    self.hosts[idx].status = .offline
+                    guard let idx = self.hosts.firstIndex(where: { $0.id == hostId }) else { return }
+                    if let updated = updatedHost {
+                        var merged = updated
+                        if self.hosts[idx].isPaired {
+                            merged.isPaired = true
+                            if merged.status == .pairingRequired {
+                                merged.status = .online
+                            }
+                        }
+                        if merged.serverId == nil || merged.serverId?.isEmpty == true {
+                            merged.serverId = self.hosts[idx].serverId
+                        }
+                        if merged.macAddress == nil || merged.macAddress?.isEmpty == true {
+                            merged.macAddress = self.hosts[idx].macAddress
+                        }
+                        if merged.remoteAddress == nil || merged.remoteAddress?.isEmpty == true {
+                            merged.remoteAddress = self.hosts[idx].remoteAddress
+                        }
+                        if merged.appVersion.isEmpty && !self.hosts[idx].appVersion.isEmpty {
+                            merged.appVersion = self.hosts[idx].appVersion
+                        }
+                        if merged.gfeVersion.isEmpty && !self.hosts[idx].gfeVersion.isEmpty {
+                            merged.gfeVersion = self.hosts[idx].gfeVersion
+                        }
+                        self.hosts[idx] = merged
+                        if self.selectedHost?.id == merged.id {
+                            self.selectedHost = merged
+                        }
+                    } else {
+                        self.hosts[idx].status = .offline
+                        if self.selectedHost?.id == self.hosts[idx].id {
+                            self.selectedHost = self.hosts[idx]
+                        }
+                    }
                 }
             }
         }
