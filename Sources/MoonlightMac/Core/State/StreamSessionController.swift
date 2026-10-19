@@ -288,7 +288,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             arCallbacks.stop = sessionAudioStop
             arCallbacks.cleanup = sessionAudioCleanup
             arCallbacks.decodeAndPlaySample = sessionAudioDecodeAndPlaySample
-            arCallbacks.capabilities = CAPABILITY_DIRECT_SUBMIT
+            arCallbacks.capabilities = CAPABILITY_DIRECT_SUBMIT | CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION
 
             let result = LiStartConnection(
                 &serverInfo,
@@ -465,26 +465,59 @@ private func sessionVideoSubmitDecodeUnit(decodeUnit: PDECODE_UNIT?) -> Int32 {
 }
 
 private func sessionAudioInit(audioConfiguration: Int32, opusConfig: POPUS_MULTISTREAM_CONFIGURATION?, context: UnsafeMutableRawPointer?, arFlags: Int32) -> Int32 {
-    let sampleRate = opusConfig?.pointee.sampleRate ?? 48000
-    let channels = opusConfig?.pointee.channelCount ?? 2
-    return StreamSessionEngine.shared.audioEngine.setup(sampleRate: Double(sampleRate), channelCount: UInt32(channels))
+    guard let config = opusConfig?.pointee else {
+        return StreamSessionEngine.shared.audioEngine.setup(
+            sampleRate: 48000,
+            channelCount: 2,
+            streams: 1,
+            coupledStreams: 1,
+            samplesPerFrame: 240,
+            mapping: [0, 1]
+        )
+    }
+
+    let sampleRate = Double(config.sampleRate)
+    let channels = UInt32(config.channelCount)
+    let streams = Int(config.streams)
+    let coupledStreams = Int(config.coupledStreams)
+    let samplesPerFrame = Int(config.samplesPerFrame)
+
+    var mappingBytes = [UInt8](repeating: 0, count: Int(channels))
+    withUnsafePointer(to: config.mapping) { tuplePtr in
+        tuplePtr.withMemoryRebound(to: UInt8.self, capacity: Int(channels)) { bytePtr in
+            for i in 0..<Int(channels) {
+                mappingBytes[i] = bytePtr[i]
+            }
+        }
+    }
+
+    return StreamSessionEngine.shared.audioEngine.setup(
+        sampleRate: sampleRate,
+        channelCount: channels,
+        streams: streams,
+        coupledStreams: coupledStreams,
+        samplesPerFrame: samplesPerFrame,
+        mapping: mappingBytes
+    )
 }
 
 private func sessionAudioStart() {
+    AppLogger.shared.info("sessionAudioStart: starting AudioPlaybackEngine", category: "AUDIO")
     StreamSessionEngine.shared.audioEngine.start()
 }
 
 private func sessionAudioStop() {
+    AppLogger.shared.info("sessionAudioStop: stopping AudioPlaybackEngine", category: "AUDIO")
     StreamSessionEngine.shared.audioEngine.stop()
 }
 
 private func sessionAudioCleanup() {
+    AppLogger.shared.info("sessionAudioCleanup: cleaning up AudioPlaybackEngine", category: "AUDIO")
     StreamSessionEngine.shared.audioEngine.cleanup()
 }
 
 private func sessionAudioDecodeAndPlaySample(sampleData: UnsafeMutablePointer<CChar>?, sampleLength: Int32) {
-    guard let data = sampleData else { return }
-    StreamSessionEngine.shared.audioEngine.decodeAndPlaySample(sampleData: data, sampleLength: Int(sampleLength))
+    StreamSessionEngine.shared.audioEngine.decodeAndPlaySample(sampleData: sampleData, sampleLength: Int(sampleLength))
 }
 
 private final class StreamMetricsAccumulator: @unchecked Sendable {

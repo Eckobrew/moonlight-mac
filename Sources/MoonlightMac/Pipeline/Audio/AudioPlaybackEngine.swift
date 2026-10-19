@@ -1,174 +1,368 @@
 import Foundation
 import AVFoundation
 import AudioToolbox
-import CoreAudio
+import Copus
+import MoonlightCommonC
+import QuartzCore
+
+final class AudioRingBuffer: @unchecked Sendable {
+    let channels: Int
+    let capacity: Int
+    private var channelData: [UnsafeMutablePointer<Float>]
+    private var writeHead: Int = 0
+    private var readHead: Int = 0
+    private let lock = NSLock()
+
+    init(channels: Int, capacity: Int = 48000) {
+        self.channels = channels
+        self.capacity = capacity
+        self.channelData = (0..<channels).map { _ in
+            let ptr = UnsafeMutablePointer<Float>.allocate(capacity: capacity)
+            ptr.initialize(repeating: 0, count: capacity)
+            return ptr
+        }
+    }
+
+    deinit {
+        for ptr in channelData {
+            ptr.deinitialize(count: capacity)
+            ptr.deallocate()
+        }
+    }
+
+    func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        writeHead = 0
+        readHead = 0
+    }
+
+    func write(interleaved: UnsafePointer<Float>, frames: Int) {
+        guard frames > 0 else { return }
+        lock.lock()
+        defer { lock.unlock() }
+
+        let chCount = channels
+        for f in 0..<frames {
+            let writePos = (writeHead + f) % capacity
+            let frameOffset = f * chCount
+            for ch in 0..<chCount {
+                channelData[ch][writePos] = interleaved[frameOffset + ch]
+            }
+        }
+        writeHead = (writeHead + frames) % capacity
+
+        // Low-latency buffer clamp: if accumulated buffer exceeds 50ms (2400 frames at 48kHz), drain excess
+        let available = (writeHead >= readHead) ? (writeHead - readHead) : (capacity - readHead + writeHead)
+        let maxAllowed = 2400
+        if available > maxAllowed {
+            readHead = (writeHead - maxAllowed + capacity) % capacity
+        }
+    }
+
+    func read(into bufferList: UnsafeMutablePointer<AudioBufferList>, frames: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let available = (writeHead >= readHead) ? (writeHead - readHead) : (capacity - readHead + writeHead)
+        if available == 0 {
+            return false
+        }
+
+        let framesToRead = min(available, frames)
+        let chCount = channels
+        let bufferListPtr = UnsafeMutableAudioBufferListPointer(bufferList)
+
+        for ch in 0..<min(chCount, bufferListPtr.count) {
+            guard let dest = bufferListPtr[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
+            for f in 0..<framesToRead {
+                let readPos = (readHead + f) % capacity
+                dest[f] = channelData[ch][readPos]
+            }
+            if framesToRead < frames {
+                // Zero out remaining frames in underrun
+                for f in framesToRead..<frames {
+                    dest[f] = 0
+                }
+            }
+        }
+
+        readHead = (readHead + framesToRead) % capacity
+        return true
+    }
+}
 
 public final class AudioPlaybackEngine: @unchecked Sendable {
     public static let shared = AudioPlaybackEngine()
 
+    private let lock = NSLock()
     private var audioEngine: AVAudioEngine?
-    private var playerNode: AVAudioPlayerNode?
+    private var sourceNode: AVAudioSourceNode?
     private var audioFormat: AVAudioFormat?
-    private var audioConverter: AudioConverterRef?
+    private var ringBuffer: AudioRingBuffer?
 
+    private var opusDecoder: OpaquePointer?
     private var sampleRate: Double = 48000.0
-    private var channelCount: UInt32 = 2
+    private var channelCount: Int = 2
+    private var samplesPerFrame: Int = 240
     private var isPlaying = false
+    private var scratchInterleavedBuffer: [Float] = []
+    private var configurationObserver: NSObjectProtocol?
 
     private init() {}
 
-    public func setup(sampleRate: Double = 48000.0, channelCount: UInt32 = 2) -> Int32 {
+    public func setup(
+        sampleRate: Double = 48000.0,
+        channelCount: UInt32 = 2,
+        streams: Int = 1,
+        coupledStreams: Int = 1,
+        samplesPerFrame: Int = 240,
+        mapping: [UInt8] = [0, 1]
+    ) -> Int32 {
+        lock.lock()
+        defer { lock.unlock() }
+
+        cleanupInternal()
+
         self.sampleRate = sampleRate
-        self.channelCount = channelCount
+        self.channelCount = Int(channelCount)
+        self.samplesPerFrame = samplesPerFrame
 
-        let engine = AVAudioEngine()
-        let player = AVAudioPlayerNode()
+        AppLogger.shared.info("AudioPlaybackEngine: Initializing original low-latency AVAudioEngine (\(sampleRate) Hz, \(channelCount) ch, \(streams) streams, \(coupledStreams) coupled, \(samplesPerFrame) samples/frame)")
 
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channelCount) else {
+        var error: Int32 = 0
+        var mappingArray = mapping
+        if mappingArray.count < Int(channelCount) {
+            mappingArray = (0..<UInt8(channelCount)).map { $0 }
+        }
+
+        if channelCount == 8 && mappingArray.count >= 8 {
+            mappingArray.swapAt(4, 6)
+            mappingArray.swapAt(5, 7)
+        }
+
+        let decoder = opus_multistream_decoder_create(
+            Int32(sampleRate),
+            Int32(channelCount),
+            Int32(streams),
+            Int32(coupledStreams),
+            &mappingArray,
+            &error
+        )
+
+        guard let decoder = decoder, error == OPUS_OK else {
+            AppLogger.shared.error("AudioPlaybackEngine: opus_multistream_decoder_create failed with error: \(error)")
             return -1
         }
 
+        self.opusDecoder = decoder
+
+        // Pre-allocate scratch buffer for decoding up to 120ms of audio (5760 frames)
+        let maxFrames = max(samplesPerFrame * 2, 5760)
+        self.scratchInterleavedBuffer = [Float](repeating: 0, count: maxFrames * Int(channelCount))
+
+        // Create AudioRingBuffer (48000 frames capacity = 1.0 second buffer)
+        let ring = AudioRingBuffer(channels: Int(channelCount), capacity: 48000)
+        self.ringBuffer = ring
+
+        // Select CoreAudio Channel Layout
+        let layoutTag: AudioChannelLayoutTag
+        switch channelCount {
+        case 6:
+            layoutTag = kAudioChannelLayoutTag_MPEG_5_1_A
+        case 8:
+            layoutTag = kAudioChannelLayoutTag_AudioUnit_7_1
+        default:
+            layoutTag = kAudioChannelLayoutTag_Stereo
+        }
+
+        guard let channelLayout = AVAudioChannelLayout(layoutTag: layoutTag) else {
+            AppLogger.shared.error("AudioPlaybackEngine: Failed to create AVAudioChannelLayout for tag \(layoutTag)")
+            return -1
+        }
+
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channelLayout: channelLayout)
         self.audioFormat = format
+
+        let engine = AVAudioEngine()
+
+        let source = AVAudioSourceNode(format: format) { [weak ring] isSilence, _, frameCount, outputData -> OSStatus in
+            guard let ring = ring else {
+                isSilence.pointee = ObjCBool(true)
+                let abl = UnsafeMutableAudioBufferListPointer(outputData)
+                for buf in abl {
+                    if let ptr = buf.mData {
+                        memset(ptr, 0, Int(buf.mDataByteSize))
+                    }
+                }
+                return noErr
+            }
+            let hasData = ring.read(into: outputData, frames: Int(frameCount))
+            if hasData {
+                isSilence.pointee = ObjCBool(false)
+            } else {
+                isSilence.pointee = ObjCBool(true)
+                let abl = UnsafeMutableAudioBufferListPointer(outputData)
+                for buf in abl {
+                    if let ptr = buf.mData {
+                        memset(ptr, 0, Int(buf.mDataByteSize))
+                    }
+                }
+            }
+            return noErr
+        }
+
         self.audioEngine = engine
-        self.playerNode = player
+        self.sourceNode = source
 
-        engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: format)
+        engine.attach(source)
+        engine.connect(source, to: engine.mainMixerNode, format: format)
 
-        setupAudioConverter()
+        // Observe route and configuration changes to resume playback seamlessly
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleConfigurationChange()
+        }
 
+        AppLogger.shared.info("AudioPlaybackEngine: Successfully initialized original low-latency AVAudioEngine (\(channelCount) channels)")
         return 0
     }
 
-    private func setupAudioConverter() {
-        var inputFormat = AudioStreamBasicDescription(
-            mSampleRate: sampleRate,
-            mFormatID: kAudioFormatOpus,
-            mFormatFlags: 0,
-            mBytesPerPacket: 0,
-            mFramesPerPacket: 0,
-            mBytesPerFrame: 0,
-            mChannelsPerFrame: channelCount,
-            mBitsPerChannel: 0,
-            mReserved: 0
-        )
-
-        var outputFormat = AudioStreamBasicDescription(
-            mSampleRate: sampleRate,
-            mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
-            mBytesPerPacket: 4 * channelCount,
-            mFramesPerPacket: 1,
-            mBytesPerFrame: 4 * channelCount,
-            mChannelsPerFrame: channelCount,
-            mBitsPerChannel: 32,
-            mReserved: 0
-        )
-
-        AudioConverterNew(&inputFormat, &outputFormat, &audioConverter)
-    }
-
     public func start() {
-        guard let engine = audioEngine, let player = playerNode, !isPlaying else { return }
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let engine = audioEngine, !isPlaying else { return }
+
+        ringBuffer?.reset()
         do {
             try engine.start()
-            player.play()
             isPlaying = true
+            AppLogger.shared.info("AudioPlaybackEngine: AVAudioEngine started successfully")
         } catch {
-            print("Failed to start audio engine: \(error)")
+            AppLogger.shared.error("AudioPlaybackEngine: Failed to start AVAudioEngine: \(error.localizedDescription)")
         }
     }
 
     public func stop() {
-        playerNode?.stop()
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard isPlaying else { return }
         audioEngine?.stop()
         isPlaying = false
+        ringBuffer?.reset()
+        AppLogger.shared.info("AudioPlaybackEngine: AVAudioEngine stopped")
     }
 
     public func cleanup() {
-        stop()
-        if let converter = audioConverter {
-            AudioConverterDispose(converter)
-            audioConverter = nil
-        }
-        playerNode = nil
-        audioEngine = nil
+        lock.lock()
+        defer { lock.unlock() }
+        cleanupInternal()
     }
 
-    public func decodeAndPlaySample(sampleData: UnsafePointer<CChar>, sampleLength: Int) {
-        guard isPlaying, let player = playerNode, let format = audioFormat else { return }
+    private func cleanupInternal() {
+        if isPlaying {
+            audioEngine?.stop()
+            isPlaying = false
+        }
 
-        // If audio converter is available, convert Opus to PCM
-        if let converter = audioConverter {
-            var packetDesc = AudioStreamPacketDescription(
-                mStartOffset: 0,
-                mVariableFramesInPacket: 0,
-                mDataByteSize: UInt32(sampleLength)
-            )
+        if let observer = configurationObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configurationObserver = nil
+        }
 
-            struct InputDataState {
-                var data: UnsafeRawPointer
-                var size: UInt32
-                var packetDescPtr: UnsafeMutablePointer<AudioStreamPacketDescription>
-                var isRead: Bool
-            }
+        if let decoder = opusDecoder {
+            opus_multistream_decoder_destroy(decoder)
+            opusDecoder = nil
+        }
 
-            let outputFrames: UInt32 = 960 // standard 20ms @ 48kHz
-            guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: outputFrames) else { return }
+        if let source = sourceNode, let engine = audioEngine {
+            engine.disconnectNodeOutput(source)
+            engine.detach(source)
+        }
 
-            var ioOutputDataPackets = outputFrames
-            var outputBufferList = AudioBufferList(
-                mNumberBuffers: 1,
-                mBuffers: AudioBuffer(
-                    mNumberChannels: channelCount,
-                    mDataByteSize: outputFrames * 4 * channelCount,
-                    mData: pcmBuffer.floatChannelData?[0]
-                )
-            )
+        sourceNode = nil
+        audioEngine = nil
+        audioFormat = nil
+        ringBuffer = nil
+        scratchInterleavedBuffer.removeAll(keepingCapacity: false)
+    }
 
-            withUnsafeMutablePointer(to: &packetDesc) { descPtr in
-                var state = InputDataState(
-                    data: UnsafeRawPointer(sampleData),
-                    size: UInt32(sampleLength),
-                    packetDescPtr: descPtr,
-                    isRead: false
-                )
+    private func handleConfigurationChange() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let engine = audioEngine, isPlaying else { return }
+        AppLogger.shared.info("AudioPlaybackEngine: Output route changed, restarting audio engine...")
+        do {
+            try engine.start()
+        } catch {
+            AppLogger.shared.error("AudioPlaybackEngine: Restart after route change failed: \(error.localizedDescription)")
+        }
+    }
 
-                let status = AudioConverterFillComplexBuffer(
-                    converter,
-                    { (inConverter, ioNumberDataPackets, ioData, outDataPacketDescription, inUserData) -> OSStatus in
-                        guard let inUserData = inUserData else { return -1 }
-                        let statePtr = inUserData.assumingMemoryBound(to: InputDataState.self)
-                        if statePtr.pointee.isRead || statePtr.pointee.size == 0 {
-                            ioNumberDataPackets.pointee = 0
-                            return noErr
-                        }
+    public func decodeAndPlaySample(sampleData: UnsafePointer<CChar>?, sampleLength: Int) {
+        lock.lock()
+        guard let decoder = opusDecoder,
+              let ring = ringBuffer else {
+            lock.unlock()
+            return
+        }
 
-                        ioData.pointee.mNumberBuffers = 1
-                        ioData.pointee.mBuffers.mNumberChannels = 2
-                        ioData.pointee.mBuffers.mDataByteSize = statePtr.pointee.size
-                        ioData.pointee.mBuffers.mData = UnsafeMutableRawPointer(mutating: statePtr.pointee.data)
-
-                        if let outDesc = outDataPacketDescription {
-                            outDesc.pointee = statePtr.pointee.packetDescPtr
-                        }
-
-                        ioNumberDataPackets.pointee = 1
-                        statePtr.pointee.isRead = true
-                        return noErr
-                    },
-                    &state,
-                    &ioOutputDataPackets,
-                    &outputBufferList,
-                    nil
-                )
-
-                if status == noErr && ioOutputDataPackets > 0 {
-                    pcmBuffer.frameLength = ioOutputDataPackets
-                    AVPacingClock.shared.registerAudioTimestamp(hostTimeUs: UInt64(CACurrentMediaTime() * 1_000_000))
-                    player.scheduleBuffer(pcmBuffer, at: nil, options: [], completionHandler: nil)
-                }
+        if !isPlaying {
+            do {
+                ring.reset()
+                try audioEngine?.start()
+                isPlaying = true
+            } catch {
+                AppLogger.shared.error("AudioPlaybackEngine: Auto-start failed: \(error.localizedDescription)")
+                lock.unlock()
+                return
             }
         }
+
+        let chCount = channelCount
+        let frameCapacity = scratchInterleavedBuffer.count / chCount
+
+        let decodedFrames: Int32
+        if let data = sampleData, sampleLength > 0 {
+            decodedFrames = scratchInterleavedBuffer.withUnsafeMutableBufferPointer { pcmPtr in
+                opus_multistream_decode_float(
+                    decoder,
+                    UnsafePointer<UInt8>(OpaquePointer(data)),
+                    Int32(sampleLength),
+                    pcmPtr.baseAddress!,
+                    Int32(frameCapacity),
+                    0
+                )
+            }
+        } else {
+            // Packet loss concealment (PLC)
+            decodedFrames = scratchInterleavedBuffer.withUnsafeMutableBufferPointer { pcmPtr in
+                opus_multistream_decode_float(
+                    decoder,
+                    nil,
+                    0,
+                    pcmPtr.baseAddress!,
+                    Int32(samplesPerFrame),
+                    0
+                )
+            }
+        }
+
+        if decodedFrames > 0 {
+            scratchInterleavedBuffer.withUnsafeBufferPointer { pcmPtr in
+                ring.write(interleaved: pcmPtr.baseAddress!, frames: Int(decodedFrames))
+            }
+        } else if decodedFrames < 0 {
+            AppLogger.shared.warning("AudioPlaybackEngine: opus_multistream_decode_float error: \(decodedFrames)")
+        }
+
+        lock.unlock()
+
+        AVPacingClock.shared.registerAudioTimestamp(hostTimeUs: UInt64(CACurrentMediaTime() * 1_000_000))
     }
 }

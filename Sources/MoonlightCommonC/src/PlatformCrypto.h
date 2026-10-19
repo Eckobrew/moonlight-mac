@@ -18,6 +18,7 @@ typedef struct evp_cipher_ctx_st EVP_CIPHER_CTX;
 
 typedef struct _PLT_CRYPTO_CONTEXT {
 #ifdef USE_APPLE_CRYPTO
+    void* cryptor;
     bool initialized;
 #elif defined(USE_PSA_CRYPTO)
     psa_key_id_t key;
