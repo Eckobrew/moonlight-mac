@@ -39,6 +39,13 @@ public enum AudioConfigurationMode: String, Codable, CaseIterable, Sendable {
             return Int32((0x63F << 16) | (8 << 8) | 0xCA)
         }
     }
+
+    /// Macro SURROUNDAUDIOINFO_FROM_AUDIO_CONFIGURATION: (channelMask << 16) | channelCount
+    public var surroundAudioInfo: Int32 {
+        let channelCount = (limelightValue >> 8) & 0xFF
+        let channelMask = (limelightValue >> 16) & 0xFFFF
+        return (channelMask << 16) | channelCount
+    }
 }
 
 public enum WindowMode: String, Codable, CaseIterable, Sendable {
@@ -90,6 +97,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
     public var remoteBitrateMbps: Int
     public var enableClipboardSync: Bool
     public var hideUnpairedHosts: Bool
+    public var muteHostAudio: Bool
 
     public init(
         width: Int = 1920,
@@ -113,7 +121,8 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         enableRemoteBitrate: Bool = false,
         remoteBitrateMbps: Int = 15,
         enableClipboardSync: Bool = false,
-        hideUnpairedHosts: Bool = false
+        hideUnpairedHosts: Bool = false,
+        muteHostAudio: Bool = true
     ) {
         self.width = width
         self.height = height
@@ -137,6 +146,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.remoteBitrateMbps = remoteBitrateMbps
         self.enableClipboardSync = enableClipboardSync
         self.hideUnpairedHosts = hideUnpairedHosts
+        self.muteHostAudio = muteHostAudio
     }
 
     enum CodingKeys: String, CodingKey {
@@ -146,6 +156,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         case videoRenderer, enableVsync, enableFramePacing
         case optimizeGameSettings, quitAppOnStop, mouseSensitivity
         case enableRemoteBitrate, remoteBitrateMbps, enableClipboardSync, hideUnpairedHosts
+        case muteHostAudio
     }
 
     public init(from decoder: Decoder) throws {
@@ -172,6 +183,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.remoteBitrateMbps = (try? container.decode(Int.self, forKey: .remoteBitrateMbps)) ?? 15
         self.enableClipboardSync = (try? container.decode(Bool.self, forKey: .enableClipboardSync)) ?? false
         self.hideUnpairedHosts = (try? container.decode(Bool.self, forKey: .hideUnpairedHosts)) ?? false
+        self.muteHostAudio = (try? container.decode(Bool.self, forKey: .muteHostAudio)) ?? true
     }
 }
 

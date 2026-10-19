@@ -144,6 +144,11 @@ public struct SettingsView: View {
                             Text(mode.rawValue).tag(mode)
                         }
                     }
+
+                    Toggle("Mute host PC speakers while streaming", isOn: $settings.muteHostAudio)
+                    Text("Mutes sound on the host computer while streaming to this Mac. Turn off to play audio on both the host and Mac simultaneously.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Host & Streaming Behavior") {

@@ -137,10 +137,7 @@ public struct HostGridView: View {
 
     private var displayedHosts: [Host] {
         if appState.settings.hideUnpairedHosts {
-            return appState.hosts.filter { host in
-                // Matches moonlight-qt: show if paired, or if previously paired offline host
-                host.isPaired || (host.status == .offline && host.macAddress != nil)
-            }
+            return appState.hosts.filter { $0.isPaired }
         }
         return appState.hosts
     }

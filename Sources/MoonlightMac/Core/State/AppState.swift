@@ -44,15 +44,11 @@ public final class AppState: @unchecked Sendable {
     public func loadHosts() {
         if let data = UserDefaults.standard.data(forKey: hostsKey),
            let decoded = try? JSONDecoder().decode([Host].self, from: data) {
-            // Filter out any phantom or corrupt hosts (must be paired or have valid appVersion)
-            self.hosts = decoded.filter { host in
-                host.isPaired || !host.appVersion.isEmpty
-            }.map { host in
+            // Only restore legitimately paired hosts from persistent storage.
+            // On startup, paired hosts start in .offline status until Bonjour or refreshHosts probes them.
+            self.hosts = decoded.filter { $0.isPaired }.map { host in
                 var restored = host
-                // If an offline host had a recorded MAC address or app version but lost isPaired, restore it
-                if !restored.isPaired && restored.status == .offline && restored.macAddress != nil {
-                    restored.isPaired = true
-                }
+                restored.status = .offline
                 return restored
             }
             saveHosts()
@@ -60,7 +56,9 @@ public final class AppState: @unchecked Sendable {
     }
 
     public func saveHosts() {
-        if let encoded = try? JSONEncoder().encode(hosts) {
+        // Only persist paired hosts to storage so unpaired or transient PCs are never saved to disk
+        let pairedOnly = hosts.filter { $0.isPaired }
+        if let encoded = try? JSONEncoder().encode(pairedOnly) {
             UserDefaults.standard.set(encoded, forKey: hostsKey)
         }
     }

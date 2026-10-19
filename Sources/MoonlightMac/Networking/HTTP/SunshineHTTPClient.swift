@@ -224,11 +224,12 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
     ) async throws -> String? {
         let uniqueId = CertificateManager.shared.uniqueId
         let mode = "\(settings.width)x\(settings.height)x\(settings.fps)"
-        let surroundAudioInfo = settings.audioMode.limelightValue
+        let surroundAudioInfo = settings.audioMode.surroundAudioInfo
+        let localAudioPlayMode = settings.muteHostAudio ? 0 : 1
         let sops = settings.optimizeGameSettings ? "1" : "0"
         let extraParams = LiGetLaunchUrlQueryParameters().map { String(cString: $0) } ?? ""
 
-        var urlString = "https://\(host.effectiveAddress):\(host.httpsPort)/launch?uniqueid=\(uniqueId)&appid=\(appId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=0&surroundAudioInfo=\(surroundAudioInfo)"
+        var urlString = "https://\(host.effectiveAddress):\(host.httpsPort)/launch?uniqueid=\(uniqueId)&appid=\(appId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=\(localAudioPlayMode)&surroundAudioInfo=\(surroundAudioInfo)"
         if !extraParams.isEmpty {
             urlString.append(extraParams)
         }
@@ -276,11 +277,12 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
     ) async throws -> String? {
         let uniqueId = CertificateManager.shared.uniqueId
         let mode = "\(settings.width)x\(settings.height)x\(settings.fps)"
-        let surroundAudioInfo = settings.audioMode.limelightValue
+        let surroundAudioInfo = settings.audioMode.surroundAudioInfo
+        let localAudioPlayMode = settings.muteHostAudio ? 0 : 1
         let sops = settings.optimizeGameSettings ? "1" : "0"
         let extraParams = LiGetLaunchUrlQueryParameters().map { String(cString: $0) } ?? ""
 
-        var urlString = "https://\(host.effectiveAddress):\(host.httpsPort)/resume?uniqueid=\(uniqueId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=0&surroundAudioInfo=\(surroundAudioInfo)"
+        var urlString = "https://\(host.effectiveAddress):\(host.httpsPort)/resume?uniqueid=\(uniqueId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=\(localAudioPlayMode)&surroundAudioInfo=\(surroundAudioInfo)"
         if !extraParams.isEmpty {
             urlString.append(extraParams)
         }
