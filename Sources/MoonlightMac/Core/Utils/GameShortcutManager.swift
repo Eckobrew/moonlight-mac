@@ -196,7 +196,13 @@ public final class GameShortcutManager {
         try? FileManager.default.removeItem(at: iconR)
 
         // 3. Launch script
-        let moonlightBin = Bundle.main.executablePath ?? "/Applications/Moonlight.app/Contents/MacOS/MoonlightMac"
+        let moonlightBin: String
+        let mainExec = Bundle.main.executablePath ?? ""
+        if mainExec.contains("Moonlight.app") || mainExec.contains("MoonlightMac") {
+            moonlightBin = mainExec
+        } else {
+            moonlightBin = "/Applications/Moonlight.app/Contents/MacOS/MoonlightMac"
+        }
         let escapedHost = host.name
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
@@ -222,6 +228,9 @@ public final class GameShortcutManager {
         fi
         if [ ! -x "$MOONLIGHT_BIN" ]; then
             MOONLIGHT_BIN="/Applications/Moonlight.app/Contents/MacOS/Moonlight"
+        fi
+        if [ ! -x "$MOONLIGHT_BIN" ]; then
+            MOONLIGHT_BIN="$HOME/Applications/Moonlight.app/Contents/MacOS/MoonlightMac"
         fi
 
         if [ -x "$MOONLIGHT_BIN" ]; then
