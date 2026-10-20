@@ -403,15 +403,8 @@ private struct IconRenderView: View {
             switch style {
             case .squircle:
                 // Apple HIG standard macOS squircle: 824x824 inside 1024x1024, corner radius 185 continuous
-                let bodySize: CGFloat = size * (824.0 / 1024.0)
-                let radius: CGFloat = size * (185.0 / 1024.0)
-
-                // Native Apple bottom contact drop shadow ONLY (exact HIG bounds X:100..923, Y:100..935)
-                RoundedRectangle(cornerRadius: radius * 0.7, style: .continuous)
-                    .fill(Color.black.opacity(0.30))
-                    .frame(width: bodySize * 0.88, height: size * (28.0 / 1024.0))
-                    .blur(radius: size * (6.0 / 1024.0))
-                    .offset(y: (bodySize / 2) - size * (8.0 / 1024.0))
+                let bodySize: CGFloat = size * (859.0 / 1024.0)
+                let radius: CGFloat = size * (194.0 / 1024.0)
 
                 // Icon body
                 ZStack {
@@ -432,20 +425,20 @@ private struct IconRenderView: View {
                 .frame(width: bodySize, height: bodySize)
                 .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
                 .overlay(
+                    // Soft top-down sheen like native macOS icons, so dark artwork still reads as a full-size tile
                     RoundedRectangle(cornerRadius: radius, style: .continuous)
-                        .stroke(Color.white.opacity(0.18), lineWidth: max(1.0, size * (1.5 / 1024.0)))
+                        .fill(LinearGradient(colors: [Color.white.opacity(0.14), Color.clear], startPoint: .top, endPoint: .center))
                 )
+                .overlay(
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.40), lineWidth: max(2.0, size * (6.0 / 1024.0)))
+                )
+                // Nudge the tile down so it sits level with native Dock tiles (about 4 screen px at Dock size)
+                .offset(y: size * (12.0 / 1024.0))
 
             case .circle:
                 // Apple HIG standard circular icon (e.g. Safari / Time Machine): 844x844 diameter
                 let diameter: CGFloat = size * (844.0 / 1024.0)
-
-                // Native Apple bottom contact drop shadow ONLY
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(Color.black.opacity(0.30))
-                    .frame(width: diameter * 0.78, height: size * (28.0 / 1024.0))
-                    .blur(radius: size * (6.0 / 1024.0))
-                    .offset(y: (diameter / 2) - size * (8.0 / 1024.0))
 
                 // Icon body
                 ZStack {
