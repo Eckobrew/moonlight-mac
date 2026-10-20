@@ -98,6 +98,8 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         self.sessionError = nil
         self.currentStageName = "Requesting session from host..."
 
+        DisplaySleepManager.shared.start(keepScreenActive: effectiveSettings.keepScreenActive)
+
         WindowManager.shared.applyStartupWindowMode(effectiveSettings.windowMode)
 
         // Generate 16-byte random key for remote input AES encryption
@@ -332,6 +334,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         isStreaming = false
         stopMetricsPolling()
         ClipboardSyncManager.shared.stop()
+        DisplaySleepManager.shared.stop()
 
         if let token = latencyActivityToken {
             ProcessInfo.processInfo.endActivity(token)

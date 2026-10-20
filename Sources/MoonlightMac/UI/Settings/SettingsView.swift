@@ -182,6 +182,13 @@ public struct SettingsView: View {
                         Text("\(fps) FPS").tag(fps)
                     }
                 }
+
+                Divider()
+
+                Toggle("Keep screen active while streaming", isOn: $settings.keepScreenActive)
+                Text("Prevents your Mac display from sleeping while streaming. Only keeps the screen active when Moonlight is focused.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .padding(8)
         }

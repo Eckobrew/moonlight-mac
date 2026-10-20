@@ -120,7 +120,9 @@ public final class SampleBufferStreamView: NSView {
         displayLayer.videoGravity = .resizeAspect
         displayLayer.isOpaque = true
         displayLayer.backgroundColor = NSColor.black.cgColor
-        displayLayer.preventsDisplaySleepDuringVideoPlayback = true
+        // Display sleep prevention is handled centrally by DisplaySleepManager
+        // to strictly enforce user preference and focus-only requirements across all renderers.
+        displayLayer.preventsDisplaySleepDuringVideoPlayback = false
         self.layer = displayLayer
         self.wantsLayer = true
     }

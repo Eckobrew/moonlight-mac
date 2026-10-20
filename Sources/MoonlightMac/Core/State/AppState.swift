@@ -39,6 +39,7 @@ public final class AppState: @unchecked Sendable {
         if let encoded = try? JSONEncoder().encode(settings) {
             UserDefaults.standard.set(encoded, forKey: settingsKey)
         }
+        DisplaySleepManager.shared.update(keepScreenActive: settings.keepScreenActive)
     }
 
     public func loadHosts() {

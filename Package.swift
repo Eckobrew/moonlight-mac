@@ -150,7 +150,8 @@ let package = Package(
                 .linkedFramework("AudioToolbox"),
                 .linkedFramework("GameController"),
                 .linkedFramework("AppKit"),
-                .linkedFramework("Network")
+                .linkedFramework("Network"),
+                .linkedFramework("IOKit")
             ]
         ),
         .testTarget(

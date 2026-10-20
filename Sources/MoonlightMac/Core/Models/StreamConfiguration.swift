@@ -106,6 +106,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
     public var hideUnpairedHosts: Bool
     public var muteHostAudio: Bool
     public var captureSystemKeys: SystemKeyCaptureMode
+    public var keepScreenActive: Bool
 
     public init(
         width: Int = 1920,
@@ -131,7 +132,8 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         enableClipboardSync: Bool = false,
         hideUnpairedHosts: Bool = false,
         muteHostAudio: Bool = true,
-        captureSystemKeys: SystemKeyCaptureMode = .fullscreenOnly
+        captureSystemKeys: SystemKeyCaptureMode = .fullscreenOnly,
+        keepScreenActive: Bool = true
     ) {
         self.width = width
         self.height = height
@@ -157,6 +159,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.hideUnpairedHosts = hideUnpairedHosts
         self.muteHostAudio = muteHostAudio
         self.captureSystemKeys = captureSystemKeys
+        self.keepScreenActive = keepScreenActive
     }
 
     enum CodingKeys: String, CodingKey {
@@ -166,7 +169,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         case videoRenderer, enableVsync, enableFramePacing
         case optimizeGameSettings, quitAppOnStop, mouseSensitivity
         case enableRemoteBitrate, remoteBitrateMbps, enableClipboardSync, hideUnpairedHosts
-        case muteHostAudio, captureSystemKeys
+        case muteHostAudio, captureSystemKeys, keepScreenActive
     }
 
     public init(from decoder: Decoder) throws {
@@ -195,6 +198,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.hideUnpairedHosts = (try? container.decode(Bool.self, forKey: .hideUnpairedHosts)) ?? false
         self.muteHostAudio = (try? container.decode(Bool.self, forKey: .muteHostAudio)) ?? true
         self.captureSystemKeys = (try? container.decode(SystemKeyCaptureMode.self, forKey: .captureSystemKeys)) ?? .fullscreenOnly
+        self.keepScreenActive = (try? container.decode(Bool.self, forKey: .keepScreenActive)) ?? true
     }
 }
 
