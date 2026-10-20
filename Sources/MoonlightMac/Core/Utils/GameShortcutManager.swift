@@ -243,12 +243,33 @@ public final class GameShortcutManager {
         if FileManager.default.fileExists(atPath: lsregisterPath) {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: lsregisterPath)
-            proc.arguments = ["-f", bundleUrl.path]
+            proc.arguments = ["-f", "-r", bundleUrl.path]
             try? proc.run()
             proc.waitUntilExit()
         }
 
         NSWorkspace.shared.noteFileSystemChanged(bundleUrl.path)
+
+        // If shortcuts are pinned in Dock, restart Dock so the icon reloads immediately
+        restartDockIfPinned()
+    }
+
+    private func restartDockIfPinned() {
+        let checkProcess = Process()
+        checkProcess.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+        checkProcess.arguments = ["read", "com.apple.dock", "persistent-apps"]
+        let pipe = Pipe()
+        checkProcess.standardOutput = pipe
+        try? checkProcess.run()
+        checkProcess.waitUntilExit()
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        if let output = String(data: data, encoding: .utf8), output.contains("com.moonlight-stream.shortcut") {
+            let killProc = Process()
+            killProc.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+            killProc.arguments = ["Dock"]
+            try? killProc.run()
+        }
     }
 
     private func renderPNG(from image: NSImage, size: Int) -> Data? {
@@ -375,15 +396,13 @@ private struct IconRenderView: View {
                 // Apple HIG standard macOS squircle: 824x824 inside 1024x1024, corner radius 185 continuous
                 let bodySize: CGFloat = size * (824.0 / 1024.0)
                 let radius: CGFloat = size * (185.0 / 1024.0)
-                let shadowRadius: CGFloat = size * (6.0 / 1024.0)
-                let shadowOffset: CGFloat = size * (6.0 / 1024.0)
 
-                // Native Apple contact drop shadow
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(Color.black.opacity(0.28))
-                    .frame(width: bodySize, height: bodySize)
-                    .blur(radius: shadowRadius)
-                    .offset(y: shadowOffset)
+                // Native Apple bottom contact drop shadow ONLY (exact HIG bounds X:100..923, Y:100..935)
+                RoundedRectangle(cornerRadius: radius * 0.7, style: .continuous)
+                    .fill(Color.black.opacity(0.30))
+                    .frame(width: bodySize * 0.88, height: size * (28.0 / 1024.0))
+                    .blur(radius: size * (6.0 / 1024.0))
+                    .offset(y: (bodySize / 2) - size * (8.0 / 1024.0))
 
                 // Icon body
                 ZStack {
@@ -411,15 +430,13 @@ private struct IconRenderView: View {
             case .circle:
                 // Apple HIG standard circular icon (e.g. Safari / Time Machine): 844x844 diameter
                 let diameter: CGFloat = size * (844.0 / 1024.0)
-                let shadowRadius: CGFloat = size * (6.0 / 1024.0)
-                let shadowOffset: CGFloat = size * (6.0 / 1024.0)
 
-                // Native Apple contact drop shadow
-                Circle()
-                    .fill(Color.black.opacity(0.28))
-                    .frame(width: diameter, height: diameter)
-                    .blur(radius: shadowRadius)
-                    .offset(y: shadowOffset)
+                // Native Apple bottom contact drop shadow ONLY
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color.black.opacity(0.30))
+                    .frame(width: diameter * 0.78, height: size * (28.0 / 1024.0))
+                    .blur(radius: size * (6.0 / 1024.0))
+                    .offset(y: (diameter / 2) - size * (8.0 / 1024.0))
 
                 // Icon body
                 ZStack {
@@ -477,14 +494,19 @@ private struct IconRenderView: View {
     private func backdropLayer(size: CGFloat) -> some View {
         switch backdrop {
         case .blurred:
-            Image(nsImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: size, height: size)
-                .blur(radius: 25)
-                .overlay(Color.black.opacity(0.25))
+            ZStack {
+                // Fully opaque dark base color ensures 100% solid squircle body
+                Color(red: 0.12, green: 0.12, blue: 0.14)
+
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: size, height: size)
+                    .blur(radius: 20)
+                    .opacity(0.75)
+            }
         case .dark:
-            Color(red: 0.12, green: 0.12, blue: 0.14)
+            Color(red: 0.14, green: 0.14, blue: 0.16)
         case .black:
             Color.black
         case .clear:
