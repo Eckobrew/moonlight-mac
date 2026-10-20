@@ -22,7 +22,11 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     @Published public private(set) var currentStage: Int = 0
     @Published public private(set) var metrics = PerformanceMetrics()
     @Published public private(set) var sessionError: String?
+    #if DEBUG
     @Published public var showPerformanceOverlay: Bool = true
+    #else
+    @Published public var showPerformanceOverlay: Bool = false
+    #endif
 
     public func togglePerformanceOverlay() {
         showPerformanceOverlay.toggle()
@@ -97,6 +101,12 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         self.isStreaming = true
         self.sessionError = nil
         self.currentStageName = "Requesting session from host..."
+
+        #if DEBUG
+        self.showPerformanceOverlay = true
+        #else
+        self.showPerformanceOverlay = false
+        #endif
 
         DisplaySleepManager.shared.start(keepScreenActive: effectiveSettings.keepScreenActive)
 
