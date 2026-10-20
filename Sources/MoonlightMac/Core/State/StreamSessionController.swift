@@ -41,6 +41,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     private var activeHost: Host?
     private var activeApp: StreamApp?
     public private(set) var activeSettings: StreamSettings?
+    private var latencyActivityToken: NSObjectProtocol?
 
     private init() {
         StreamSessionEngine.shared.videoDecoder.delegate = self
@@ -74,6 +75,12 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
     public func startSession(host: Host, app: StreamApp, settings: StreamSettings) async {
         guard !isStreaming else { return }
+
+        // Request real-time scheduler priority from Darwin kernel and disable App Nap / system sleep throttling
+        self.latencyActivityToken = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled],
+            reason: "Moonlight Low-Latency Game Streaming"
+        )
 
         // If Native resolution is requested, resolve the native physical resolution of the display the app is running on
         var effectiveSettings = settings
@@ -323,6 +330,11 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         isStreaming = false
         stopMetricsPolling()
         ClipboardSyncManager.shared.stop()
+
+        if let token = latencyActivityToken {
+            ProcessInfo.processInfo.endActivity(token)
+            latencyActivityToken = nil
+        }
 
         // 1. Mark video decoder as stopped under submitLock so any in-flight frame completes and future frames are safely dropped
         videoDecoder.teardownSession()

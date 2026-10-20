@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 
+@MainActor
 public final class InputCaptureCoordinator: @unchecked Sendable {
     public static let shared = InputCaptureCoordinator()
 

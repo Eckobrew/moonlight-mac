@@ -51,6 +51,12 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     // Cached pixel buffer for manual draw calls
     private var currentPixelBuffer: CVPixelBuffer?
 
+    // Decoupled asynchronous rendering queue (matches moonlight-qt SDL_cond / m_LatestUnrenderedFrame architecture).
+    // The VideoToolbox decompression callback thread NEVER blocks on CAMetalLayer presentation or nextDrawable().
+    private let renderQueue = DispatchQueue(label: "com.moonlight.metal.render", qos: .userInteractive)
+    private var pendingPixelBuffer: CVPixelBuffer?
+    private var isRenderActive: Bool = false
+
     public override init() {
         super.init()
         guard let mtlDevice = MTLCreateSystemDefaultDevice() else {
@@ -305,10 +311,50 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         AppLogger.shared.info("[MetalStreamRenderer] CAMetalLayer configured: displaySyncEnabled=\(self.enableVsync), maxDrawables=2, allowsNextDrawableTimeout=true, contentsScale=\(scale)")
     }
 
-    /// Render a decoded or paced frame immediately to the Metal layer.
+    /// Ingest a decoded or paced frame immediately without blocking the caller.
+    /// Matches moonlight-qt: replaces any unrendered frame and signals the dedicated render queue.
+    /// VideoToolbox decompression and UDP network reception NEVER block, preventing packet loss and bitrate collapse.
     public func render(pixelBuffer: CVPixelBuffer) {
         lock.lock()
+        self.pendingPixelBuffer = pixelBuffer
         self.currentPixelBuffer = pixelBuffer
+
+        if isRenderActive {
+            // Render loop is currently active on renderQueue. It will pick up pendingPixelBuffer
+            // as soon as the in-progress frame completes. Return immediately!
+            lock.unlock()
+            return
+        }
+
+        isRenderActive = true
+        lock.unlock()
+
+        renderQueue.async { [weak self] in
+            self?.drainRenderQueue()
+        }
+    }
+
+    /// Continuously drains pending frames on the dedicated render queue.
+    /// If the window is tabbed out or occluded and nextDrawable() waits, only this queue waits;
+    /// VideoToolbox continues running, constantly replacing pendingPixelBuffer with the latest frame.
+    /// When tabbed back in, the single newest frame is rendered instantly with 0ms lag!
+    private func drainRenderQueue() {
+        while true {
+            lock.lock()
+            guard let pixelBuffer = self.pendingPixelBuffer else {
+                self.isRenderActive = false
+                lock.unlock()
+                return
+            }
+            self.pendingPixelBuffer = nil
+            lock.unlock()
+
+            renderToMetalLayer(pixelBuffer: pixelBuffer)
+        }
+    }
+
+    private func renderToMetalLayer(pixelBuffer: CVPixelBuffer) {
+        lock.lock()
         guard let layer = self.metalLayer,
               let queue = self.commandQueue,
               let cache = self.textureCache else {
@@ -318,6 +364,9 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         lock.unlock()
 
         guard let drawable = layer.nextDrawable() else {
+            // Brief back-off if drawable is temporarily unavailable (e.g. window minimized)
+            // to avoid busy-spinning renderQueue.
+            Thread.sleep(forTimeInterval: 0.005)
             return
         }
 
@@ -411,7 +460,9 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
 
     public func reset() {
         lock.lock()
+        self.pendingPixelBuffer = nil
         self.currentPixelBuffer = nil
+        self.isRenderActive = false
         self.frameCount = 0
         self.currentRenderFps = 0.0
         self.lastFrameWidth = -1

@@ -13,6 +13,7 @@ public final class KeyboardMonitor: @unchecked Sendable {
     public var onPasteRequested: (@Sendable () -> Void)?
 
     private var localMonitor: Any?
+    private var appResignObserver: NSObjectProtocol?
     private var isMonitoring = false
     private let KEY_ACTION_DOWN: CChar = 0x03
     private let KEY_ACTION_UP: CChar = 0x04
@@ -27,12 +28,24 @@ public final class KeyboardMonitor: @unchecked Sendable {
             guard let self = self else { return event }
             return self.handleKeyEvent(event)
         }
+
+        appResignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.raiseModifierKeys()
+        }
     }
 
     public func stop() {
         if let monitor = localMonitor {
             NSEvent.removeMonitor(monitor)
             localMonitor = nil
+        }
+        if let obs = appResignObserver {
+            NotificationCenter.default.removeObserver(obs)
+            appResignObserver = nil
         }
         isMonitoring = false
     }

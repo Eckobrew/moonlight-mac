@@ -28,6 +28,10 @@
     <string>public.app-category.games</string>
     <key>LSSupportsGameMode</key>
     <true/>
+    <key>NSSupportsAppNap</key>
+    <false/>
+    <key>NSAppSleepDisabled</key>
+    <true/>
     <key>NSApplicationUpdateCycleEnabled</key>
     <false/>
     <key>NSHighResolutionCapable</key>
