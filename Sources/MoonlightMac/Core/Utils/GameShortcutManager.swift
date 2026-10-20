@@ -2,14 +2,123 @@ import AppKit
 import Foundation
 import UniformTypeIdentifiers
 
+public enum ShortcutIconStyle: String, CaseIterable, Identifiable {
+    case squircle = "macOS Squircle"
+    case original = "Original Artwork"
+
+    public var id: String { rawValue }
+}
+
+public enum ShortcutFillMode: String, CaseIterable, Identifiable {
+    case aspectFill = "Crop to Fill"
+    case aspectFit = "Fit Inside"
+
+    public var id: String { rawValue }
+}
+
 @MainActor
 public final class GameShortcutManager {
     public static let shared = GameShortcutManager()
 
     private init() {}
 
-    /// Prompts the user to select an icon (or defaults to the game's box art) and creates
-    /// a standalone macOS .app shortcut bundle on the Desktop with custom icon and launch script.
+    /// Creates a standalone macOS .app shortcut bundle on the Desktop with a custom styled icon.
+    public func createShortcut(
+        for app: StreamApp,
+        host: Host,
+        image: NSImage,
+        style: ShortcutIconStyle = .squircle,
+        fillMode: ShortcutFillMode = .aspectFill
+    ) throws {
+        let formattedImage = formatIcon(from: image, style: style, fillMode: fillMode, size: 1024)
+        try writeAppBundle(app: app, host: host, image: formattedImage)
+    }
+
+    /// Formats an image into either a native macOS rounded squircle or centered original artwork.
+    public func formatIcon(
+        from image: NSImage,
+        style: ShortcutIconStyle = .squircle,
+        fillMode: ShortcutFillMode = .aspectFill,
+        size: CGFloat = 1024
+    ) -> NSImage {
+        let result = NSImage(size: NSSize(width: size, height: size))
+        result.lockFocus()
+
+        guard let _ = NSGraphicsContext.current else {
+            result.unlockFocus()
+            return image
+        }
+
+        switch style {
+        case .squircle:
+            let iconSize = size * 0.82
+            let origin = (size - iconSize) / 2.0
+            let radius = iconSize * 0.224
+            let iconRect = NSRect(x: origin, y: origin, width: iconSize, height: iconSize)
+            let path = NSBezierPath(roundedRect: iconRect, xRadius: radius, yRadius: radius)
+
+            // Drop shadow
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
+            shadow.shadowOffset = NSSize(width: 0, height: -size * 0.012)
+            shadow.shadowBlurRadius = size * 0.024
+
+            NSGraphicsContext.saveGraphicsState()
+            shadow.set()
+            NSColor(white: 0.12, alpha: 1.0).setFill()
+            path.fill()
+            NSGraphicsContext.restoreGraphicsState()
+
+            // Clip to rounded rect
+            NSGraphicsContext.saveGraphicsState()
+            path.addClip()
+
+            // Dark subtle backdrop for transparent logos
+            NSColor(white: 0.14, alpha: 1.0).setFill()
+            path.fill()
+
+            // Calculate scaled rect
+            let imgSize = image.size
+            var drawRect = iconRect
+            if imgSize.width > 0 && imgSize.height > 0 {
+                if fillMode == .aspectFill {
+                    let scale = max(iconSize / imgSize.width, iconSize / imgSize.height)
+                    let w = imgSize.width * scale
+                    let h = imgSize.height * scale
+                    drawRect = NSRect(x: iconRect.midX - (w / 2.0), y: iconRect.midY - (h / 2.0), width: w, height: h)
+                } else {
+                    let scale = min(iconSize / imgSize.width, iconSize / imgSize.height)
+                    let w = imgSize.width * scale
+                    let h = imgSize.height * scale
+                    drawRect = NSRect(x: iconRect.midX - (w / 2.0), y: iconRect.midY - (h / 2.0), width: w, height: h)
+                }
+            }
+            image.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+
+            // Subtle border stroke / inner highlight
+            NSColor.white.withAlphaComponent(0.18).setStroke()
+            path.lineWidth = max(1.0, size * 0.002)
+            path.stroke()
+
+            NSGraphicsContext.restoreGraphicsState()
+
+        case .original:
+            let imgSize = image.size
+            var drawRect = NSRect(x: 0, y: 0, width: size, height: size)
+            if imgSize.width > 0 && imgSize.height > 0 {
+                let scale = min(size / imgSize.width, size / imgSize.height)
+                let w = imgSize.width * scale
+                let h = imgSize.height * scale
+                drawRect = NSRect(x: (size - w) / 2.0, y: (size - h) / 2.0, width: w, height: h)
+            }
+            image.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+        }
+
+        result.unlockFocus()
+        return result
+    }
+
+    /// Legacy file picker prompt (falls back to box art if cancelled).
     public func createShortcut(for app: StreamApp, host: Host, iconImage: NSImage?) {
         let openPanel = NSOpenPanel()
         openPanel.title = "Select Game Icon"
@@ -59,6 +168,10 @@ public final class GameShortcutManager {
 
         let safeName = app.title.replacingOccurrences(of: "[:/\\\\?*\"<>|]", with: "_", options: .regularExpression)
         let bundleUrl = desktopUrl.appendingPathComponent("\(safeName).app")
+
+        if FileManager.default.fileExists(atPath: bundleUrl.path) {
+            try? FileManager.default.removeItem(at: bundleUrl)
+        }
 
         let macOsDir = bundleUrl.appendingPathComponent("Contents/MacOS")
         let resourcesDir = bundleUrl.appendingPathComponent("Contents/Resources")

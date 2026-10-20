@@ -10,6 +10,7 @@ public struct AppCardView: View {
 
     @State private var boxArtImage: NSImage?
     @State private var isLoading = false
+    @State private var showingShortcutSheet = false
 
     public init(
         host: Host,
@@ -131,10 +132,13 @@ public struct AppCardView: View {
             Divider()
 
             Button {
-                GameShortcutManager.shared.createShortcut(for: app, host: host, iconImage: boxArtImage)
+                showingShortcutSheet = true
             } label: {
                 Label("Create Desktop Shortcut...", systemImage: "arrow.up.forward.app")
             }
+        }
+        .sheet(isPresented: $showingShortcutSheet) {
+            ShortcutIconPickerSheet(host: host, app: app, boxArtImage: boxArtImage)
         }
         .task(id: app.id) {
             isLoading = true
