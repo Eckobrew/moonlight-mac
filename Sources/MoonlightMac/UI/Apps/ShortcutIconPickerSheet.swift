@@ -16,6 +16,7 @@ public struct ShortcutIconPickerSheet: View {
     @State private var selectedImage: NSImage?
     @State private var iconStyle: ShortcutIconStyle = .squircle
     @State private var fillMode: ShortcutFillMode = .aspectFill
+    @State private var backdrop: ShortcutBackdrop = .blurred
 
     @State private var customLocalImage: NSImage?
     @State private var isCreating = false
@@ -79,7 +80,7 @@ public struct ShortcutIconPickerSheet: View {
                     // Style options
                     VStack(alignment: .leading, spacing: 14) {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Icon Format")
+                            Text("Icon Shape")
                                 .font(.subheadline)
                                 .fontWeight(.medium)
 
@@ -91,7 +92,7 @@ public struct ShortcutIconPickerSheet: View {
                             .pickerStyle(.segmented)
                         }
 
-                        if iconStyle == .squircle {
+                        if iconStyle == .squircle || iconStyle == .circle {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Artwork Scaling")
                                     .font(.subheadline)
@@ -103,6 +104,21 @@ public struct ShortcutIconPickerSheet: View {
                                     }
                                 }
                                 .pickerStyle(.segmented)
+                            }
+
+                            if fillMode == .aspectFit {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Backdrop")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+
+                                    Picker("", selection: $backdrop) {
+                                        ForEach(ShortcutBackdrop.allCases) { b in
+                                            Text(b.rawValue).tag(b)
+                                        }
+                                    }
+                                    .pickerStyle(.segmented)
+                                }
                             }
                         }
                     }
@@ -431,6 +447,7 @@ public struct ShortcutIconPickerSheet: View {
             from: baseImage,
             style: iconStyle,
             fillMode: fillMode,
+            backdrop: backdrop,
             size: 256
         )
     }
@@ -438,33 +455,35 @@ public struct ShortcutIconPickerSheet: View {
     private var desktopSimulationPreview: some View {
         VStack(spacing: 8) {
             ZStack {
-                // Subtle desktop wallpaper background preview
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.blue.opacity(0.18), Color.purple.opacity(0.18)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
+                // Realistic macOS Dock style preview container
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.black.opacity(0.35))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
                     )
-                    .frame(height: 160)
+                    .frame(height: 150)
 
-                VStack(spacing: 6) {
+                VStack(spacing: 8) {
                     Image(nsImage: currentFormattedIcon)
                         .resizable()
                         .interpolation(.high)
                         .aspectRatio(contentMode: .fit)
-                        .frame(width: 88, height: 88)
+                        .frame(width: 82, height: 82)
 
                     Text(app.title)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.primary)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white)
                         .lineLimit(1)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 2)
-                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.7), in: RoundedRectangle(cornerRadius: 4))
+                        .background(Color.black.opacity(0.5), in: Capsule())
                 }
             }
+
+            Text("Exact Apple HIG Grid: 824x824 continuous superellipse")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
         }
     }
 
@@ -505,7 +524,8 @@ public struct ShortcutIconPickerSheet: View {
                 host: host,
                 image: finalImage,
                 style: iconStyle,
-                fillMode: fillMode
+                fillMode: fillMode,
+                backdrop: backdrop
             )
             isCreating = false
             showSuccessAlert = true

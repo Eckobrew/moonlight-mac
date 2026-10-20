@@ -1,17 +1,38 @@
 import AppKit
 import Foundation
+import SwiftUI
 import UniformTypeIdentifiers
 
 public enum ShortcutIconStyle: String, CaseIterable, Identifiable {
-    case squircle = "macOS Squircle"
-    case original = "Original Artwork"
+    case squircle = "Squircle"
+    case circle = "Circle"
+    case cutout = "Logo Cutout"
+    case original = "Box Art"
 
     public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .squircle: return "macOS Squircle"
+        case .circle: return "macOS Circle"
+        case .cutout: return "Logo Cutout"
+        case .original: return "Box Art / Cover"
+        }
+    }
 }
 
 public enum ShortcutFillMode: String, CaseIterable, Identifiable {
     case aspectFill = "Crop to Fill"
     case aspectFit = "Fit Inside"
+
+    public var id: String { rawValue }
+}
+
+public enum ShortcutBackdrop: String, CaseIterable, Identifiable {
+    case blurred = "Blurred Art"
+    case dark = "Dark"
+    case black = "Black"
+    case clear = "None"
 
     public var id: String { rawValue }
 }
@@ -28,94 +49,34 @@ public final class GameShortcutManager {
         host: Host,
         image: NSImage,
         style: ShortcutIconStyle = .squircle,
-        fillMode: ShortcutFillMode = .aspectFill
+        fillMode: ShortcutFillMode = .aspectFill,
+        backdrop: ShortcutBackdrop = .blurred
     ) throws {
-        let formattedImage = formatIcon(from: image, style: style, fillMode: fillMode, size: 1024)
+        let formattedImage = formatIcon(from: image, style: style, fillMode: fillMode, backdrop: backdrop, size: 1024)
         try writeAppBundle(app: app, host: host, image: formattedImage)
     }
 
-    /// Formats an image into either a native macOS rounded squircle or centered original artwork.
+    /// Formats an image into a native macOS icon conforming exactly to Apple HIG icon grid guidelines.
     public func formatIcon(
         from image: NSImage,
         style: ShortcutIconStyle = .squircle,
         fillMode: ShortcutFillMode = .aspectFill,
+        backdrop: ShortcutBackdrop = .blurred,
         size: CGFloat = 1024
     ) -> NSImage {
-        let result = NSImage(size: NSSize(width: size, height: size))
-        result.lockFocus()
-
-        guard let _ = NSGraphicsContext.current else {
-            result.unlockFocus()
-            return image
+        let renderView = IconRenderView(
+            image: image,
+            style: style,
+            fillMode: fillMode,
+            backdrop: backdrop,
+            size: size
+        )
+        let renderer = ImageRenderer(content: renderView)
+        renderer.scale = 1.0
+        if let rendered = renderer.nsImage {
+            return rendered
         }
-
-        switch style {
-        case .squircle:
-            let iconSize = size * 0.82
-            let origin = (size - iconSize) / 2.0
-            let radius = iconSize * 0.224
-            let iconRect = NSRect(x: origin, y: origin, width: iconSize, height: iconSize)
-            let path = NSBezierPath(roundedRect: iconRect, xRadius: radius, yRadius: radius)
-
-            // Drop shadow
-            let shadow = NSShadow()
-            shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
-            shadow.shadowOffset = NSSize(width: 0, height: -size * 0.012)
-            shadow.shadowBlurRadius = size * 0.024
-
-            NSGraphicsContext.saveGraphicsState()
-            shadow.set()
-            NSColor(white: 0.12, alpha: 1.0).setFill()
-            path.fill()
-            NSGraphicsContext.restoreGraphicsState()
-
-            // Clip to rounded rect
-            NSGraphicsContext.saveGraphicsState()
-            path.addClip()
-
-            // Dark subtle backdrop for transparent logos
-            NSColor(white: 0.14, alpha: 1.0).setFill()
-            path.fill()
-
-            // Calculate scaled rect
-            let imgSize = image.size
-            var drawRect = iconRect
-            if imgSize.width > 0 && imgSize.height > 0 {
-                if fillMode == .aspectFill {
-                    let scale = max(iconSize / imgSize.width, iconSize / imgSize.height)
-                    let w = imgSize.width * scale
-                    let h = imgSize.height * scale
-                    drawRect = NSRect(x: iconRect.midX - (w / 2.0), y: iconRect.midY - (h / 2.0), width: w, height: h)
-                } else {
-                    let scale = min(iconSize / imgSize.width, iconSize / imgSize.height)
-                    let w = imgSize.width * scale
-                    let h = imgSize.height * scale
-                    drawRect = NSRect(x: iconRect.midX - (w / 2.0), y: iconRect.midY - (h / 2.0), width: w, height: h)
-                }
-            }
-            image.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: 1.0)
-
-            // Subtle border stroke / inner highlight
-            NSColor.white.withAlphaComponent(0.18).setStroke()
-            path.lineWidth = max(1.0, size * 0.002)
-            path.stroke()
-
-            NSGraphicsContext.restoreGraphicsState()
-
-        case .original:
-            let imgSize = image.size
-            var drawRect = NSRect(x: 0, y: 0, width: size, height: size)
-            if imgSize.width > 0 && imgSize.height > 0 {
-                let scale = min(size / imgSize.width, size / imgSize.height)
-                let w = imgSize.width * scale
-                let h = imgSize.height * scale
-                drawRect = NSRect(x: (size - w) / 2.0, y: (size - h) / 2.0, width: w, height: h)
-            }
-            image.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: 1.0)
-        }
-
-        result.unlockFocus()
-        return result
+        return image
     }
 
     /// Legacy file picker prompt (falls back to box art if cancelled).
@@ -139,11 +100,10 @@ public final class GameShortcutManager {
             chosenImage = NSImage(contentsOf: selectedUrl)
         }
 
-        // Fall back to provided box art or default app icon
         let finalImage = chosenImage ?? iconImage ?? NSApp.applicationIconImage ?? NSImage(systemSymbolName: "gamecontroller.fill", accessibilityDescription: nil)!
 
         do {
-            try writeAppBundle(app: app, host: host, image: finalImage)
+            try createShortcut(for: app, host: host, image: finalImage, style: .squircle, fillMode: .aspectFill, backdrop: .blurred)
 
             let alert = NSAlert()
             alert.alertStyle = .informational
@@ -220,15 +180,16 @@ public final class GameShortcutManager {
 
         // 2. Icon resources (.png and .icns)
         let pngUrl = resourcesDir.appendingPathComponent("app.png")
-        if let pngData = renderPNG(from: image, size: 512) {
+        if let pngData = renderPNG(from: image, size: 1024) {
             try pngData.write(to: pngUrl)
         }
 
         let icnsUrl = resourcesDir.appendingPathComponent("app.icns")
         try writeIcns(from: image, to: icnsUrl)
 
-        // Set custom Finder icon on the bundle wrapper
-        NSWorkspace.shared.setIcon(image, forFile: bundleUrl.path, options: [])
+        // Ensure no legacy Icon\r file exists
+        let iconR = bundleUrl.appendingPathComponent("Icon\r")
+        try? FileManager.default.removeItem(at: iconR)
 
         // 3. Launch script
         let moonlightBin = Bundle.main.executablePath ?? "/Applications/Moonlight.app/Contents/MacOS/MoonlightMac"
@@ -269,8 +230,23 @@ public final class GameShortcutManager {
         let launchUrl = macOsDir.appendingPathComponent("launch")
         try launchScript.write(to: launchUrl, atomically: true, encoding: .utf8)
 
-        // Make executable (chmod +x)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launchUrl.path)
+
+        // Register application bundle with LaunchServices and notify Finder
+        registerBundleWithLaunchServices(bundleUrl: bundleUrl)
+    }
+
+    private func registerBundleWithLaunchServices(bundleUrl: URL) {
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: bundleUrl.path)
+
+        let lsregisterPath = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+        if FileManager.default.fileExists(atPath: lsregisterPath) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: lsregisterPath)
+            proc.arguments = ["-f", bundleUrl.path]
+            try? proc.run()
+            proc.waitUntilExit()
+        }
 
         NSWorkspace.shared.noteFileSystemChanged(bundleUrl.path)
     }
@@ -293,6 +269,7 @@ public final class GameShortcutManager {
 
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSGraphicsContext.current?.imageInterpolation = .high
         image.draw(in: NSRect(x: 0, y: 0, width: size, height: size), from: .zero, operation: .copy, fraction: 1.0)
         NSGraphicsContext.restoreGraphicsState()
 
@@ -300,6 +277,53 @@ public final class GameShortcutManager {
     }
 
     private func writeIcns(from image: NSImage, to outputUrl: URL) throws {
+        // Try Apple official iconutil compiler first
+        let tempIconset = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".iconset")
+        try FileManager.default.createDirectory(at: tempIconset, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempIconset)
+        }
+
+        let standardSizes: [(name: String, size: Int)] = [
+            ("icon_16x16.png", 16),
+            ("icon_16x16@2x.png", 32),
+            ("icon_32x32.png", 32),
+            ("icon_32x32@2x.png", 64),
+            ("icon_128x128.png", 128),
+            ("icon_128x128@2x.png", 256),
+            ("icon_256x256.png", 256),
+            ("icon_256x256@2x.png", 512),
+            ("icon_512x512.png", 512),
+            ("icon_512x512@2x.png", 1024)
+        ]
+
+        var allRendered = true
+        for item in standardSizes {
+            if let data = renderPNG(from: image, size: item.size) {
+                try data.write(to: tempIconset.appendingPathComponent(item.name))
+            } else {
+                allRendered = false
+                break
+            }
+        }
+
+        if allRendered && FileManager.default.fileExists(atPath: "/usr/bin/iconutil") {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
+            process.arguments = ["-c", "icns", tempIconset.path, "-o", outputUrl.path]
+            try? process.run()
+            process.waitUntilExit()
+
+            if process.terminationStatus == 0 && FileManager.default.fileExists(atPath: outputUrl.path) {
+                return
+            }
+        }
+
+        // Fallback to manual chunk writing
+        try writeIcnsManual(from: image, to: outputUrl)
+    }
+
+    private func writeIcnsManual(from image: NSImage, to outputUrl: URL) throws {
         let formats: [(tag: String, size: Int)] = [
             ("icp4", 16),
             ("icp5", 32),
@@ -333,5 +357,138 @@ public final class GameShortcutManager {
 
         let completeIcns = icnsHeader + chunksData
         try completeIcns.write(to: outputUrl)
+    }
+}
+
+// MARK: - SwiftUI Icon Render View (Exact Apple HIG Grid Geometry)
+private struct IconRenderView: View {
+    let image: NSImage
+    let style: ShortcutIconStyle
+    let fillMode: ShortcutFillMode
+    let backdrop: ShortcutBackdrop
+    let size: CGFloat
+
+    var body: some View {
+        ZStack {
+            switch style {
+            case .squircle:
+                // Apple HIG standard macOS squircle: 824x824 inside 1024x1024, corner radius 185 continuous
+                let bodySize: CGFloat = size * (824.0 / 1024.0)
+                let radius: CGFloat = size * (185.0 / 1024.0)
+                let shadowRadius: CGFloat = size * (6.0 / 1024.0)
+                let shadowOffset: CGFloat = size * (6.0 / 1024.0)
+
+                // Native Apple contact drop shadow
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(Color.black.opacity(0.28))
+                    .frame(width: bodySize, height: bodySize)
+                    .blur(radius: shadowRadius)
+                    .offset(y: shadowOffset)
+
+                // Icon body
+                ZStack {
+                    backdropLayer(size: bodySize)
+
+                    if fillMode == .aspectFill {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: bodySize, height: bodySize)
+                    } else {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: bodySize * 0.90, height: bodySize * 0.90)
+                    }
+                }
+                .frame(width: bodySize, height: bodySize)
+                .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .stroke(Color.white.opacity(0.18), lineWidth: max(1.0, size * (1.5 / 1024.0)))
+                )
+
+            case .circle:
+                // Apple HIG standard circular icon (e.g. Safari / Time Machine): 844x844 diameter
+                let diameter: CGFloat = size * (844.0 / 1024.0)
+                let shadowRadius: CGFloat = size * (6.0 / 1024.0)
+                let shadowOffset: CGFloat = size * (6.0 / 1024.0)
+
+                // Native Apple contact drop shadow
+                Circle()
+                    .fill(Color.black.opacity(0.28))
+                    .frame(width: diameter, height: diameter)
+                    .blur(radius: shadowRadius)
+                    .offset(y: shadowOffset)
+
+                // Icon body
+                ZStack {
+                    backdropLayer(size: diameter)
+
+                    if fillMode == .aspectFill {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: diameter, height: diameter)
+                    } else {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: diameter * 0.90, height: diameter * 0.90)
+                    }
+                }
+                .frame(width: diameter, height: diameter)
+                .clipShape(Circle())
+                .overlay(
+                    Circle()
+                        .stroke(Color.white.opacity(0.18), lineWidth: max(1.0, size * (1.5 / 1024.0)))
+                )
+
+            case .cutout:
+                // Natural transparent cutout with Apple drop shadow
+                let targetSize: CGFloat = size * (824.0 / 1024.0)
+                let shadowRadius: CGFloat = size * (8.0 / 1024.0)
+                let shadowOffset: CGFloat = size * (6.0 / 1024.0)
+
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: targetSize, height: targetSize)
+                    .shadow(color: Color.black.opacity(0.30), radius: shadowRadius, x: 0, y: shadowOffset)
+
+            case .original:
+                // Full rectangular box art / banner
+                let targetSize: CGFloat = size * (840.0 / 1024.0)
+                let shadowRadius: CGFloat = size * (6.0 / 1024.0)
+                let shadowOffset: CGFloat = size * (6.0 / 1024.0)
+
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: targetSize, height: targetSize)
+                    .clipShape(RoundedRectangle(cornerRadius: size * (24.0 / 1024.0), style: .continuous))
+                    .shadow(color: Color.black.opacity(0.28), radius: shadowRadius, x: 0, y: shadowOffset)
+            }
+        }
+        .frame(width: size, height: size)
+    }
+
+    @ViewBuilder
+    private func backdropLayer(size: CGFloat) -> some View {
+        switch backdrop {
+        case .blurred:
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: size, height: size)
+                .blur(radius: 25)
+                .overlay(Color.black.opacity(0.25))
+        case .dark:
+            Color(red: 0.12, green: 0.12, blue: 0.14)
+        case .black:
+            Color.black
+        case .clear:
+            Color.clear
+        }
     }
 }
