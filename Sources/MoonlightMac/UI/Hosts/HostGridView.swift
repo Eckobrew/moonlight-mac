@@ -63,6 +63,7 @@ public struct HostGridView: View {
                 }
             }
 
+            #if DEBUG
             ToolbarItem(placement: .automatic) {
                 Button {
                     appState.isShowingLogs = true
@@ -71,6 +72,7 @@ public struct HostGridView: View {
                 }
                 .help("View live logs and diagnostics")
             }
+            #endif
 
             ToolbarItem(placement: .automatic) {
                 Button {
@@ -90,9 +92,11 @@ public struct HostGridView: View {
                 appState.saveSettings()
             }
         }
+        #if DEBUG
         .sheet(isPresented: $appState.isShowingLogs) {
             LogViewerSheet()
         }
+        #endif
         .sheet(isPresented: $appState.isShowingPairing) {
             if let host = appState.selectedHost {
                 PairingSheet(
