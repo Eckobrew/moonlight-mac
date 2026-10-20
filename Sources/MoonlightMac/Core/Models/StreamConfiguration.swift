@@ -93,7 +93,6 @@ public struct StreamSettings: Codable, Equatable, Sendable {
     public var fullRangeColor: Bool
     public var mouseCaptureMode: Bool
     public var swapWinAltKeys: Bool
-    public var swapCommandControl: Bool
     public var windowMode: WindowMode
     public var videoRenderer: VideoRendererMode
     public var enableVsync: Bool
@@ -120,7 +119,6 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         fullRangeColor: Bool = false,
         mouseCaptureMode: Bool = true,
         swapWinAltKeys: Bool = true,
-        swapCommandControl: Bool = false,
         windowMode: WindowMode = .fullscreenDesktop,
         videoRenderer: VideoRendererMode = .metal,
         enableVsync: Bool = true,
@@ -146,7 +144,6 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.fullRangeColor = fullRangeColor
         self.mouseCaptureMode = mouseCaptureMode
         self.swapWinAltKeys = swapWinAltKeys
-        self.swapCommandControl = swapCommandControl
         self.windowMode = windowMode
         self.videoRenderer = videoRenderer
         self.enableVsync = enableVsync
@@ -165,7 +162,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case width, height, fps, bitrateMbps, packetSize
         case codec, audioMode, enableHdr, fullRangeColor
-        case mouseCaptureMode, swapWinAltKeys, swapCommandControl, windowMode
+        case mouseCaptureMode, swapWinAltKeys, windowMode
         case videoRenderer, enableVsync, enableFramePacing
         case optimizeGameSettings, quitAppOnStop, mouseSensitivity
         case enableRemoteBitrate, remoteBitrateMbps, enableClipboardSync, hideUnpairedHosts
@@ -185,7 +182,6 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.fullRangeColor = try container.decode(Bool.self, forKey: .fullRangeColor)
         self.mouseCaptureMode = try container.decode(Bool.self, forKey: .mouseCaptureMode)
         self.swapWinAltKeys = (try? container.decode(Bool.self, forKey: .swapWinAltKeys)) ?? true
-        self.swapCommandControl = (try? container.decode(Bool.self, forKey: .swapCommandControl)) ?? false
         self.windowMode = (try? container.decode(WindowMode.self, forKey: .windowMode)) ?? .fullscreenDesktop
         self.videoRenderer = (try? container.decode(VideoRendererMode.self, forKey: .videoRenderer)) ?? .metal
         self.enableVsync = (try? container.decode(Bool.self, forKey: .enableVsync)) ?? true

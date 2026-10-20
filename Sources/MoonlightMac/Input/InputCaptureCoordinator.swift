@@ -19,7 +19,6 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         captureMouse: Bool = true,
         mouseSensitivity: Double = 1.0,
         swapWinAltKeys: Bool = true,
-        swapCommandControl: Bool = false,
         systemKeyCaptureMode: SystemKeyCaptureMode = .off,
         onQuit: @escaping @Sendable () -> Void,
         onToggleMouseCapture: (@Sendable () -> Void)? = nil,
@@ -33,7 +32,6 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         self.systemKeyCaptureMode = systemKeyCaptureMode
 
         keyboardMonitor.swapWinAltKeys = swapWinAltKeys
-        keyboardMonitor.swapCommandControl = swapCommandControl
         keyboardMonitor.onQuitRequested = onQuit
         keyboardMonitor.onToggleMouseCaptureRequested = onToggleMouseCapture
         keyboardMonitor.onToggleFullscreenRequested = onToggleFullscreen

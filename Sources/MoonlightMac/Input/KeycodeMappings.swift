@@ -36,8 +36,7 @@ public enum KeycodeMappings {
 
     public static func macToWindowsVirtualKey(
         macKeyCode: UInt16,
-        swapWinAltKeys: Bool = false,
-        swapCommandControl: Bool = false
+        swapWinAltKeys: Bool = true
     ) -> Int16 {
         switch macKeyCode {
         case 0x00: return 0x41 // A
@@ -94,52 +93,24 @@ public enum KeycodeMappings {
         case 0x35: return VK_ESCAPE
 
         // Modifiers
-        case 0x37: // Left Command
-            if swapCommandControl {
-                return VK_LCONTROL
-            } else if swapWinAltKeys {
-                return VK_LMENU // Left Alt (matches physical PC position next to space)
-            } else {
-                return VK_LWIN  // Left Win
-            }
-        case 0x36: // Right Command
-            if swapCommandControl {
-                return VK_RCONTROL
-            } else if swapWinAltKeys {
-                return VK_RMENU // Right Alt
-            } else {
-                return VK_RWIN  // Right Win
-            }
+        case 0x37: // Left Command -> Alt (Windows position) or Win
+            return swapWinAltKeys ? VK_LMENU : VK_LWIN
+        case 0x36: // Right Command -> Alt (Windows position) or Win
+            return swapWinAltKeys ? VK_RMENU : VK_RWIN
         case 0x38: // Left Shift
             return VK_LSHIFT
         case 0x3C: // Right Shift
             return VK_RSHIFT
         case 0x39: // Caps lock
             return VK_CAPITAL
-        case 0x3A: // Left Option
-            if swapWinAltKeys {
-                return VK_LWIN  // Left Win (matches physical PC position between Ctrl and Alt)
-            } else {
-                return VK_LMENU // Left Alt
-            }
-        case 0x3D: // Right Option
-            if swapWinAltKeys {
-                return VK_RWIN  // Right Win
-            } else {
-                return VK_RMENU // Right Alt
-            }
-        case 0x3B: // Left Control
-            if swapCommandControl {
-                return VK_LWIN
-            } else {
-                return VK_LCONTROL // Left Control (stays Control!)
-            }
-        case 0x3E: // Right Control
-            if swapCommandControl {
-                return VK_RWIN
-            } else {
-                return VK_RCONTROL // Right Control (stays Control!)
-            }
+        case 0x3A: // Left Option -> Win (Windows position) or Alt
+            return swapWinAltKeys ? VK_LWIN : VK_LMENU
+        case 0x3D: // Right Option -> Win (Windows position) or Alt
+            return swapWinAltKeys ? VK_RWIN : VK_RMENU
+        case 0x3B: // Left Control (always Control)
+            return VK_LCONTROL
+        case 0x3E: // Right Control (always Control)
+            return VK_RCONTROL
 
         // Arrow keys
         case 0x7B: return VK_LEFT

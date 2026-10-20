@@ -4,7 +4,6 @@ import MoonlightCommonC
 
 public final class KeyboardMonitor: @unchecked Sendable {
     public var swapWinAltKeys: Bool = true
-    public var swapCommandControl: Bool = false
     public var onQuitRequested: (@Sendable () -> Void)?
     public var onToggleMouseCaptureRequested: (@Sendable () -> Void)?
     public var onToggleFullscreenRequested: (@Sendable () -> Void)?
@@ -135,8 +134,7 @@ public final class KeyboardMonitor: @unchecked Sendable {
 
         let vkCode = KeycodeMappings.macToWindowsVirtualKey(
             macKeyCode: event.keyCode,
-            swapWinAltKeys: swapWinAltKeys,
-            swapCommandControl: swapCommandControl
+            swapWinAltKeys: swapWinAltKeys
         )
         if vkCode == 0 { return event }
 
@@ -170,17 +168,12 @@ public final class KeyboardMonitor: @unchecked Sendable {
     private func modifierByte(for flags: NSEvent.ModifierFlags) -> CChar {
         var mods: Int32 = 0
         if flags.contains(.shift) { mods |= MODIFIER_SHIFT }
+        if flags.contains(.control) { mods |= MODIFIER_CTRL }
 
-        if swapCommandControl {
-            if flags.contains(.control) { mods |= MODIFIER_META }
-            if flags.contains(.command) { mods |= MODIFIER_CTRL }
-            if flags.contains(.option) { mods |= MODIFIER_ALT }
-        } else if swapWinAltKeys {
-            if flags.contains(.control) { mods |= MODIFIER_CTRL }
+        if swapWinAltKeys {
             if flags.contains(.option) { mods |= MODIFIER_META } // Option is Windows
             if flags.contains(.command) { mods |= MODIFIER_ALT }  // Command is Alt
         } else {
-            if flags.contains(.control) { mods |= MODIFIER_CTRL }
             if flags.contains(.option) { mods |= MODIFIER_ALT }
             if flags.contains(.command) { mods |= MODIFIER_META }
         }

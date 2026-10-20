@@ -158,7 +158,6 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
                 captureMouse: settings.mouseCaptureMode,
                 mouseSensitivity: settings.mouseSensitivity,
                 swapWinAltKeys: settings.swapWinAltKeys,
-                swapCommandControl: settings.swapCommandControl,
                 systemKeyCaptureMode: settings.captureSystemKeys,
                 onQuit: { [weak self] in
                     Task { @MainActor [weak self] in
