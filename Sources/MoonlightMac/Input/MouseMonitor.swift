@@ -7,8 +7,12 @@ public final class MouseMonitor: @unchecked Sendable {
     public var isCaptured: Bool = false {
         didSet {
             updateCursorAssociation()
+            onCaptureStateChanged?()
         }
     }
+
+    /// Notified whenever capture state changes (used to update the keyboard grab, like moonlight-qt setCaptureActive)
+    public var onCaptureStateChanged: (() -> Void)?
 
     public var sensitivity: Double = 1.0
 

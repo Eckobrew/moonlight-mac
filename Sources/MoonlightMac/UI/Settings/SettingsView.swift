@@ -187,7 +187,24 @@ public struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    Toggle("Swap Command and Control keys for Windows shortcuts", isOn: $settings.swapCommandControl)
+                    Picker("Capture system keyboard shortcuts", selection: $settings.captureSystemKeys) {
+                        ForEach(SystemKeyCaptureMode.allCases, id: \.self) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    Text("Sends ⌘Tab, Spotlight, Mission Control and other macOS shortcuts to the host while the stream has the cursor captured. Press ⌃⌥⇧Z to release.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Toggle("Match physical Windows PC keyboard layout (Control, Windows, Alt)", isOn: $settings.swapWinAltKeys)
+                    Text("Maps Control → Ctrl, Option → Windows, Command → Alt so the physical keys match a standard PC keyboard.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Toggle("Swap Command and Control keys (macOS shortcut style)", isOn: $settings.swapCommandControl)
+                    Text("Maps Command → Ctrl and Control → Windows for Mac muscle memory (e.g. ⌘C for Ctrl+C).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Text("Shortcuts: ⌃⌥⇧Q: quit | ⌃⌥⇧Z: release cursor | ⌃⌥⇧X: toggle fullscreen | ⌃⌥⇧S: toggle stats")
                         .font(.caption)
                         .foregroundStyle(.secondary)

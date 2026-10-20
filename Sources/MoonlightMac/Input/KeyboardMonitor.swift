@@ -3,6 +3,7 @@ import AppKit
 import MoonlightCommonC
 
 public final class KeyboardMonitor: @unchecked Sendable {
+    public var swapWinAltKeys: Bool = true
     public var swapCommandControl: Bool = false
     public var onQuitRequested: (@Sendable () -> Void)?
     public var onToggleMouseCaptureRequested: (@Sendable () -> Void)?
@@ -15,6 +16,7 @@ public final class KeyboardMonitor: @unchecked Sendable {
     private var localMonitor: Any?
     private var appResignObserver: NSObjectProtocol?
     private var isMonitoring = false
+    private var keysDown = Set<Int16>()
     private let KEY_ACTION_DOWN: CChar = 0x03
     private let KEY_ACTION_UP: CChar = 0x04
 
@@ -131,48 +133,93 @@ public final class KeyboardMonitor: @unchecked Sendable {
             }
         }
 
-        let vkCode = KeycodeMappings.macToWindowsVirtualKey(macKeyCode: event.keyCode, swapCommandControl: swapCommandControl)
+        let vkCode = KeycodeMappings.macToWindowsVirtualKey(
+            macKeyCode: event.keyCode,
+            swapWinAltKeys: swapWinAltKeys,
+            swapCommandControl: swapCommandControl
+        )
         if vkCode == 0 { return event }
+
+        let modifiers = modifierByte(for: event.modifierFlags)
 
         switch event.type {
         case .keyDown:
-            LiSendKeyboardEvent(vkCode, KEY_ACTION_DOWN, 0)
+            keysDown.insert(vkCode)
+            LiSendKeyboardEvent(vkCode, KEY_ACTION_DOWN, modifiers)
             return nil // consume event
         case .keyUp:
-            LiSendKeyboardEvent(vkCode, KEY_ACTION_UP, 0)
+            keysDown.remove(vkCode)
+            LiSendKeyboardEvent(vkCode, KEY_ACTION_UP, modifiers)
             return nil
         case .flagsChanged:
-            // Flags changed event: determine if key was pressed or released
+            // Determine press/release of this specific (left or right) modifier key
             let isDown = isModifierKeyDown(event: event)
-            LiSendKeyboardEvent(vkCode, isDown ? KEY_ACTION_DOWN : KEY_ACTION_UP, 0)
+            if isDown {
+                keysDown.insert(vkCode)
+            } else {
+                keysDown.remove(vkCode)
+            }
+            LiSendKeyboardEvent(vkCode, isDown ? KEY_ACTION_DOWN : KEY_ACTION_UP, modifiers)
             return nil
         default:
             return event
         }
     }
 
-    /// Releases modifier keys on the host to avoid sticky keys when special combos are consumed
-    private func raiseModifierKeys() {
-        LiSendKeyboardEvent(KeycodeMappings.VK_CONTROL, KEY_ACTION_UP, 0)
-        LiSendKeyboardEvent(KeycodeMappings.VK_MENU, KEY_ACTION_UP, 0)
-        LiSendKeyboardEvent(KeycodeMappings.VK_SHIFT, KEY_ACTION_UP, 0)
-        LiSendKeyboardEvent(KeycodeMappings.VK_LWIN, KEY_ACTION_UP, 0)
+    /// Builds the Limelight modifier byte (MODIFIER_SHIFT/CTRL/ALT/META) like moonlight-qt keyboard.cpp
+    private func modifierByte(for flags: NSEvent.ModifierFlags) -> CChar {
+        var mods: Int32 = 0
+        if flags.contains(.shift) { mods |= MODIFIER_SHIFT }
+
+        if swapCommandControl {
+            if flags.contains(.control) { mods |= MODIFIER_META }
+            if flags.contains(.command) { mods |= MODIFIER_CTRL }
+            if flags.contains(.option) { mods |= MODIFIER_ALT }
+        } else if swapWinAltKeys {
+            if flags.contains(.control) { mods |= MODIFIER_CTRL }
+            if flags.contains(.option) { mods |= MODIFIER_META } // Option is Windows
+            if flags.contains(.command) { mods |= MODIFIER_ALT }  // Command is Alt
+        } else {
+            if flags.contains(.control) { mods |= MODIFIER_CTRL }
+            if flags.contains(.option) { mods |= MODIFIER_ALT }
+            if flags.contains(.command) { mods |= MODIFIER_META }
+        }
+        return CChar(truncatingIfNeeded: mods)
     }
 
+    /// Releases every key we've pressed on the host (matches moonlight-qt raiseAllKeys)
+    public func raiseAllKeys() {
+        for vk in keysDown {
+            LiSendKeyboardEvent(vk, KEY_ACTION_UP, 0)
+        }
+        keysDown.removeAll()
+    }
+
+    /// Releases modifier keys on the host to avoid sticky keys when special combos are consumed
+    private func raiseModifierKeys() {
+        raiseAllKeys()
+        for vk in [KeycodeMappings.VK_LCONTROL, KeycodeMappings.VK_RCONTROL,
+                   KeycodeMappings.VK_LMENU, KeycodeMappings.VK_RMENU,
+                   KeycodeMappings.VK_LSHIFT, KeycodeMappings.VK_RSHIFT,
+                   KeycodeMappings.VK_LWIN, KeycodeMappings.VK_RWIN] {
+            LiSendKeyboardEvent(vk, KEY_ACTION_UP, 0)
+        }
+    }
+
+    /// Uses device-dependent flag bits (NX_DEVICE*KEYMASK) so left/right modifiers are tracked independently
     private func isModifierKeyDown(event: NSEvent) -> Bool {
+        let raw = event.modifierFlags.rawValue
         switch event.keyCode {
-        case 0x38, 0x3C: // Shift
-            return event.modifierFlags.contains(.shift)
-        case 0x3B, 0x3E: // Control
-            return event.modifierFlags.contains(.control)
-        case 0x3A, 0x3D: // Option
-            return event.modifierFlags.contains(.option)
-        case 0x37, 0x36: // Command
-            return event.modifierFlags.contains(.command)
-        case 0x39: // Caps Lock
-            return event.modifierFlags.contains(.capsLock)
-        default:
-            return false
+        case 0x3B: return raw & 0x0000_0001 != 0 // NX_DEVICELCTLKEYMASK
+        case 0x3E: return raw & 0x0000_2000 != 0 // NX_DEVICERCTLKEYMASK
+        case 0x38: return raw & 0x0000_0002 != 0 // NX_DEVICELSHIFTKEYMASK
+        case 0x3C: return raw & 0x0000_0004 != 0 // NX_DEVICERSHIFTKEYMASK
+        case 0x37: return raw & 0x0000_0008 != 0 // NX_DEVICELCMDKEYMASK
+        case 0x36: return raw & 0x0000_0010 != 0 // NX_DEVICERCMDKEYMASK
+        case 0x3A: return raw & 0x0000_0020 != 0 // NX_DEVICELALTKEYMASK
+        case 0x3D: return raw & 0x0000_0040 != 0 // NX_DEVICERALTKEYMASK
+        case 0x39: return event.modifierFlags.contains(.capsLock)
+        default: return false
         }
     }
 }

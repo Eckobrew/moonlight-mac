@@ -157,7 +157,9 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             inputCoordinator.startCapturing(
                 captureMouse: settings.mouseCaptureMode,
                 mouseSensitivity: settings.mouseSensitivity,
+                swapWinAltKeys: settings.swapWinAltKeys,
                 swapCommandControl: settings.swapCommandControl,
+                systemKeyCaptureMode: settings.captureSystemKeys,
                 onQuit: { [weak self] in
                     Task { @MainActor [weak self] in
                         self?.stopSession()
@@ -171,6 +173,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
                 onToggleFullscreen: {
                     Task { @MainActor in
                         WindowManager.shared.toggleFullscreen()
+                        InputCaptureCoordinator.shared.updateKeyboardGrabState()
                     }
                 },
                 onToggleStatsOverlay: { [weak self] in

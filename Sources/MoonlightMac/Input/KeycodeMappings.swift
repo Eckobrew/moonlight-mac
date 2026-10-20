@@ -6,9 +6,13 @@ public enum KeycodeMappings {
     public static let VK_BACK: Int16       = 0x08
     public static let VK_TAB: Int16        = 0x09
     public static let VK_RETURN: Int16     = 0x0D
-    public static let VK_SHIFT: Int16      = 0x10
-    public static let VK_CONTROL: Int16    = 0x11
-    public static let VK_MENU: Int16       = 0x12 // Alt
+    // Left/right-specific modifier codes (matches moonlight-qt keyboard.cpp)
+    public static let VK_LSHIFT: Int16     = 0xA0
+    public static let VK_RSHIFT: Int16     = 0xA1
+    public static let VK_LCONTROL: Int16   = 0xA2
+    public static let VK_RCONTROL: Int16   = 0xA3
+    public static let VK_LMENU: Int16      = 0xA4 // Left Alt
+    public static let VK_RMENU: Int16      = 0xA5 // Right Alt
     public static let VK_PAUSE: Int16      = 0x13
     public static let VK_CAPITAL: Int16    = 0x14 // Caps Lock
     public static let VK_ESCAPE: Int16     = 0x1B
@@ -30,7 +34,11 @@ public enum KeycodeMappings {
     // Standard digits (0x30 = '0' ... 0x39 = '9')
     // Function keys (0x70 = F1 ... 0x7B = F12)
 
-    public static func macToWindowsVirtualKey(macKeyCode: UInt16, swapCommandControl: Bool = false) -> Int16 {
+    public static func macToWindowsVirtualKey(
+        macKeyCode: UInt16,
+        swapWinAltKeys: Bool = false,
+        swapCommandControl: Bool = false
+    ) -> Int16 {
         switch macKeyCode {
         case 0x00: return 0x41 // A
         case 0x01: return 0x53 // S
@@ -86,16 +94,52 @@ public enum KeycodeMappings {
         case 0x35: return VK_ESCAPE
 
         // Modifiers
-        case 0x37, 0x36: // Command key
-            return swapCommandControl ? VK_CONTROL : VK_LWIN
-        case 0x38, 0x3C: // Shift key
-            return VK_SHIFT
+        case 0x37: // Left Command
+            if swapCommandControl {
+                return VK_LCONTROL
+            } else if swapWinAltKeys {
+                return VK_LMENU // Left Alt (matches physical PC position next to space)
+            } else {
+                return VK_LWIN  // Left Win
+            }
+        case 0x36: // Right Command
+            if swapCommandControl {
+                return VK_RCONTROL
+            } else if swapWinAltKeys {
+                return VK_RMENU // Right Alt
+            } else {
+                return VK_RWIN  // Right Win
+            }
+        case 0x38: // Left Shift
+            return VK_LSHIFT
+        case 0x3C: // Right Shift
+            return VK_RSHIFT
         case 0x39: // Caps lock
             return VK_CAPITAL
-        case 0x3A, 0x3D: // Option / Alt key
-            return VK_MENU
-        case 0x3B, 0x3E: // Control key
-            return swapCommandControl ? VK_LWIN : VK_CONTROL
+        case 0x3A: // Left Option
+            if swapWinAltKeys {
+                return VK_LWIN  // Left Win (matches physical PC position between Ctrl and Alt)
+            } else {
+                return VK_LMENU // Left Alt
+            }
+        case 0x3D: // Right Option
+            if swapWinAltKeys {
+                return VK_RWIN  // Right Win
+            } else {
+                return VK_RMENU // Right Alt
+            }
+        case 0x3B: // Left Control
+            if swapCommandControl {
+                return VK_LWIN
+            } else {
+                return VK_LCONTROL // Left Control (stays Control!)
+            }
+        case 0x3E: // Right Control
+            if swapCommandControl {
+                return VK_RWIN
+            } else {
+                return VK_RCONTROL // Right Control (stays Control!)
+            }
 
         // Arrow keys
         case 0x7B: return VK_LEFT

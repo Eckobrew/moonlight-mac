@@ -69,6 +69,13 @@ public enum WindowMode: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// Matches moonlight-qt's "Capture system keyboard shortcuts" option (CSK_OFF / CSK_FULLSCREEN / CSK_ALWAYS)
+public enum SystemKeyCaptureMode: String, Codable, CaseIterable, Sendable {
+    case off = "Off"
+    case fullscreenOnly = "In fullscreen"
+    case always = "Always"
+}
+
 public enum VideoRendererMode: String, Codable, CaseIterable, Sendable {
     case metal = "Metal"
     case native = "Native (AVSampleBuffer)"
@@ -85,6 +92,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
     public var enableHdr: Bool
     public var fullRangeColor: Bool
     public var mouseCaptureMode: Bool
+    public var swapWinAltKeys: Bool
     public var swapCommandControl: Bool
     public var windowMode: WindowMode
     public var videoRenderer: VideoRendererMode
@@ -98,6 +106,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
     public var enableClipboardSync: Bool
     public var hideUnpairedHosts: Bool
     public var muteHostAudio: Bool
+    public var captureSystemKeys: SystemKeyCaptureMode
 
     public init(
         width: Int = 1920,
@@ -110,6 +119,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         enableHdr: Bool = false,
         fullRangeColor: Bool = false,
         mouseCaptureMode: Bool = true,
+        swapWinAltKeys: Bool = true,
         swapCommandControl: Bool = false,
         windowMode: WindowMode = .fullscreenDesktop,
         videoRenderer: VideoRendererMode = .metal,
@@ -122,7 +132,8 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         remoteBitrateMbps: Int = 15,
         enableClipboardSync: Bool = false,
         hideUnpairedHosts: Bool = false,
-        muteHostAudio: Bool = true
+        muteHostAudio: Bool = true,
+        captureSystemKeys: SystemKeyCaptureMode = .fullscreenOnly
     ) {
         self.width = width
         self.height = height
@@ -134,6 +145,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.enableHdr = enableHdr
         self.fullRangeColor = fullRangeColor
         self.mouseCaptureMode = mouseCaptureMode
+        self.swapWinAltKeys = swapWinAltKeys
         self.swapCommandControl = swapCommandControl
         self.windowMode = windowMode
         self.videoRenderer = videoRenderer
@@ -147,16 +159,17 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.enableClipboardSync = enableClipboardSync
         self.hideUnpairedHosts = hideUnpairedHosts
         self.muteHostAudio = muteHostAudio
+        self.captureSystemKeys = captureSystemKeys
     }
 
     enum CodingKeys: String, CodingKey {
         case width, height, fps, bitrateMbps, packetSize
         case codec, audioMode, enableHdr, fullRangeColor
-        case mouseCaptureMode, swapCommandControl, windowMode
+        case mouseCaptureMode, swapWinAltKeys, swapCommandControl, windowMode
         case videoRenderer, enableVsync, enableFramePacing
         case optimizeGameSettings, quitAppOnStop, mouseSensitivity
         case enableRemoteBitrate, remoteBitrateMbps, enableClipboardSync, hideUnpairedHosts
-        case muteHostAudio
+        case muteHostAudio, captureSystemKeys
     }
 
     public init(from decoder: Decoder) throws {
@@ -171,7 +184,8 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.enableHdr = try container.decode(Bool.self, forKey: .enableHdr)
         self.fullRangeColor = try container.decode(Bool.self, forKey: .fullRangeColor)
         self.mouseCaptureMode = try container.decode(Bool.self, forKey: .mouseCaptureMode)
-        self.swapCommandControl = try container.decode(Bool.self, forKey: .swapCommandControl)
+        self.swapWinAltKeys = (try? container.decode(Bool.self, forKey: .swapWinAltKeys)) ?? true
+        self.swapCommandControl = (try? container.decode(Bool.self, forKey: .swapCommandControl)) ?? false
         self.windowMode = (try? container.decode(WindowMode.self, forKey: .windowMode)) ?? .fullscreenDesktop
         self.videoRenderer = (try? container.decode(VideoRendererMode.self, forKey: .videoRenderer)) ?? .metal
         self.enableVsync = (try? container.decode(Bool.self, forKey: .enableVsync)) ?? true
@@ -184,6 +198,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.enableClipboardSync = (try? container.decode(Bool.self, forKey: .enableClipboardSync)) ?? false
         self.hideUnpairedHosts = (try? container.decode(Bool.self, forKey: .hideUnpairedHosts)) ?? false
         self.muteHostAudio = (try? container.decode(Bool.self, forKey: .muteHostAudio)) ?? true
+        self.captureSystemKeys = (try? container.decode(SystemKeyCaptureMode.self, forKey: .captureSystemKeys)) ?? .fullscreenOnly
     }
 }
 
