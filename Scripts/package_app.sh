@@ -23,7 +23,7 @@ if [ ! -f "$BIN_PATH" ]; then
     exit 1
 fi
 
-APP_NAME="MoonlightMac.app"
+APP_NAME="Moonlight.app"
 OUTPUT_DIR="$PROJECT_DIR/Products"
 APP_DIR="$OUTPUT_DIR/$APP_NAME"
 

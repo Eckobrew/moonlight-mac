@@ -118,7 +118,7 @@ public final class GameShortcutManager {
         NSWorkspace.shared.setIcon(image, forFile: bundleUrl.path, options: [])
 
         // 3. Launch script
-        let moonlightBin = Bundle.main.executablePath ?? "/Applications/MoonlightMac.app/Contents/MacOS/MoonlightMac"
+        let moonlightBin = Bundle.main.executablePath ?? "/Applications/Moonlight.app/Contents/MacOS/MoonlightMac"
         let escapedHost = host.name
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
@@ -140,7 +140,7 @@ public final class GameShortcutManager {
 
         MOONLIGHT_BIN="\(moonlightBin)"
         if [ ! -x "$MOONLIGHT_BIN" ]; then
-            MOONLIGHT_BIN="/Applications/MoonlightMac.app/Contents/MacOS/MoonlightMac"
+            MOONLIGHT_BIN="/Applications/Moonlight.app/Contents/MacOS/MoonlightMac"
         fi
         if [ ! -x "$MOONLIGHT_BIN" ]; then
             MOONLIGHT_BIN="/Applications/Moonlight.app/Contents/MacOS/Moonlight"
@@ -149,7 +149,7 @@ public final class GameShortcutManager {
         if [ -x "$MOONLIGHT_BIN" ]; then
             exec "$MOONLIGHT_BIN" stream "\(escapedHost)" "\(escapedApp)" --icon "$ICON"
         else
-            open -a MoonlightMac --args stream "\(escapedHost)" "\(escapedApp)" --icon "$ICON"
+            open -a Moonlight --args stream "\(escapedHost)" "\(escapedApp)" --icon "$ICON"
         fi
         """
 
