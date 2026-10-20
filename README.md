@@ -1,118 +1,118 @@
-# Moonlight Mac
+# Moonlight for macOS
 
-[Moonlight Mac](https://moonlight-stream.org) is an open source, fully native macOS client for [Sunshine](https://github.com/LizardByte/Sunshine), [Apollo](https://github.com/ClassicOldSong/Apollo), and NVIDIA GameStream.
+**Moonlight** lets you stream games from your gaming PC directly to your Mac. Play your PC games anywhere on your home network or across the internet with low latency, high frame rates, and crystal-clear image quality.
 
-Built from the ground up in Swift with SwiftUI, Metal, VideoToolbox, and AVFoundation, powered by `moonlight-common-c`.
+Works seamlessly with **[Sunshine](https://github.com/LizardByte/Sunshine)**, **[Apollo](https://github.com/ClassicOldSong/Apollo)**, and NVIDIA GameStream.
 
 > [!NOTE]
-> The whole thing is vibe coded by a monkey who has no idea what he's doing.
+> Native macOS app built from the ground up using Swift, SwiftUI, Metal, VideoToolbox, and AVFoundation.
 
 ---
 
-## What's New
+## Highlights
 
-- **Low-Latency Native Audio Pipeline**: Powered by `AVAudioEngine`, `AVAudioSourceNode`, and lock-free `AudioRingBuffer` with automatic 50ms backlog clamping.
-- **Fixed AES-CBC PKCS#7 Audio Decryption**: Solved the high-frequency distortion and packet corruption bug in CommonCrypto by properly stripping trailing PKCS#7 padding on incoming audio packets.
-- **Host Speaker Mute Option**: Added toggle under Audio Settings to mute host PC speakers while streaming via `localAudioPlayMode`.
-- **Retina High-DPI & Display Safe Area Detection**: Native resolution matching with automatic MacBook camera notch avoidance and aspect-ratio letterboxing.
-- **Sub-Pixel Hardware Mouse Capture**: Low-latency raw mouse capture via `GCMouse` (1000Hz+ polling), sub-pixel fractional delta accumulation, and uncoalesced cursor event processing.
-- **Strictly Hide Unpaired PCs**: Keep the host list clean by hiding unpaired PCs while preserving pairing status and Wake-on-LAN for sleeping hosts.
-- **Bidirectional Clipboard Sync**: Seamlessly sync clipboard text with Sunshine, Apollo, and Vibepollo.
-
----
-
-## Features
-
-- **Hardware Video Acceleration**: Zero-copy VideoToolbox hardware decoding for H.264, HEVC, and AV1 across Apple Silicon and Intel Macs.
-- **Metal Presentation Engine**: Low-latency double-buffered presentation using `CAMetalLayer` with custom BT.709 and BT.2020 (HDR) Metal shaders.
-- **High Frame Rates**: Up to 240 FPS streaming with Apple ProMotion (120Hz) display pacing via `CVDisplayLink`.
-- **Multi-Channel Surround Sound**: Stereo, 5.1, and 7.1 surround sound audio playback.
-- **Raw Hardware Mouse Input**: Native `GCMouse` hardware cursor capture without acceleration or event batching delays.
-- **Gamepad & Controller Support**: Native MFi, Xbox, and PlayStation controller support with rumble force feedback.
-- **Keyboard Shortcuts**: System shortcut passing with optional Command/Control key swapping.
-- **Standalone Game Shortcuts**: Create standalone desktop `.app` shortcuts for games with custom icons and automatic Wake-on-LAN.
-- **Smart Remote Bitrate**: Automatic NAT hairpinning detection and configurable separate bitrates for remote vs. local network streaming.
-- **Keychain-Free Security**: In-memory TLS client certificate import (`kSecImportToMemoryOnly`), completely eliminating macOS keychain password prompts.
+- **Smooth & Responsive**: Hardware-accelerated video decoding with Apple Metal rendering for lowest possible input lag.
+- **High Refresh Rates**: Supports 60, 90, 120 (Apple ProMotion), 144, and up to 240 FPS.
+- **HDR & Vibrant Color**: 10-bit High Dynamic Range (HDR) color support for HDR-capable displays and MacBooks.
+- **Surround Sound Audio**: Crisp, low-latency audio with support for Stereo, 5.1, and 7.1 surround sound.
+- **Game Controllers**: Plug and play with Xbox, PlayStation, Nintendo Switch, and MFi Bluetooth controllers (with rumble vibration support).
+- **Physical PC Keyboard Layout**: Your Mac keyboard's bottom row automatically matches a real Windows PC keyboard (`[Control]` `[Windows]` `[Alt]`), so game controls and shortcuts like Alt+Tab feel natural.
+- **System Shortcut Capture**: Send ⌘Tab, Mission Control, and other Mac shortcuts straight into your PC game without accidentally switching Mac apps.
 
 ---
 
-## Keyboard Shortcuts
+## Quick Start Guide
 
-| Shortcut | Action |
+### 1. Requirements
+- A Mac running **macOS Sonoma (14.0)** or newer (Apple Silicon or Intel).
+- A gaming PC on your network running **Sunshine** (recommended) or Apollo.
+
+### 2. Pair Your Mac with Your PC
+1. Open **Moonlight** on your Mac.
+2. Your PC will appear automatically in the list. Click on it.
+3. Moonlight will display a 4-digit PIN.
+4. On your PC, open the Sunshine web interface (or click the pairing notification) and type in the 4-digit PIN.
+5. Your PC is now paired! Click any game to start playing.
+
+---
+
+## In-Game Keyboard Shortcuts
+
+While streaming a game, hold down **Control + Option + Shift** (`⌃ ⌥ ⇧`) and press any of the following keys:
+
+| Shortcut | What It Does |
 | :--- | :--- |
-| `⌃ ⌥ ⇧ Q` or `⌘ ⌃ Q` | Terminate stream session |
-| `⌃ ⌥ ⇧ Z` | Release / recapture mouse cursor |
-| `⌃ ⌥ ⇧ X` | Toggle between Fullscreen and Windowed mode |
-| `⌃ ⌥ ⇧ S` or `⌘ ⇧ H` | Toggle real-time performance overlay HUD |
+| **`⌃ ⌥ ⇧ Q`** | **Disconnect** / Quit the streaming session |
+| **`⌃ ⌥ ⇧ Z`** | **Release or Recapture mouse cursor** (free your mouse to use other Mac apps) |
+| **`⌃ ⌥ ⇧ X`** | **Toggle Fullscreen** / Windowed mode |
+| **`⌃ ⌥ ⇧ S`** | **Toggle Performance HUD** (shows live FPS, latency, and packet stats) |
+| **`⌃ ⌥ ⇧ M`** | **Toggle Mouse Mode** |
+| **`⌃ ⌥ ⇧ D`** | **Minimize** streaming window |
+| **`⌃ ⌥ ⇧ V`** | **Paste clipboard text** from your Mac into the host PC |
 
 ---
 
-## External Projects & Dependencies
+## Helpful Settings Explained
 
-Moonlight Mac incorporates and builds upon several open source projects:
+Open **Settings** (gear icon) to adjust how your games look and feel:
 
-- **[moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c)** (GPLv3): Core protocol implementation handling RTSP handshakes, SDP negotiation, UDP streaming queues, and input event serialization.
-  - **[enet](http://enet.bespin.org/)**: Reliable UDP networking engine.
-  - **[nanors](https://github.com/Sleepy-Tee/nanors)**: Reed-Solomon forward error correction (FEC) for video packet recovery.
-- **[libopus / Copus](https://opus-codec.org/)** (BSD-3-Clause): High-efficiency IETF Opus audio codec, bundled directly for multi-stream surround and stereo decoding.
-- **[moonlight-qt](https://github.com/moonlight-stream/moonlight-qt)** (GPLv3): Architecture reference for sub-pixel cursor delta accumulation, screen mode queries, aspect ratio preservation, and keyboard event routing.
-- **[moonlight-macos-enhanced](https://github.com/Mariotaku/moonlight-macos-enhanced)** (GPLv3): Reference patterns for in-memory macOS certificate imports and multi-channel CoreAudio layout mappings.
-- **[Sunshine](https://github.com/LizardByte/Sunshine)** & **[Apollo](https://github.com/ClassicOldSong/Apollo)**: Upstream self-hosted GameStream server software.
+### Display & Video
+- **Resolution**: Choose `Native` to automatically match your Mac display's exact sharp resolution, or pick 1080p / 1440p / 4K.
+- **Frame Rate**: Match your monitor's refresh rate (e.g. 120 FPS on MacBook ProMotion displays).
+- **Target Bitrate**: Controls video quality. 25–50 Mbps looks great on local Wi-Fi / Ethernet.
+- **Remote Bitrate**: Automatically lowers the bitrate when connecting over the internet or Tailscale to prevent lag.
+- **V-Sync**: Keeps the picture smooth and prevents horizontal screen tearing.
+
+### Audio
+- **Channel Layout**: Choose Stereo or 5.1/7.1 surround sound.
+- **Mute Host PC Speakers**: Silences the physical speakers on your PC while you are streaming to your Mac.
+
+### Keyboard & Mouse
+- **Capture Mouse Pointer Automatically**: Keeps the mouse locked inside the game window so first-person games and camera controls work properly.
+- **Capture System Keyboard Shortcuts**: Sends shortcuts like `⌘ Tab` directly to Windows instead of triggering macOS app switching. Press `⌃ ⌥ ⇧ Z` whenever you want to release the cursor back to your Mac.
+- **Match Physical Windows PC Keyboard Layout**: Enabled by default. Maps your bottom-row keys (`Control`, `Option`, `Command`) to (`Ctrl`, `Windows`, `Alt`), so key positions match a real Windows keyboard.
 
 ---
 
-## Build Requirements
+## Installing and Building
 
-- **Operating System**: macOS Sonoma 14.0 or newer (Apple Silicon & Intel Macs supported).
-- **Apple Developer Tools**:
-  - Command Line Tools for Xcode (Swift 6.0 toolchain or newer)
-  - Or full **Xcode 15.0+** (optional, for IDE development).
-- **Git**: Installed with Xcode Command Line Tools.
+### Ready-to-Use App
+Download or package **`Moonlight.app`** and drag it into your **`/Applications`** folder.
 
-### Installing Build Requirements
+### Building from Source (Command Line)
+If you want to compile Moonlight yourself:
 
-1. Install the Xcode Command Line Tools:
+1. Make sure Xcode Command Line Tools are installed:
    ```bash
    xcode-select --install
    ```
-2. Verify that Swift and Clang are accessible in your terminal:
-   ```bash
-   swift --version
-   clang --version
-   ```
-
-No external package managers (Homebrew, MacPorts) or third-party package dependencies are required — all C libraries (`moonlight-common-c`, `libopus`, `enet`) are bundled directly within the repository.
-
----
-
-## Building and Installing
-
-### Command Line (Automated Package Script)
-
-1. Clone the repository:
+2. Clone this repository:
    ```bash
    git clone https://github.com/Eckobrew/moonlight-mac.git
    cd moonlight-mac
    ```
-
-2. Build and package the release application:
+3. Run the packaging script:
    ```bash
    ./Scripts/package_app.sh release
    ```
-
-3. Install to your Applications directory:
+4. Copy the app to Applications:
    ```bash
-   cp -R Products/MoonlightMac.app /Applications/
+   cp -R Products/Moonlight.app /Applications/
    ```
 
-### Xcode IDE
+---
 
-1. Open `MoonlightMac.xcodeproj` in Xcode.
-2. Select the **MoonlightMac** scheme and your Mac as the build target.
-3. Press `⌘ R` to build and run, or `Product > Archive` to create a standalone build.
+## Acknowledgments & Credits
+
+Moonlight for macOS is built upon these open-source projects:
+- **[moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c)** (GPLv3): Core GameStream protocol and packet pipeline.
+- **[moonlight-qt](https://github.com/moonlight-stream/moonlight-qt)** (GPLv3): Architecture reference for sub-pixel cursor handling and keyboard grab behavior.
+- **[moonlight-macos-enhanced](https://github.com/Mariotaku/moonlight-macos-enhanced)** (GPLv3): Reference patterns for native macOS integration.
+- **[libopus](https://opus-codec.org/)**: High-fidelity, low-latency audio codec.
+- **[Sunshine](https://github.com/LizardByte/Sunshine)** & **[Apollo](https://github.com/ClassicOldSong/Apollo)**: GameStream host server software.
 
 ---
 
 ## License
 
-This project incorporates `moonlight-common-c` licensed under the **GNU General Public License v3.0** (GPLv3). Bundled Opus components are licensed under the **BSD 3-Clause License**.
+This project is licensed under the **GNU General Public License v3.0** (GPLv3). Bundled Opus components are licensed under the **BSD 3-Clause License**.
