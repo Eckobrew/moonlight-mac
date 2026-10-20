@@ -156,7 +156,7 @@ public final class GameShortcutManager {
             <key>CFBundleExecutable</key>
             <string>launch</string>
             <key>CFBundleIconFile</key>
-            <string>app.icns</string>
+            <string>AppIcon</string>
             <key>CFBundleIdentifier</key>
             <string>com.moonlight-stream.shortcut.\(slug)</string>
             <key>CFBundleInfoDictionaryVersion</key>
@@ -180,12 +180,16 @@ public final class GameShortcutManager {
 
         // 2. Icon resources (.png and .icns)
         let pngUrl = resourcesDir.appendingPathComponent("app.png")
+        let appIconPngUrl = resourcesDir.appendingPathComponent("AppIcon.png")
         if let pngData = renderPNG(from: image, size: 1024) {
             try pngData.write(to: pngUrl)
+            try? pngData.write(to: appIconPngUrl)
         }
 
         let icnsUrl = resourcesDir.appendingPathComponent("app.icns")
+        let appIconIcnsUrl = resourcesDir.appendingPathComponent("AppIcon.icns")
         try writeIcns(from: image, to: icnsUrl)
+        try? FileManager.default.copyItem(at: icnsUrl, to: appIconIcnsUrl)
 
         // Ensure no legacy Icon\r file exists
         let iconR = bundleUrl.appendingPathComponent("Icon\r")
@@ -255,6 +259,11 @@ public final class GameShortcutManager {
     }
 
     private func restartDockIfPinned() {
+        let tmp = NSTemporaryDirectory()
+        let cDir = URL(fileURLWithPath: tmp).deletingLastPathComponent().appendingPathComponent("C")
+        try? FileManager.default.removeItem(at: cDir.appendingPathComponent("com.apple.dock.iconcache"))
+        try? FileManager.default.removeItem(at: cDir.appendingPathComponent("com.apple.iconservices"))
+
         let checkProcess = Process()
         checkProcess.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
         checkProcess.arguments = ["read", "com.apple.dock", "persistent-apps"]
