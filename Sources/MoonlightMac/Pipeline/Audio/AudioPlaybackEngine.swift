@@ -174,10 +174,11 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
             mappingArray = (0..<UInt8(channelCount)).map { $0 }
         }
 
-        if channelCount == 8 && mappingArray.count >= 8 {
-            mappingArray.swapAt(4, 6)
-            mappingArray.swapAt(5, 7)
-        }
+        // Do NOT reorder the mapping here. moonlight-common-c already rewrites GFE's
+        // `FL FR C RL RR SL SR LFE` order into `FL FR C LFE RL RR SL SR` for 5.1 and 7.1
+        // (RtspConnection.c, right after parseOpusConfigFromParamString), and that remapped order
+        // is exactly the interleaved order opus_multistream_decode_float produces. Swapping
+        // mapping[4..7] here applied the GFE reorder a second time and scrambled surround channels.
 
         let decoder = opus_multistream_decoder_create(
             Int32(sampleRate),
@@ -195,7 +196,10 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
 
         self.opusDecoder = decoder
 
-        // Pre-allocate scratch buffer for decoding up to 120ms of audio (5760 frames)
+        // Pre-allocate the scratch buffer for the largest legal Opus packet: 120ms at 48kHz =
+        // 5760 frames. The library advertises CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION, so the
+        // host may legitimately send more than samplesPerFrame*2 and previously the decode would
+        // silently truncate to a smaller buffer.
         let maxFrames = max(samplesPerFrame * 2, 5760)
         self.scratchInterleavedBuffer = [Float](repeating: 0, count: maxFrames * Int(channelCount))
 
@@ -203,7 +207,11 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
         let ring = AudioRingBuffer(channels: Int(channelCount), capacity: 48000)
         self.ringBuffer = ring
 
-        // Select CoreAudio Channel Layout
+        // Select CoreAudio Channel Layout.
+        //
+        // The decoder emits the library's canonical order FL FR C LFE RL RR SL SR. CoreAudio's
+        // AudioUnit_7_1 is L R C LFE Rls Rrs Ls Rs, which is that same 6.1-ordered layout, so it
+        // matches directly. MPEG_5_1_A is L R C LFE Ls Rs, also matching FL FR C LFE RL RR.
         let layoutTag: AudioChannelLayoutTag
         switch channelCount {
         case 6:
