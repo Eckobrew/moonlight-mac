@@ -363,15 +363,36 @@ public final class AppState: @unchecked Sendable {
             }
         }
 
-        // 3. Verify serverinfo if not already done
+        // 3. Verify serverinfo (with automatic Wake-on-LAN retry fallback if unreachable)
         self.cliStreamStatus = "Connecting to '\(host.name)'..."
         do {
             let (updated, _) = try await SunshineHTTPClient.shared.fetchServerInfo(host: host)
             host = updated
             self.addOrUpdateHost(updated)
         } catch {
-            self.cliStreamError = "Failed to connect to host '\(host.name)': \(error.localizedDescription)"
-            return
+            if let mac = host.macAddress {
+                self.cliStreamStatus = "Host unreachable. Waking '\(host.name)' via Wake-on-LAN..."
+                AppLogger.shared.info("Initial connection failed for '\(host.name)'. Attempting Wake-on-LAN recovery...", category: "CLI")
+                var recovered = false
+                for i in 0..<24 {
+                    self.cliStreamStatus = "Waking up '\(host.name)' (\(24 - i) attempts remaining)..."
+                    try? await WakeOnLAN.wake(macAddress: mac)
+                    try? await Task.sleep(for: .milliseconds(2500))
+                    if let (updated, _) = try? await SunshineHTTPClient.shared.fetchServerInfo(host: host), updated.isOnline {
+                        host = updated
+                        self.addOrUpdateHost(updated)
+                        recovered = true
+                        break
+                    }
+                }
+                if !recovered {
+                    self.cliStreamError = "Failed to connect to host '\(host.name)': Host did not respond to Wake-on-LAN."
+                    return
+                }
+            } else {
+                self.cliStreamError = "Failed to connect to host '\(host.name)': \(error.localizedDescription)"
+                return
+            }
         }
 
         // 4. Fetch apps and find matching app

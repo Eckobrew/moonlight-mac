@@ -3,11 +3,22 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
         let args = CommandLine.arguments
         if let iconIdx = args.firstIndex(of: "--icon"), iconIdx + 1 < args.count {
             let iconPath = args[iconIdx + 1]
             if FileManager.default.fileExists(atPath: iconPath), let img = NSImage(contentsOfFile: iconPath) {
                 NSApplication.shared.applicationIconImage = img
+            }
+        }
+
+        DispatchQueue.main.async {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            for window in NSApplication.shared.windows {
+                window.makeKeyAndOrderFront(nil)
+                window.orderFrontRegardless()
             }
         }
     }
@@ -65,6 +76,14 @@ struct RootContentView: View {
             minWidth: appState.isShortcutLaunch && !sessionController.isStreaming && !appState.isStreaming ? 460 : 800,
             minHeight: appState.isShortcutLaunch && !sessionController.isStreaming && !appState.isStreaming ? 380 : 550
         )
+        .onAppear {
+            NSApplication.shared.setActivationPolicy(.regular)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            for window in NSApplication.shared.windows {
+                window.makeKeyAndOrderFront(nil)
+                window.orderFrontRegardless()
+            }
+        }
         .alert("Stream Error", isPresented: Binding(
             get: { sessionController.sessionError != nil },
             set: { if !$0 { sessionController.clearError() } }
