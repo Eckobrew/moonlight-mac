@@ -407,16 +407,26 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         teardownDecompressionSession()
 
         let is10Bit = (videoFormat & VIDEO_FORMAT_MASK_10BIT) != 0
-        let pixelFormat = is10Bit ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        // 10-bit content is HDR-capable: request full-range 10-bit output so the renderer receives
+        // the complete signal range (the previous video-range-only request silently clipped it).
+        let pixelFormat = is10Bit ? kCVPixelFormatType_420YpCbCr10BiPlanarFullRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
 
         // Do not constrain width/height here; allow VideoToolbox to output CVPixelBuffers at the
         // full native resolution of the incoming video stream (from the SPS parameter set),
         // preventing unwanted downscaling or blur when the host overrides resolution.
-        let destinationAttributes: [CFString: Any] = [
+        var destinationAttributes: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: pixelFormat,
             kCVPixelBufferMetalCompatibilityKey: true,
             kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary
         ]
+
+        // Tag the buffers so CoreAnimation/CoreVideo interpret the 10-bit plane correctly.
+        // (`kCVPixelBufferCGColorSpaceKey` is not exposed to Swift, so use its documented value.)
+        if is10Bit {
+            destinationAttributes["CVImageBufferCGColorSpaceKey" as CFString] = CGColorSpace(name: CGColorSpace.itur_2020)
+            destinationAttributes[kCVPixelBufferCGImageCompatibilityKey] = false
+            destinationAttributes[kCVPixelBufferCGBitmapContextCompatibilityKey] = false
+        }
 
         let decoderSpecification: [CFString: Any] = [
             kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: true

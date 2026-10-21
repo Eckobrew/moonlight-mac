@@ -18,6 +18,8 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     private var commandQueue: MTLCommandQueue?
     private var pipelineStateBT709: MTLRenderPipelineState?
     private var pipelineStateBT2020: MTLRenderPipelineState?
+    private var pipelineStateBT709EDR: MTLRenderPipelineState?
+    private var pipelineStateBT2020EDR: MTLRenderPipelineState?
     private var textureCache: CVMetalTextureCache?
     private var samplerState: MTLSamplerState?
 
@@ -25,7 +27,17 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     public weak var metalLayer: CAMetalLayer?
     public weak var mtkView: MTKView?
 
-    public var isHdrActive: Bool = false
+    /// When true the drawable is `rgba16Float` and the fragment shader emits extended-linear
+    /// BT.2020 (PQ-encoded) values above 1.0, which CoreAnimation drives as EDR.
+    /// Toggling this reconfigures the layer and rebuilds the on-demand pipelines.
+    public var isHdrActive: Bool = false {
+        didSet { updateHDRSettings() }
+    }
+
+    /// Pixel format of the layer drawable. EDR requires a 16-bit float target.
+    private var drawablePixelFormat: MTLPixelFormat {
+        isHdrActive ? .rgba16Float : .bgra8Unorm
+    }
     public var enableVsync: Bool = true {
         didSet {
             updateVsyncSettings()
@@ -60,6 +72,9 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     private let renderQueue = DispatchQueue(label: "com.moonlight.metal.render", qos: .userInteractive)
     private var pendingPixelBuffer: CVPixelBuffer?
     private var isRenderActive: Bool = false
+
+    /// Set while the layer's drawable format is being switched for HDR. Guarded by `lock`.
+    private var isHDRTransitioning: Bool = false
 
     public override init() {
         super.init()
@@ -238,6 +253,56 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             float3 rgb = kColorConversion2020 * yuv;
             return float4(clamp(rgb, 0.0, 1.0), 1.0);
         }
+
+        constant float3x3 kRec709ToRec2020 = float3x3(
+            float3(0.6274, 0.0691, 0.0164),
+            float3(0.3293, 0.9195, 0.0880),
+            float3(0.0433, 0.0114, 0.8956)
+        );
+
+        static inline float pqToLinear(float n) {
+            const float m1 = 0.1593017578125;
+            const float m2 = 78.84375;
+            const float c1 = 0.8359375;
+            const float c2 = 18.8515625;
+            const float c3 = 18.6875;
+            float np = pow(max(n, 0.0), 1.0 / m2);
+            float num = max(np - c1, 0.0);
+            float den = c2 - c3 * np;
+            return pow(num / max(den, 1e-5), 1.0 / m1);
+        }
+
+        constant float kSDRReferenceWhitePQ = 0.508;
+
+        fragment float4 streamFragmentShaderBT2020EDR(
+            VertexOutput in [[stage_in]],
+            texture2d<float, access::sample> textureY [[texture(0)]],
+            texture2d<float, access::sample> textureUV [[texture(1)]],
+            sampler textureSampler [[sampler(0)]]
+        ) {
+            float y = textureY.sample(textureSampler, in.texCoord).r;
+            float2 uv = textureUV.sample(textureSampler, in.texCoord).rg;
+            float3 yuv = float3(y, uv) + kColorOffset709;
+            float3 pq = clamp(kColorConversion2020 * yuv, 0.0, 1.0);
+            float3 linearRgb = float3(pqToLinear(pq.r), pqToLinear(pq.g), pqToLinear(pq.b));
+            linearRgb /= pqToLinear(kSDRReferenceWhitePQ);
+            return float4(linearRgb, 1.0);
+        }
+
+        fragment float4 streamFragmentShaderBT709EDR(
+            VertexOutput in [[stage_in]],
+            texture2d<float, access::sample> textureY [[texture(0)]],
+            texture2d<float, access::sample> textureUV [[texture(1)]],
+            sampler textureSampler [[sampler(0)]]
+        ) {
+            float y = textureY.sample(textureSampler, in.texCoord).r;
+            float2 uv = textureUV.sample(textureSampler, in.texCoord).rg;
+            float3 yuv = float3(y, uv) + kColorOffset709;
+            float3 rgb = clamp(kColorConversion709 * yuv, 0.0, 1.0);
+            rgb = kRec709ToRec2020 * rgb;
+            float3 linearRgb = select(rgb / 12.92, pow((rgb + 0.055) / 1.055, 2.4), rgb > 0.04045);
+            return float4(linearRgb, 1.0);
+        }
         """
 
         do {
@@ -252,7 +317,10 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         let vertexFunc = library.makeFunction(name: "streamVertexShader")
         let fragFunc709 = library.makeFunction(name: "streamFragmentShaderBT709")
         let fragFunc2020 = library.makeFunction(name: "streamFragmentShaderBT2020")
+        let fragFunc709EDR = library.makeFunction(name: "streamFragmentShaderBT709EDR")
+        let fragFunc2020EDR = library.makeFunction(name: "streamFragmentShaderBT2020EDR")
 
+        // SDR pipelines render into the bgra8Unorm drawable.
         let pipelineDesc = MTLRenderPipelineDescriptor()
         pipelineDesc.vertexFunction = vertexFunc
         pipelineDesc.fragmentFunction = fragFunc709
@@ -262,6 +330,48 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
 
         pipelineDesc.fragmentFunction = fragFunc2020
         self.pipelineStateBT2020 = try? device.makeRenderPipelineState(descriptor: pipelineDesc)
+
+        // EDR pipelines must match the rgba16Float drawable exactly, so they get their own
+        // descriptor. Build them lazily below if the shader library predates them.
+        let edrDesc = MTLRenderPipelineDescriptor()
+        edrDesc.vertexFunction = vertexFunc
+        edrDesc.colorAttachments[0].pixelFormat = .rgba16Float
+
+        if let fragFunc709EDR = fragFunc709EDR {
+            edrDesc.fragmentFunction = fragFunc709EDR
+            self.pipelineStateBT709EDR = try? device.makeRenderPipelineState(descriptor: edrDesc)
+        }
+        if let fragFunc2020EDR = fragFunc2020EDR {
+            edrDesc.fragmentFunction = fragFunc2020EDR
+            self.pipelineStateBT2020EDR = try? device.makeRenderPipelineState(descriptor: edrDesc)
+        }
+
+        if isHdrActive && pipelineStateBT2020EDR == nil {
+            AppLogger.shared.warning("[MetalStreamRenderer] HDR requested but EDR pipelines are unavailable; falling back to SDR output")
+        }
+    }
+
+    /// Reconfigures the drawable for EDR and rebuilds pipelines when HDR is toggled.
+    /// Called from the main actor (`StreamSessionController`), so it takes `lock` against the
+    /// render queue and blocks frame presentation while the layer is mid-reconfiguration.
+    private func updateHDRSettings() {
+        lock.lock()
+        guard let layer = metalLayer else {
+            // The stream layer is attached later; attachLayer applies the current HDR state then.
+            lock.unlock()
+            return
+        }
+
+        isHDRTransitioning = true
+        lock.unlock()
+
+        applyLayerVsyncSettings(layer)
+
+        lock.lock()
+        isHDRTransitioning = false
+        lock.unlock()
+
+        AppLogger.shared.info("[MetalStreamRenderer] HDR \(isHdrActive ? "enabled" : "disabled") (drawable: \(isHdrActive ? "rgba16Float EDR" : "bgra8Unorm"))")
     }
 
     private func setupSampler(device: MTLDevice) {
@@ -303,12 +413,27 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     }
 
     private func applyLayerVsyncSettings(_ layer: CAMetalLayer) {
+        let hdr = isHdrActive
+
         layer.device = self.device
-        layer.pixelFormat = .bgra8Unorm
+        // EDR requires a 16-bit float drawable; SDR stays on the cheap 8-bit path.
+        layer.pixelFormat = drawablePixelFormat
         // We only ever render into the drawable; never sample from it.
         // framebufferOnly = true enables the driver's fast presentation path.
         layer.framebufferOnly = true
         layer.presentsWithTransaction = false
+
+        // Extended Dynamic Range: without this, CoreAnimation clamps the layer to SDR and the
+        // shader's >1.0 linear values are lost.
+        layer.wantsExtendedDynamicRangeContent = hdr
+        if hdr {
+            // HDR10/BT.2020 content is authored against the PQ transfer function and decoded to
+            // extended linear light by the fragment shader, so tag the layer as extended-linear.
+            layer.colorspace = CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020)
+                ?? CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
+        } else {
+            layer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
+        }
 
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         layer.contentsScale = scale
@@ -330,7 +455,7 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             layer.maximumDrawableCount = 3
         }
 
-        AppLogger.shared.info("[MetalStreamRenderer] CAMetalLayer configured: displaySyncEnabled=\(self.enableVsync), maxDrawables=3, allowsNextDrawableTimeout=true, contentsScale=\(scale)")
+        AppLogger.shared.info("[MetalStreamRenderer] CAMetalLayer configured: displaySyncEnabled=\(self.enableVsync), maxDrawables=3, allowsNextDrawableTimeout=true, contentsScale=\(scale), hdr=\(hdr)")
     }
 
     /// Ingest a decoded or paced frame immediately without blocking the caller.
@@ -401,9 +526,17 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             return false
         }
 
+        // While the EDR layer/pipelines are being reconfigured, skip presentation rather than
+        // rendering with a pipeline whose pixel format no longer matches the drawable.
+        guard !isHDRTransitioning else {
+            return true
+        }
+
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
-        let is10Bit = CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        let is10Bit = pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            || pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
 
         let drawableWidth = Int(layer.drawableSize.width)
         let drawableHeight = Int(layer.drawableSize.height)
@@ -466,7 +599,9 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             return true
         }
 
-        let pipeline = isHdrActive ? (pipelineStateBT2020 ?? pipelineStateBT709) : pipelineStateBT709
+        let pipeline = isHdrActive
+            ? (pipelineStateBT2020EDR ?? pipelineStateBT709EDR)
+            : pipelineStateBT709
         if let pState = pipeline {
             encoder.setRenderPipelineState(pState)
             encoder.setVertexBuffer(positionBuffer, offset: 0, index: 0)
