@@ -27,7 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     _ = await group.next()
                 }
-                sender.reply(toApplicationShouldTerminate: true)
+                await MainActor.run {
+                    sender.reply(toApplicationShouldTerminate: true)
+                }
             }
             return .terminateLater
         }
@@ -35,53 +37,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+struct RootContentView: View {
+    @Bindable var appState: AppState
+    @ObservedObject var sessionController = StreamSessionController.shared
+
+    var body: some View {
+        Group {
+            if sessionController.isStreaming || appState.isStreaming {
+                StreamingSessionView(
+                    sessionController: sessionController,
+                    onDisconnect: {
+                        appState.stopActiveStream()
+                    }
+                )
+            } else if appState.isShortcutLaunch {
+                StreamNegotiationView(appState: appState)
+            } else {
+                NavigationStack {
+                    HostGridView(appState: appState)
+                        .navigationTitle("Moonlight")
+                }
+            }
+        }
+        .frame(
+            minWidth: appState.isShortcutLaunch && !sessionController.isStreaming && !appState.isStreaming ? 460 : 800,
+            minHeight: appState.isShortcutLaunch && !sessionController.isStreaming && !appState.isStreaming ? 380 : 550
+        )
+        .alert("Stream Error", isPresented: Binding(
+            get: { sessionController.sessionError != nil },
+            set: { if !$0 { sessionController.clearError() } }
+        )) {
+            Button("OK", role: .cancel) {
+                sessionController.clearError()
+                if sessionController.isShortcutMode {
+                    exit(0)
+                }
+            }
+        } message: {
+            if let error = sessionController.sessionError {
+                Text(error)
+            }
+        }
+    }
+}
+
 @main
 struct MoonlightMacApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var appState = AppState()
-    @ObservedObject private var sessionController = StreamSessionController.shared
 
     var body: some Scene {
         WindowGroup {
-            Group {
-                if sessionController.isStreaming {
-                    StreamingSessionView(
-                        sessionController: sessionController,
-                        onDisconnect: {
-                            appState.stopActiveStream()
-                        }
-                    )
-                } else if appState.isShortcutLaunch {
-                    StreamNegotiationView(appState: appState)
-                } else {
-                    NavigationStack {
-                        HostGridView(appState: appState)
-                            .navigationTitle("Moonlight")
-                    }
+            RootContentView(appState: appState)
+                .task {
+                    handleCommandLineArguments()
                 }
-            }
-            .frame(
-                minWidth: appState.isShortcutLaunch && !sessionController.isStreaming ? 460 : 800,
-                minHeight: appState.isShortcutLaunch && !sessionController.isStreaming ? 380 : 550
-            )
-            .task {
-                handleCommandLineArguments()
-            }
-            .alert("Stream Error", isPresented: Binding(
-                get: { sessionController.sessionError != nil },
-                set: { if !$0 { sessionController.clearError() } }
-            )) {
-                Button("OK", role: .cancel) {
-                    sessionController.clearError()
-                    if sessionController.isShortcutMode {
-                        NSApp.terminate(nil)
-                    }
-                }
-            } message: {
-                if let error = sessionController.sessionError {
-                    Text(error)
-                }
-            }
         }
         .commands {
             CommandGroup(replacing: .newItem) {

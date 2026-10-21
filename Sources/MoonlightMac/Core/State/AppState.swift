@@ -19,6 +19,7 @@ public final class AppState: @unchecked Sendable {
 
     public var activeHost: Host?
     public var activeApp: StreamApp?
+    public var isStreaming: Bool = false
 
     // Shortcut / CLI Launch State
     public var isShortcutLaunch: Bool = false
@@ -290,6 +291,7 @@ public final class AppState: @unchecked Sendable {
     public func launchStream(host: Host, app: StreamApp) {
         self.activeHost = host
         self.activeApp = app
+        self.isStreaming = true
         StreamSessionController.shared.isShortcutMode = self.isShortcutLaunch
         Task {
             await StreamSessionController.shared.startSession(host: host, app: app, settings: settings)
@@ -297,14 +299,23 @@ public final class AppState: @unchecked Sendable {
     }
 
     public func stopActiveStream() {
+        self.isStreaming = false
         StreamSessionController.shared.stopSession()
         self.activeHost = nil
         self.activeApp = nil
     }
 
     public func cancelShortcutLaunch() {
-        StreamSessionController.shared.stopSession()
-        NSApp.terminate(nil)
+        self.isStreaming = false
+        let host = activeHost ?? hosts.first(where: { $0.name.localizedCaseInsensitiveCompare(cliHostName) == .orderedSame })
+        Task {
+            if let host = host {
+                try? await SunshineHTTPClient.shared.quitApp(host: host)
+            }
+            await MainActor.run {
+                exit(0)
+            }
+        }
     }
 
     public func handleCLIStream(hostQuery: String, appQuery: String) async {

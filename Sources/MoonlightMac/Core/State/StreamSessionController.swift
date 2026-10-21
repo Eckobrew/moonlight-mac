@@ -348,7 +348,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
         guard isStreaming else {
             if isShortcut && !hadError {
-                NSApp.terminate(nil)
+                exit(0)
             }
             return
         }
@@ -399,13 +399,13 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
                 if isShortcut && !hadError {
                     await MainActor.run {
-                        NSApp.terminate(nil)
+                        exit(0)
                     }
                 }
             }
         } else if isShortcut && !hadError {
             Task { @MainActor in
-                NSApp.terminate(nil)
+                exit(0)
             }
         }
     }
