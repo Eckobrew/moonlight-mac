@@ -45,7 +45,6 @@ public final class AppState: @unchecked Sendable {
                 let iconPath = args[iconIdx + 1]
                 if FileManager.default.fileExists(atPath: iconPath), let img = NSImage(contentsOfFile: iconPath) {
                     self.cliIcon = img
-                    NSApp.applicationIconImage = img
                 }
             }
         }

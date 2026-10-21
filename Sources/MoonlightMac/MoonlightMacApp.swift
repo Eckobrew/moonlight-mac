@@ -2,6 +2,16 @@ import SwiftUI
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let args = CommandLine.arguments
+        if let iconIdx = args.firstIndex(of: "--icon"), iconIdx + 1 < args.count {
+            let iconPath = args[iconIdx + 1]
+            if FileManager.default.fileExists(atPath: iconPath), let img = NSImage(contentsOfFile: iconPath) {
+                NSApplication.shared.applicationIconImage = img
+            }
+        }
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let controller = StreamSessionController.shared
         if (controller.isShortcutMode || controller.activeSettings?.quitAppOnStop == true),
