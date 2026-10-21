@@ -156,7 +156,7 @@ public final class GameShortcutManager {
             <key>CFBundleExecutable</key>
             <string>launch</string>
             <key>CFBundleIconFile</key>
-            <string>AppIcon</string>
+            <string>app.icns</string>
             <key>CFBundleIdentifier</key>
             <string>com.moonlight-stream.shortcut.\(slug)</string>
             <key>CFBundleInfoDictionaryVersion</key>
@@ -194,6 +194,9 @@ public final class GameShortcutManager {
         // Ensure no legacy Icon\r file exists
         let iconR = bundleUrl.appendingPathComponent("Icon\r")
         try? FileManager.default.removeItem(at: iconR)
+
+        // Set Finder custom icon via NSWorkspace
+        NSWorkspace.shared.setIcon(image, forFile: bundleUrl.path, options: [])
 
         // 3. Launch script
         let moonlightBin: String

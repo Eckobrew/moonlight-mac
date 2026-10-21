@@ -42,7 +42,8 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
     private let metricsAccumulator = StreamMetricsAccumulator()
 
-    private var activeHost: Host?
+    public private(set) var activeHost: Host?
+    public var isShortcutMode: Bool = false
     private var activeApp: StreamApp?
     public private(set) var activeSettings: StreamSettings?
     private var latencyActivityToken: NSObjectProtocol?
@@ -340,7 +341,17 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     public func stopSession() {
         WindowManager.shared.restoreWindowAfterStream()
 
-        guard isStreaming else { return }
+        let hostToQuit = activeHost
+        let isShortcut = isShortcutMode
+        let shouldQuitHostApp = isShortcut || (activeSettings?.quitAppOnStop == true)
+        let hadError = sessionError != nil
+
+        guard isStreaming else {
+            if isShortcut && !hadError {
+                NSApp.terminate(nil)
+            }
+            return
+        }
         isStreaming = false
         stopMetricsPolling()
         ClipboardSyncManager.shared.stop()
@@ -372,11 +383,29 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         streamTask?.cancel()
         streamTask = nil
 
-        // 5. Request host to terminate app only if activeSettings?.quitAppOnStop is enabled
-        if let host = activeHost, activeSettings?.quitAppOnStop == true {
+        // 5. Request host to terminate app if in shortcut mode or quitAppOnStop is enabled
+        if let host = hostToQuit, shouldQuitHostApp {
             Task {
-                AppLogger.shared.info("Quitting game on host as quitAppOnStop is enabled", category: "SESSION")
-                try? await SunshineHTTPClient.shared.quitApp(host: host)
+                AppLogger.shared.info("Quitting game on host (shortcutMode: \(isShortcut))", category: "SESSION")
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        try? await SunshineHTTPClient.shared.quitApp(host: host)
+                    }
+                    group.addTask {
+                        try? await Task.sleep(for: .seconds(2))
+                    }
+                    _ = await group.next()
+                }
+
+                if isShortcut && !hadError {
+                    await MainActor.run {
+                        NSApp.terminate(nil)
+                    }
+                }
+            }
+        } else if isShortcut && !hadError {
+            Task { @MainActor in
+                NSApp.terminate(nil)
             }
         }
     }

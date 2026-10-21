@@ -20,12 +20,35 @@ public final class AppState: @unchecked Sendable {
     public var activeHost: Host?
     public var activeApp: StreamApp?
 
+    // Shortcut / CLI Launch State
+    public var isShortcutLaunch: Bool = false
+    public var cliStreamStatus: String = "Connecting..."
+    public var cliStreamError: String? = nil
+    public var cliGameTitle: String = ""
+    public var cliHostName: String = ""
+    public var cliIcon: NSImage? = nil
+
     private let hostsKey = "com.moonlight.mac.savedHosts"
     private let settingsKey = "com.moonlight.mac.savedSettings"
 
     public init() {
         loadSettings()
         loadHosts()
+
+        let args = CommandLine.arguments
+        if let streamIdx = args.firstIndex(of: "stream"), streamIdx + 2 < args.count {
+            self.isShortcutLaunch = true
+            self.cliHostName = args[streamIdx + 1]
+            self.cliGameTitle = args[streamIdx + 2]
+            self.cliStreamStatus = "Connecting to \(self.cliHostName)..."
+            if let iconIdx = args.firstIndex(of: "--icon"), iconIdx + 1 < args.count {
+                let iconPath = args[iconIdx + 1]
+                if FileManager.default.fileExists(atPath: iconPath), let img = NSImage(contentsOfFile: iconPath) {
+                    self.cliIcon = img
+                    NSApp.applicationIconImage = img
+                }
+            }
+        }
     }
 
     public func loadSettings() {
@@ -268,6 +291,7 @@ public final class AppState: @unchecked Sendable {
     public func launchStream(host: Host, app: StreamApp) {
         self.activeHost = host
         self.activeApp = app
+        StreamSessionController.shared.isShortcutMode = self.isShortcutLaunch
         Task {
             await StreamSessionController.shared.startSession(host: host, app: app, settings: settings)
         }
@@ -279,8 +303,15 @@ public final class AppState: @unchecked Sendable {
         self.activeApp = nil
     }
 
+    public func cancelShortcutLaunch() {
+        StreamSessionController.shared.stopSession()
+        NSApp.terminate(nil)
+    }
+
     public func handleCLIStream(hostQuery: String, appQuery: String) async {
         AppLogger.shared.info("CLI Stream invocation requested for host: '\(hostQuery)', app: '\(appQuery)'", category: "CLI")
+
+        self.cliStreamStatus = "Locating host '\(hostQuery)'..."
 
         // 1. Locate host in saved hosts or by IP/name
         var targetHost: Host? = hosts.first(where: {
@@ -299,13 +330,18 @@ public final class AppState: @unchecked Sendable {
             targetHost = Host(name: hostQuery, address: hostQuery)
         }
 
-        guard var host = targetHost else { return }
+        guard var host = targetHost else {
+            self.cliStreamError = "Could not find host '\(hostQuery)'."
+            return
+        }
 
         // 2. If host is offline, wake via WoL and wait up to 60s
         if !host.isOnline {
             if let mac = host.macAddress {
+                self.cliStreamStatus = "Waking up '\(host.name)' via Wake-on-LAN..."
                 AppLogger.shared.info("Target host is offline. Sending Wake-on-LAN packets every 2.5s (up to 60s timeout)...", category: "CLI")
-                for _ in 0..<24 {
+                for i in 0..<24 {
+                    self.cliStreamStatus = "Waking up '\(host.name)' (\(24 - i) attempts remaining)..."
                     try? await WakeOnLAN.wake(macAddress: mac)
                     try? await Task.sleep(for: .milliseconds(2500))
                     if let (updated, _) = try? await SunshineHTTPClient.shared.fetchServerInfo(host: host), updated.isOnline {
@@ -318,12 +354,18 @@ public final class AppState: @unchecked Sendable {
         }
 
         // 3. Verify serverinfo if not already done
-        if let (updated, _) = try? await SunshineHTTPClient.shared.fetchServerInfo(host: host) {
+        self.cliStreamStatus = "Connecting to '\(host.name)'..."
+        do {
+            let (updated, _) = try await SunshineHTTPClient.shared.fetchServerInfo(host: host)
             host = updated
             self.addOrUpdateHost(updated)
+        } catch {
+            self.cliStreamError = "Failed to connect to host '\(host.name)': \(error.localizedDescription)"
+            return
         }
 
         // 4. Fetch apps and find matching app
+        self.cliStreamStatus = "Loading game list..."
         do {
             let apps = try await SunshineHTTPClient.shared.fetchAppList(host: host)
             let matchedApp = apps.first(where: {
@@ -333,14 +375,17 @@ public final class AppState: @unchecked Sendable {
                 $0.title.localizedCaseInsensitiveContains(appQuery)
             })
 
-            if let app = matchedApp {
-                AppLogger.shared.info("Found app '\(app.title)' (ID: \(app.id)) on '\(host.name)'. Starting stream...", category: "CLI")
-                self.launchStream(host: host, app: app)
-            } else {
-                AppLogger.shared.error("App matching '\(appQuery)' not found on host '\(host.name)'. Available apps: \(apps.map(\.title).joined(separator: ", "))", category: "CLI")
+            guard let app = matchedApp else {
+                let available = apps.map(\.title).joined(separator: ", ")
+                self.cliStreamError = "Game '\(appQuery)' not found on host '\(host.name)'. Available games: \(available)"
+                return
             }
+
+            self.cliStreamStatus = "Launching '\(app.title)'..."
+            AppLogger.shared.info("Found app '\(app.title)' (ID: \(app.id)) on '\(host.name)'. Starting stream...", category: "CLI")
+            self.launchStream(host: host, app: app)
         } catch {
-            AppLogger.shared.error("Failed to fetch apps from '\(host.name)': \(error.localizedDescription)", category: "CLI")
+            self.cliStreamError = "Failed to fetch games from '\(host.name)': \(error.localizedDescription)"
         }
     }
 }

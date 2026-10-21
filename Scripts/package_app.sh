@@ -35,6 +35,7 @@ mkdir -p "$APP_DIR/Contents/Resources"
 # 1. Executable
 cp "$BIN_PATH" "$APP_DIR/Contents/MacOS/MoonlightMac"
 chmod +x "$APP_DIR/Contents/MacOS/MoonlightMac"
+ln -sf MoonlightMac "$APP_DIR/Contents/MacOS/Moonlight"
 
 # 2. Info.plist & PkgInfo
 cp "$PROJECT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"

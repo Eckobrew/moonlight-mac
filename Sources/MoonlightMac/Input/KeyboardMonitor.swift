@@ -60,7 +60,7 @@ public final class KeyboardMonitor: @unchecked Sendable {
             // Moonlight-Qt Key Combos on macOS: Control + Option + Shift + <Key>
             if isMoonlightCombo {
                 switch event.keyCode {
-                case 0x0C: // Q: Quit / Disconnect stream
+                case 0x0C, 0x0E, 0x35: // Q, E, or Esc: Quit / Disconnect stream
                     raiseModifierKeys()
                     DispatchQueue.main.async { [weak self] in
                         self?.onQuitRequested?()
