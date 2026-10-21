@@ -142,6 +142,12 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             let displayID = (WindowManager.shared.currentWindow?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
             let useNativeRenderer = effectiveSettings.videoRenderer == .native
 
+            // Route audio to the selected output device and honour focus-loss muting.
+            audioEngine.configureOutput(
+                deviceUID: effectiveSettings.audioOutputDeviceUID,
+                muteOnFocusLoss: effectiveSettings.muteAudioOnFocusLoss
+            )
+
             FramePacer.shared.configure(
                 enabled: effectiveSettings.enableFramePacing,
                 displayID: displayID

@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import AudioToolbox
+import AppKit
 import Copus
 import MoonlightCommonC
 import QuartzCore
@@ -146,6 +147,14 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
     private var isPlaying = false
     private var scratchInterleavedBuffer: [Float] = []
     private var configurationObserver: NSObjectProtocol?
+    private var focusObservers: [NSObjectProtocol] = []
+
+    /// CoreAudio UID of the requested output device (nil = system default).
+    private var preferredOutputDeviceUID: String?
+    /// Silence output while another app is focused (user preference).
+    private var muteOnFocusLoss = false
+    /// Whether playback is currently muted because Moonlight is not frontmost.
+    private var isMutedForFocus = false
 
     private init() {}
 
@@ -230,6 +239,8 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
         let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channelLayout: channelLayout)
         self.audioFormat = format
 
+        // Create the engine and pick up the requested output device lazily on start, because
+        // kAudioOutputUnitProperty_CurrentDevice can only be set once the output unit exists.
         let engine = AVAudioEngine()
 
         let source = AVAudioSourceNode(format: format) { [weak ring] isSilence, _, frameCount, outputData -> OSStatus in
@@ -264,6 +275,10 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
         engine.attach(source)
         engine.connect(source, to: engine.mainMixerNode, format: format)
 
+        // Output device selection and focus-loss muting are applied per start; register the focus
+        // observers here so they live as long as the engine.
+        installFocusObservers()
+
         // Observe route and configuration changes to resume playback seamlessly
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
@@ -287,6 +302,12 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
         do {
             try engine.start()
             isPlaying = true
+
+            // The output unit exists only after start(), so route to the selected device now.
+            AudioOutputDevices.apply(deviceUID: preferredOutputDeviceUID, to: engine)
+            // Re-apply a pending mute (e.g. session started while another app had focus).
+            engine.mainMixerNode.outputVolume = isMutedForFocus ? 0.0 : 1.0
+
             AppLogger.shared.info("AudioPlaybackEngine: AVAudioEngine started successfully")
         } catch {
             AppLogger.shared.error("AudioPlaybackEngine: Failed to start AVAudioEngine: \(error.localizedDescription)")
@@ -308,6 +329,90 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         cleanupInternal()
+    }
+
+    /// Configures audio output routing and focus-loss muting for the next/current session.
+    public func configureOutput(deviceUID: String?, muteOnFocusLoss: Bool) {
+        lock.lock()
+        self.preferredOutputDeviceUID = deviceUID
+        self.muteOnFocusLoss = muteOnFocusLoss
+        lock.unlock()
+
+        if muteOnFocusLoss {
+            updateFocusMuteState()
+        } else {
+            lock.lock()
+            isMutedForFocus = false
+            audioEngine?.mainMixerNode.outputVolume = 1.0
+            lock.unlock()
+        }
+    }
+
+    /// Applies the selected output device while a session is running.
+    public func applyOutputDevice() {
+        lock.lock()
+        guard let engine = audioEngine, isPlaying else {
+            lock.unlock()
+            return
+        }
+        let uid = preferredOutputDeviceUID
+        lock.unlock()
+
+        AudioOutputDevices.apply(deviceUID: uid, to: engine)
+    }
+
+    private func installFocusObservers() {
+        removeFocusObservers()
+        let names: [Notification.Name] = [
+            NSApplication.didBecomeActiveNotification,
+            NSApplication.didResignActiveNotification,
+            NSApplication.didHideNotification,
+            NSApplication.didUnhideNotification,
+        ]
+        for name in names {
+            let observer = NotificationCenter.default.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.updateFocusMuteState()
+            }
+            focusObservers.append(observer)
+        }
+    }
+
+    private func removeFocusObservers() {
+        for observer in focusObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        focusObservers.removeAll()
+    }
+
+    private func updateFocusMuteState() {
+        // NSApplication is MainActor-isolated; observers are registered on the main queue, but the
+        // compiler cannot prove it, so hop explicitly.
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { applyFocusMuteState() }
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.applyFocusMuteState() }
+            }
+        }
+    }
+
+    @MainActor
+    private func applyFocusMuteState() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard muteOnFocusLoss else {
+            isMutedForFocus = false
+            audioEngine?.mainMixerNode.outputVolume = 1.0
+            return
+        }
+        let app = NSApplication.shared
+        let isActive = app.isActive && !app.isHidden
+        isMutedForFocus = !isActive
+        audioEngine?.mainMixerNode.outputVolume = isActive ? 1.0 : 0.0
     }
 
     private func cleanupInternal() {
@@ -336,6 +441,8 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
         audioFormat = nil
         ringBuffer = nil
         scratchInterleavedBuffer.removeAll(keepingCapacity: false)
+        isMutedForFocus = false
+        removeFocusObservers()
     }
 
     private func handleConfigurationChange() {
