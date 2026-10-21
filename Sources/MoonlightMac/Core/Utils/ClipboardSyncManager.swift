@@ -13,7 +13,16 @@ public final class ClipboardSyncManager {
 
     private var pollTimer: Timer?
     private var observers: [NSObjectProtocol] = []
-    private var isSyncing: Bool = false
+
+    // Each direction tracks its own in-flight request. A single shared flag let an in-flight send
+    // suppress the pull (and vice-versa), starving one direction on slow links.
+    private var isSending: Bool = false
+    private var isPulling: Bool = false
+
+    /// Identifies the current session, so a request that completes after `stop()`/`start()` cannot
+    /// clear state belonging to the next session.
+    private var sessionGeneration: UInt64 = 0
+
     private var pollCounter: Int = 0
 
     private init() {}
@@ -96,12 +105,17 @@ public final class ClipboardSyncManager {
         observers.removeAll()
 
         activeHost = nil
-        isSyncing = false
+        // Invalidate any in-flight request: its completion handler checks the generation before
+        // touching state, so it can no longer resurrect a dead session (previously `isSyncing`
+        // stayed true forever if the session ended mid-request, disabling sync permanently).
+        sessionGeneration &+= 1
+        isSending = false
+        isPulling = false
     }
 
     /// Pushes local macOS pasteboard string to the remote host.
     public func syncClipboardToHost() {
-        guard isSyncAvailable, let host = activeHost, !isSyncing else { return }
+        guard isSyncAvailable, let host = activeHost, !isSending else { return }
 
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
             return
@@ -118,19 +132,22 @@ public final class ClipboardSyncManager {
         }
 
         lastSyncedClipboard = text
-        isSyncing = true
+        isSending = true
+        let generation = sessionGeneration
 
         Task {
             do {
                 try await SunshineHTTPClient.shared.sendClipboardContent(host: host, text: text)
                 await MainActor.run {
+                    guard self.sessionGeneration == generation else { return }
+                    self.isSending = false
                     self.consecutiveErrors = 0
-                    self.isSyncing = false
                     AppLogger.shared.debug("Sent \(text.count) characters to host clipboard", category: "CLIPBOARD")
                 }
             } catch {
                 await MainActor.run {
-                    self.isSyncing = false
+                    guard self.sessionGeneration == generation else { return }
+                    self.isSending = false
                     self.consecutiveErrors += 1
                     if self.consecutiveErrors >= 3 {
                         self.isSyncAvailable = false
@@ -143,15 +160,18 @@ public final class ClipboardSyncManager {
 
     /// Pulls remote host clipboard string to the macOS pasteboard.
     public func syncClipboardFromHost() {
-        guard isSyncAvailable, let host = activeHost, !isSyncing else { return }
+        guard isSyncAvailable, let host = activeHost, !isPulling else { return }
 
-        isSyncing = true
+        isPulling = true
+        let generation = sessionGeneration
+
         Task {
             do {
                 let hostText = try await SunshineHTTPClient.shared.getClipboardContent(host: host)
                 await MainActor.run {
+                    guard self.sessionGeneration == generation else { return }
+                    self.isPulling = false
                     self.consecutiveErrors = 0
-                    self.isSyncing = false
 
                     if !hostText.isEmpty && hostText != self.lastSyncedClipboard {
                         self.lastSyncedClipboard = hostText
@@ -163,7 +183,8 @@ public final class ClipboardSyncManager {
                 }
             } catch {
                 await MainActor.run {
-                    self.isSyncing = false
+                    guard self.sessionGeneration == generation else { return }
+                    self.isPulling = false
                     self.consecutiveErrors += 1
                     if self.consecutiveErrors >= 3 {
                         self.isSyncAvailable = false
