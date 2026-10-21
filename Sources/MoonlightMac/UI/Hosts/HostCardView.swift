@@ -8,10 +8,14 @@ public struct HostCardView: View {
     public let onWakeOnLan: () -> Void
     public let onDelete: () -> Void
     public let onUnpair: (() -> Void)?
+    /// Provided so the details sheet can resolve the running app's title.
+    public var appState: AppState?
+    @State private var showingDetails = false
 
     public init(
         host: Host,
         isSelected: Bool = false,
+        appState: AppState? = nil,
         onSelect: @escaping () -> Void,
         onPair: @escaping () -> Void,
         onWakeOnLan: @escaping () -> Void,
@@ -20,6 +24,7 @@ public struct HostCardView: View {
     ) {
         self.host = host
         self.isSelected = isSelected
+        self.appState = appState
         self.onSelect = onSelect
         self.onPair = onPair
         self.onWakeOnLan = onWakeOnLan
@@ -91,6 +96,11 @@ public struct HostCardView: View {
                 Spacer()
 
                 Menu {
+                    Button {
+                        showingDetails = true
+                    } label: {
+                        Label("Host Details...", systemImage: "info.circle")
+                    }
                     if host.macAddress != nil {
                         Button(action: onWakeOnLan) {
                             Label("Wake on LAN", systemImage: "bolt.fill")
@@ -111,6 +121,11 @@ public struct HostCardView: View {
             }
         }
         .padding(16)
+        .sheet(isPresented: $showingDetails) {
+            if let appState = appState {
+                HostDetailsSheet(host: host, appState: appState)
+            }
+        }
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(nsColor: .windowBackgroundColor))

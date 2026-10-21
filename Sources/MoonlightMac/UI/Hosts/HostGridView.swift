@@ -186,6 +186,7 @@ public struct HostGridView: View {
                         HostCardView(
                             host: host,
                             isSelected: appState.selectedHost?.id == host.id,
+                            appState: appState,
                             onSelect: { selectHost(host) },
                             onPair: { pairHost(host) },
                             onWakeOnLan: { wakeHost(host) },
