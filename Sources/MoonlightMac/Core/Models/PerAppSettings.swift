@@ -65,27 +65,47 @@ public final class PerAppSettingsStore {
 
     /// Host identity is the stable server ID when available, otherwise the address, so overrides
     /// survive a host being rediscovered with a new UUID.
-    private func key(host: Host, appId: Int) -> String {
+    private func primaryKey(host: Host, appId: Int) -> String {
         let hostKey = host.serverId?.isEmpty == false ? host.serverId! : host.address
         return "\(hostKey.lowercased())|\(appId)"
     }
 
+    /// Every key an app's overrides could live under.
+    ///
+    /// A host that has not completed a serverinfo probe yet has no `serverId`, so overrides saved
+    /// then are stored under the address. Once the ID arrives the primary key changes, so lookups
+    /// fall back to the address key rather than appearing to lose the settings.
+    private func candidateKeys(host: Host, appId: Int) -> [String] {
+        var keys = [primaryKey(host: host, appId: appId)]
+        let addressKey = "\(host.address.lowercased())|\(appId)"
+        if !keys.contains(addressKey) { keys.append(addressKey) }
+        return keys
+    }
+
     public func overrides(for host: Host, appId: Int) -> AppStreamOverrides {
-        cache[key(host: host, appId: appId)] ?? AppStreamOverrides()
+        for key in candidateKeys(host: host, appId: appId) {
+            if let value = cache[key] { return value }
+        }
+        return AppStreamOverrides()
     }
 
     public func setOverrides(_ overrides: AppStreamOverrides, for host: Host, appId: Int) {
-        let storageKeyForApp = key(host: host, appId: appId)
-        if overrides.isEmpty {
-            cache.removeValue(forKey: storageKeyForApp)
-        } else {
-            cache[storageKeyForApp] = overrides
+        // Write once, under the canonical key, and drop any stale address-keyed entry so the two
+        // cannot diverge.
+        for key in candidateKeys(host: host, appId: appId) {
+            cache.removeValue(forKey: key)
+        }
+        let canonical = primaryKey(host: host, appId: appId)
+        if !overrides.isEmpty {
+            cache[canonical] = overrides
         }
         save()
     }
 
     public func clear(for host: Host, appId: Int) {
-        cache.removeValue(forKey: key(host: host, appId: appId))
+        for key in candidateKeys(host: host, appId: appId) {
+            cache.removeValue(forKey: key)
+        }
         save()
     }
 

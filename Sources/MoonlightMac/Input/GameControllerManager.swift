@@ -125,20 +125,24 @@ public final class GameControllerManager: @unchecked Sendable {
     /// field as an unsigned 32-bit mask, and a sign-extended value does not match the Y bit.
     private let BUTTON_Y: Int32              = 0x8000
 
-    /// Set when the host enables motion reporting via `ConnListenerSetMotionEventState`.
-    /// Motion is off unless the host asks for it, to avoid wasting power and bandwidth.
-    /// Guarded by `lock` because the listener runs on the network thread and the poll loop reads it.
-    private var motionReportingEnabledStorage = false
-    public var motionReportingEnabled: Bool {
-        get {
-            lock.lock(); defer { lock.unlock() }
-            return motionReportingEnabledStorage
-        }
-        set {
-            lock.lock(); defer { lock.unlock() }
-            motionReportingEnabledStorage = newValue
-        }
+    /// Whether the host accepts touch events, sampled once in `start()`.
+    private var touchReportingEnabled = false
+
+    /// Cached answer to "can this controller produce touch/motion data", so the poll loop does not
+    /// re-run the protocol casts and capability query for every controller on every tick.
+    private enum ControllerCapabilities {
+        case basic            // no touchpad, no motion
+        case touchOnly        // touchpad, no motion data
+        case touchAndMotion
     }
+    private var controllerCapabilities = [ControllerCapabilities?](repeating: nil, count: 4)
+
+    /// Motion is sent no faster than the host asked for, and only when the sample changed.
+    private var motionInterval: TimeInterval = 0
+    private var lastMotionSendTime: TimeInterval = 0
+    private var lastMotionValues: [(accel: (Float, Float, Float), gyro: (Float, Float, Float))?] =
+        [nil, nil, nil, nil]
+
 
     /// Tracks which motion categories the host currently wants, so a per-category disable does not
     /// stop reporting for the other one.
@@ -160,16 +164,31 @@ public final class GameControllerManager: @unchecked Sendable {
             lock.unlock()
         }
 
-        var isAnyRequested: Bool {
+        /// Largest rate the host asked for; 0 when it disabled reporting entirely.
+        var requestedHz: UInt16 {
             lock.lock(); defer { lock.unlock() }
-            return accelHz > 0 || gyroHz > 0
+            return max(accelHz, gyroHz)
         }
     }
 
     /// Applies a host motion-state change. Called from the connection listener thread.
     public func setMotionRequest(category: UInt8, reportRateHz: UInt16) {
         motionRequested.update(category: category, hz: reportRateHz)
-        motionReportingEnabled = motionRequested.isAnyRequested
+        let hz = motionRequested.requestedHz
+        lock.lock()
+        motionReportingEnabledStorage = hz > 0
+        // Honour the requested rate instead of always sending at the poll frequency.
+        motionInterval = hz > 0 ? 1.0 / Double(hz) : 0
+        if hz == 0 { lastMotionValues = [nil, nil, nil, nil] }
+        lock.unlock()
+    }
+
+    /// Set when the host enables motion reporting via `ConnListenerSetMotionEventState`.
+    /// Guarded by `lock` because the listener runs on the network thread and the poll loop reads it.
+    private var motionReportingEnabledStorage = false
+    var motionReportingEnabled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return motionReportingEnabledStorage
     }
 
     private init() {}
@@ -183,6 +202,10 @@ public final class GameControllerManager: @unchecked Sendable {
         isRunning = true
         connectedControllers = GCController.controllers()
         let hasControllers = !connectedControllers.isEmpty
+        // Cache the host's touch capability once per session. Calling LiGetHostFeatureFlags() per
+        // frame took the library's control-stream lock at 125Hz. Stored under `lock` because the
+        // poll queue reads it.
+        touchReportingEnabled = (LiGetHostFeatureFlags() & UInt32(bitPattern: LI_FF_CONTROLLER_TOUCH_EVENTS)) != 0
         lock.unlock()
 
         NotificationCenter.default.addObserver(
@@ -209,6 +232,15 @@ public final class GameControllerManager: @unchecked Sendable {
         isRunning = false
         connectedControllers.removeAll()
         lastSentStates = [ControllerState?](repeating: nil, count: 4)
+        // These are also written by the poll queue; reset them under the same lock it uses.
+        controllerCapabilities = [ControllerCapabilities?](repeating: nil, count: 4)
+        lastMotionValues = [nil, nil, nil, nil]
+        primaryWasTouching = [Bool](repeating: false, count: 4)
+        lastTouchX = [Float](repeating: 0, count: 4)
+        lastTouchY = [Float](repeating: 0, count: 4)
+        touchReportingEnabled = false
+        motionReportingEnabledStorage = false
+        motionInterval = 0
         lock.unlock()
         stopPolling()
 
@@ -345,16 +377,61 @@ public final class GameControllerManager: @unchecked Sendable {
             )
 
             // Touchpad is sampled every tick (not change-gated) because the library needs DOWN/MOVE/UP
-            // edges, which the helper derives from its own per-slot state.
-            sendTouchState(for: gamepad, controllerSlot: index, activeMask: activeMask)
-        }
-
-        // Motion is a high-rate stream; only send when the host asked for it.
-        if motionReportingEnabled {
-            for (index, controller) in controllers.prefix(4).enumerated() {
-                sendMotionState(for: controller, controllerSlot: index)
+            // edges, which the helper derives from its own per-slot state. Skipped entirely for
+            // controllers that have no touchpad, so the capability check is not repeated per frame.
+            if capabilities(of: controller, slot: index) != .basic {
+                sendTouchState(for: gamepad, controllerSlot: index, activeMask: activeMask)
             }
         }
+
+        sendPendingMotion(controllers: controllers)
+    }
+
+    /// Sends motion at most once per host-requested interval, and only when the sample changed.
+    private func sendPendingMotion(controllers: [GCController]) {
+        guard motionReportingEnabled else { return }
+
+        let now = CACurrentMediaTime()
+        guard now - lastMotionSendTime >= motionInterval else { return }
+        lastMotionSendTime = now
+
+        for (index, controller) in controllers.prefix(4).enumerated() {
+            guard capabilities(of: controller, slot: index) == .touchAndMotion,
+                  let motion = controller.motion else { continue }
+
+            let gravity = 9.80665
+            let radiansToDegrees = 180.0 / Double.pi
+
+            let accel = motion.acceleration
+            let gyro = motion.rotationRate
+            let ax = Float(accel.x * gravity), ay = Float(accel.y * gravity), az = Float(accel.z * gravity)
+            let gx = Float(gyro.x * radiansToDegrees), gy = Float(gyro.y * radiansToDegrees), gz = Float(gyro.z * radiansToDegrees)
+
+            // Suppress redundant samples: an idle controller reports the same gravity vector forever.
+            if let previous = lastMotionValues[index],
+               previous.accel == (ax, ay, az), previous.gyro == (gx, gy, gz) {
+                continue
+            }
+            lastMotionValues[index] = (accel: (ax, ay, az), gyro: (gx, gy, gz))
+
+            LiSendControllerMotionEvent(UInt8(index), UInt8(LI_MOTION_TYPE_ACCEL), ax, ay, az)
+            LiSendControllerMotionEvent(UInt8(index), UInt8(LI_MOTION_TYPE_GYRO), gx, gy, gz)
+        }
+    }
+
+    /// Cached protocol classification, so the poll loop avoids repeated casts every frame.
+    private func capabilities(of controller: GCController, slot: Int) -> ControllerCapabilities {
+        if let cached = controllerCapabilities[slot] { return cached }
+
+        let resolved: ControllerCapabilities
+        if let gamepad = controller.extendedGamepad,
+           gamepad is GCDualShockGamepad || gamepad is GCDualSenseGamepad {
+            resolved = controller.motion != nil ? .touchAndMotion : .touchOnly
+        } else {
+            resolved = .basic
+        }
+        controllerCapabilities[slot] = resolved
+        return resolved
     }
 
     public func rumble(controllerNumber: UInt16, lowFreqMotor: UInt16, highFreqMotor: UInt16) {
@@ -383,10 +460,9 @@ public final class GameControllerManager: @unchecked Sendable {
 
     // MARK: - Touchpad (DS4 / DualSense)
 
-    /// Whether the host asked for touch events (`LiGetHostFeatureFlags()`).
-    private var hostSupportsTouch: Bool {
-        (LiGetHostFeatureFlags() & UInt32(bitPattern: LI_FF_CONTROLLER_TOUCH_EVENTS)) != 0
-    }
+    /// Whether the host asked for touch events (`LiGetHostFeatureFlags()`). Sampled once per
+    /// session in `start()`; calling into the library per frame took its control lock.
+    private var hostSupportsTouch: Bool { touchReportingEnabled }
 
     /// Pushes a DualShock/DualSense touchpad sample to the host.
     ///
@@ -394,7 +470,7 @@ public final class GameControllerManager: @unchecked Sendable {
     /// normalized to -1...1 with the origin at the center; Limelight expects 0...1 with the origin
     /// at the top-left. Only controllers in `GCDualShockGamepad`/`GCDualSenseGamepad` expose it.
     func sendTouchState(for gamepad: GCExtendedGamepad, controllerSlot: Int, activeMask: Int16) {
-        guard hostSupportsTouch else { return }
+        guard touchReportingEnabled else { return }
 
         // DS4/DualSense expose the touchpad as a direction pad plus a click button. macOS does NOT
         // report a per-finger touch-down state (GCControllerDirectionPad has no `isTouched`), so a
@@ -460,33 +536,8 @@ public final class GameControllerManager: @unchecked Sendable {
 
     // MARK: - Motion (DUALSHOCK 4 / DualSense)
 
-    /// Forwards gyro and accelerometer samples when the host has enabled motion reporting.
-    ///
-    /// The API takes one motion type per call, and the axis conventions are SDL's:
-    /// - gyro in deg/s (`GCMotion.rotationRate` is already rad/s, so convert)
-    /// - accel in m/s² including gravity (`GCMotion.acceleration` is in g, so scale by 9.81)
     /// Motion is NOT gated by a feature flag: the library only reports whether the host supports
     /// touch (LI_FF_CONTROLLER_TOUCH_EVENTS). Motion is enabled solely by the host asking for it
-    /// through `ConnListenerSetMotionEventState`, which sets `motionReportingEnabled`.
-    func sendMotionState(for controller: GCController, controllerSlot: Int) {
-        guard motionReportingEnabled, let motion = controller.motion else { return }
-
-        // GCMotion reports G; Limelight expects m/s^2 including gravity.
-        let gravity = 9.80665
-        let accel = motion.acceleration
-        LiSendControllerMotionEvent(
-            UInt8(controllerSlot),
-            UInt8(LI_MOTION_TYPE_ACCEL),
-            Float(accel.x * gravity), Float(accel.y * gravity), Float(accel.z * gravity)
-        )
-
-        // GCMotion.rotationRate is rad/s; Limelight expects deg/s.
-        let radiansToDegrees = 180.0 / Double.pi
-        let gyro = motion.rotationRate
-        LiSendControllerMotionEvent(
-            UInt8(controllerSlot),
-            UInt8(LI_MOTION_TYPE_GYRO),
-            Float(gyro.x * radiansToDegrees), Float(gyro.y * radiansToDegrees), Float(gyro.z * radiansToDegrees)
-        )
-    }
+    /// through `ConnListenerSetMotionEventState`, which feeds `motionInterval` and
+    /// `motionReportingEnabled`. Samples are packed by `sendPendingMotion`.
 }

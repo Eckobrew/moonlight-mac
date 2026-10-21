@@ -447,11 +447,19 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
 
     private func handleConfigurationChange() {
         lock.lock()
-        defer { lock.unlock() }
-        guard let engine = audioEngine, isPlaying else { return }
+        guard let engine = audioEngine, isPlaying else {
+            lock.unlock()
+            return
+        }
+        // Re-assert the chosen device: a configuration change (default device changed, display
+        // plugged) otherwise silently falls back to the system default.
+        let uid = preferredOutputDeviceUID
+        lock.unlock()
+
         AppLogger.shared.info("AudioPlaybackEngine: Output route changed, restarting audio engine...")
         do {
             try engine.start()
+            AudioOutputDevices.apply(deviceUID: uid, to: engine)
         } catch {
             AppLogger.shared.error("AudioPlaybackEngine: Restart after route change failed: \(error.localizedDescription)")
         }

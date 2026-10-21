@@ -76,6 +76,15 @@ public final class AppState: @unchecked Sendable {
             UserDefaults.standard.set(encoded, forKey: settingsKey)
         }
         DisplaySleepManager.shared.update(keepScreenActive: settings.keepScreenActive)
+
+        // Apply audio changes to a running session without requiring a reconnect.
+        if StreamSessionController.shared.isStreaming {
+            StreamSessionEngine.shared.audioEngine.configureOutput(
+                deviceUID: settings.audioOutputDeviceUID,
+                muteOnFocusLoss: settings.muteAudioOnFocusLoss
+            )
+            StreamSessionEngine.shared.audioEngine.applyOutputDevice()
+        }
     }
 
     public func loadHosts() {

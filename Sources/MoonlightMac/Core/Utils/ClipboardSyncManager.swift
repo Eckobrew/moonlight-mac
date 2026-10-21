@@ -7,7 +7,10 @@ public final class ClipboardSyncManager {
 
     private var activeHost: Host?
     private var isSyncAvailable: Bool = true
-    private var consecutiveErrors: Int = 0
+    /// Separate failure counters: a host that rejects pushes (or lacks the clipboard endpoint for
+    /// pulls) should only disable the direction that is actually failing.
+    private var sendErrors: Int = 0
+    private var pullErrors: Int = 0
     private var lastSyncedClipboard: String = ""
     private var lastChangeCount: Int = -1
 
@@ -33,7 +36,8 @@ public final class ClipboardSyncManager {
 
         self.activeHost = host
         self.isSyncAvailable = true
-        self.consecutiveErrors = 0
+        self.sendErrors = 0
+        self.pullErrors = 0
         self.lastSyncedClipboard = ""
         self.lastChangeCount = NSPasteboard.general.changeCount
 
@@ -139,17 +143,17 @@ public final class ClipboardSyncManager {
             do {
                 try await SunshineHTTPClient.shared.sendClipboardContent(host: host, text: text)
                 await MainActor.run {
-                    guard self.sessionGeneration == generation else { return }
+                    guard generation == self.sessionGeneration else { return }
                     self.isSending = false
-                    self.consecutiveErrors = 0
+                    self.sendErrors = 0
                     AppLogger.shared.debug("Sent \(text.count) characters to host clipboard", category: "CLIPBOARD")
                 }
             } catch {
                 await MainActor.run {
-                    guard self.sessionGeneration == generation else { return }
+                    guard generation == self.sessionGeneration else { return }
                     self.isSending = false
-                    self.consecutiveErrors += 1
-                    if self.consecutiveErrors >= 3 {
+                    self.sendErrors += 1
+                    if self.sendErrors >= 3 {
                         self.isSyncAvailable = false
                         AppLogger.shared.warning("Repeated failures sending clipboard to host; disabling clipboard sync for this session.", category: "CLIPBOARD")
                     }
@@ -171,7 +175,7 @@ public final class ClipboardSyncManager {
                 await MainActor.run {
                     guard self.sessionGeneration == generation else { return }
                     self.isPulling = false
-                    self.consecutiveErrors = 0
+                    self.pullErrors = 0
 
                     if !hostText.isEmpty && hostText != self.lastSyncedClipboard {
                         self.lastSyncedClipboard = hostText
@@ -185,8 +189,8 @@ public final class ClipboardSyncManager {
                 await MainActor.run {
                     guard self.sessionGeneration == generation else { return }
                     self.isPulling = false
-                    self.consecutiveErrors += 1
-                    if self.consecutiveErrors >= 3 {
+                    self.pullErrors += 1
+                    if self.pullErrors >= 3 {
                         self.isSyncAvailable = false
                         AppLogger.shared.warning("Clipboard sync disabled: host does not support clipboard sync or returned repeated errors.", category: "CLIPBOARD")
                     }
