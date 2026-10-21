@@ -125,6 +125,53 @@ public final class GameControllerManager: @unchecked Sendable {
     /// field as an unsigned 32-bit mask, and a sign-extended value does not match the Y bit.
     private let BUTTON_Y: Int32              = 0x8000
 
+    /// Set when the host enables motion reporting via `ConnListenerSetMotionEventState`.
+    /// Motion is off unless the host asks for it, to avoid wasting power and bandwidth.
+    /// Guarded by `lock` because the listener runs on the network thread and the poll loop reads it.
+    private var motionReportingEnabledStorage = false
+    public var motionReportingEnabled: Bool {
+        get {
+            lock.lock(); defer { lock.unlock() }
+            return motionReportingEnabledStorage
+        }
+        set {
+            lock.lock(); defer { lock.unlock() }
+            motionReportingEnabledStorage = newValue
+        }
+    }
+
+    /// Tracks which motion categories the host currently wants, so a per-category disable does not
+    /// stop reporting for the other one.
+    private let motionRequested = MotionRequestState()
+
+    // Touch tracking per controller slot (edge detection for DOWN/MOVE/UP).
+    private var primaryWasTouching = [Bool](repeating: false, count: 4)
+    private var lastTouchX = [Float](repeating: 0, count: 4)
+    private var lastTouchY = [Float](repeating: 0, count: 4)
+
+    private final class MotionRequestState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var accelHz: UInt16 = 0
+        private var gyroHz: UInt16 = 0
+
+        func update(category: UInt8, hz: UInt16) {
+            lock.lock()
+            if category == UInt8(LI_MOTION_TYPE_ACCEL) { accelHz = hz } else { gyroHz = hz }
+            lock.unlock()
+        }
+
+        var isAnyRequested: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return accelHz > 0 || gyroHz > 0
+        }
+    }
+
+    /// Applies a host motion-state change. Called from the connection listener thread.
+    public func setMotionRequest(category: UInt8, reportRateHz: UInt16) {
+        motionRequested.update(category: category, hz: reportRateHz)
+        motionReportingEnabled = motionRequested.isAnyRequested
+    }
+
     private init() {}
 
     public func start() {
@@ -296,6 +343,17 @@ public final class GameControllerManager: @unchecked Sendable {
                 state.rightStickX,
                 state.rightStickY
             )
+
+            // Touchpad is sampled every tick (not change-gated) because the library needs DOWN/MOVE/UP
+            // edges, which the helper derives from its own per-slot state.
+            sendTouchState(for: gamepad, controllerSlot: index, activeMask: activeMask)
+        }
+
+        // Motion is a high-rate stream; only send when the host asked for it.
+        if motionReportingEnabled {
+            for (index, controller) in controllers.prefix(4).enumerated() {
+                sendMotionState(for: controller, controllerSlot: index)
+            }
         }
     }
 
@@ -321,5 +379,114 @@ public final class GameControllerManager: @unchecked Sendable {
 
             driver.apply(low: lowFreqMotor, high: highFreqMotor)
         }
+    }
+
+    // MARK: - Touchpad (DS4 / DualSense)
+
+    /// Whether the host asked for touch events (`LiGetHostFeatureFlags()`).
+    private var hostSupportsTouch: Bool {
+        (LiGetHostFeatureFlags() & UInt32(bitPattern: LI_FF_CONTROLLER_TOUCH_EVENTS)) != 0
+    }
+
+    /// Pushes a DualShock/DualSense touchpad sample to the host.
+    ///
+    /// macOS reports the touchpad as a single `GCControllerTouchpad` whose `fingerPosition` is
+    /// normalized to -1...1 with the origin at the center; Limelight expects 0...1 with the origin
+    /// at the top-left. Only controllers in `GCDualShockGamepad`/`GCDualSenseGamepad` expose it.
+    func sendTouchState(for gamepad: GCExtendedGamepad, controllerSlot: Int, activeMask: Int16) {
+        guard hostSupportsTouch else { return }
+
+        // DS4/DualSense expose the touchpad as a direction pad plus a click button. macOS does NOT
+        // report a per-finger touch-down state (GCControllerDirectionPad has no `isTouched`), so a
+        // finger-down is inferred: the position leaving its resting value, or the pad being clicked.
+        let primary: GCControllerDirectionPad
+        let clicked: Bool
+        if let dualSense = gamepad as? GCDualSenseGamepad {
+            primary = dualSense.touchpadPrimary
+            clicked = dualSense.touchpadButton.isPressed
+        } else if let dualShock = gamepad as? GCDualShockGamepad {
+            primary = dualShock.touchpadPrimary
+            clicked = dualShock.touchpadButton.isPressed
+        } else {
+            return
+        }
+
+        let pointerId: UInt32 = 0
+
+        // GCController normalizes to -1...1 from the center; Limelight wants 0...1 from top-left.
+        let x = Float((Double(primary.xAxis.value) + 1.0) / 2.0)
+        let y = Float((Double(primary.yAxis.value) + 1.0) / 2.0)
+        let moved = x != lastTouchX[controllerSlot] || y != lastTouchY[controllerSlot]
+
+        // Treat a click as an explicit touch, and any movement far from the resting point as one.
+        let awayFromRest = abs(x - 0.5) > 0.02 || abs(y - 0.5) > 0.02
+        let touched = clicked || moved || awayFromRest
+
+        let eventType: UInt8
+        if touched && !primaryWasTouching[controllerSlot] {
+            eventType = UInt8(LI_TOUCH_EVENT_DOWN)
+        } else if touched && moved {
+            eventType = UInt8(LI_TOUCH_EVENT_MOVE)
+        } else if !touched && primaryWasTouching[controllerSlot] {
+            eventType = UInt8(LI_TOUCH_EVENT_UP)
+        } else {
+            return
+        }
+        primaryWasTouching[controllerSlot] = touched
+
+        let pressure: Float = touched ? 1.0 : 0.0
+        var mutableX = x
+        var mutableY = y
+        if eventType == UInt8(LI_TOUCH_EVENT_UP) {
+            // Release at the last known position.
+            mutableX = lastTouchX[controllerSlot]
+            mutableY = lastTouchY[controllerSlot]
+        } else {
+            lastTouchX[controllerSlot] = x
+            lastTouchY[controllerSlot] = y
+        }
+
+        _ = activeMask
+        LiSendControllerTouchEvent2(
+            UInt8(controllerSlot),
+            eventType,
+            0,
+            pointerId,
+            mutableX,
+            mutableY,
+            pressure
+        )
+    }
+
+    // MARK: - Motion (DUALSHOCK 4 / DualSense)
+
+    /// Forwards gyro and accelerometer samples when the host has enabled motion reporting.
+    ///
+    /// The API takes one motion type per call, and the axis conventions are SDL's:
+    /// - gyro in deg/s (`GCMotion.rotationRate` is already rad/s, so convert)
+    /// - accel in m/s² including gravity (`GCMotion.acceleration` is in g, so scale by 9.81)
+    /// Motion is NOT gated by a feature flag: the library only reports whether the host supports
+    /// touch (LI_FF_CONTROLLER_TOUCH_EVENTS). Motion is enabled solely by the host asking for it
+    /// through `ConnListenerSetMotionEventState`, which sets `motionReportingEnabled`.
+    func sendMotionState(for controller: GCController, controllerSlot: Int) {
+        guard motionReportingEnabled, let motion = controller.motion else { return }
+
+        // GCMotion reports G; Limelight expects m/s^2 including gravity.
+        let gravity = 9.80665
+        let accel = motion.acceleration
+        LiSendControllerMotionEvent(
+            UInt8(controllerSlot),
+            UInt8(LI_MOTION_TYPE_ACCEL),
+            Float(accel.x * gravity), Float(accel.y * gravity), Float(accel.z * gravity)
+        )
+
+        // GCMotion.rotationRate is rad/s; Limelight expects deg/s.
+        let radiansToDegrees = 180.0 / Double.pi
+        let gyro = motion.rotationRate
+        LiSendControllerMotionEvent(
+            UInt8(controllerSlot),
+            UInt8(LI_MOTION_TYPE_GYRO),
+            Float(gyro.x * radiansToDegrees), Float(gyro.y * radiansToDegrees), Float(gyro.z * radiansToDegrees)
+        )
     }
 }

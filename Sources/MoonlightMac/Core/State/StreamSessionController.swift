@@ -340,6 +340,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             clCallbacks.connectionStarted = sessionConnectionStarted
             clCallbacks.connectionTerminated = sessionConnectionTerminated
             clCallbacks.rumble = sessionRumble
+            clCallbacks.setMotionEventState = sessionSetMotionEventState
 
             var drCallbacks = DECODER_RENDERER_CALLBACKS()
             LiInitializeVideoCallbacks(&drCallbacks)
@@ -573,6 +574,12 @@ private func sessionConnectionTerminated(errorCode: Int32) {
 
 private func sessionRumble(controllerNumber: UInt16, lowFreqMotor: UInt16, highFreqMotor: UInt16) {
     GameControllerManager.shared.rumble(controllerNumber: controllerNumber, lowFreqMotor: lowFreqMotor, highFreqMotor: highFreqMotor)
+}
+
+private func sessionSetMotionEventState(controllerNumber: UInt16, motionType: UInt8, reportRateHz: UInt16) {
+    // Runs on the connection listener thread; the manager locks its own state.
+    GameControllerManager.shared.setMotionRequest(category: motionType, reportRateHz: reportRateHz)
+    _ = controllerNumber
 }
 
 private func sessionVideoSetup(videoFormat: Int32, width: Int32, height: Int32, redrawRate: Int32, context: UnsafeMutableRawPointer?, drFlags: Int32) -> Int32 {
