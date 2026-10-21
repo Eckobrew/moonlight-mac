@@ -25,6 +25,9 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
     private var ppsData: Data?
     private var vpsData: Data?
 
+    // AV1 keeps its Sequence Header OBU (complete, for the av1C configOBUs field).
+    private var av1SequenceHeader: [UInt8]?
+
     // Last known good pixel buffer for frame loss concealment
     private var lastDecodedPixelBuffer: CVPixelBuffer?
     private let lock = NSLock()
@@ -70,6 +73,7 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         self.spsData = nil
         self.ppsData = nil
         self.vpsData = nil
+        self.av1SequenceHeader = nil
         self.lastFrameNumber = 0
         self.isStopped = false
         recoveryLock.lock()
@@ -183,10 +187,22 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
             return DR_OK
         }
 
+        // AV1 arrives as raw OBUs with no separate parameter-set entries, so the sequence header
+        // has to be discovered by scanning the frame itself.
+        let isAV1 = (videoFormat & VIDEO_FORMAT_MASK_AV1) != 0
+        var av1ReceivedSequenceHeader = false
+        if isAV1 {
+            let obus = AV1OBUParser.parse(rawData, length: picDataOffset)
+            for obu in obus where obu.type == AV1OBUParser.sequenceHeader {
+                av1SequenceHeader = obu.raw
+                av1ReceivedSequenceHeader = true
+            }
+        }
+
         // If the format description is missing, or this decode unit carried new parameter sets,
         // (re)build it. An IDR without new SPS/PPS is compatible with the existing description, so
         // there is no need to rebuild it on every keyframe.
-        if formatDescription == nil || hasNewParamSets {
+        if formatDescription == nil || hasNewParamSets || av1ReceivedSequenceHeader {
             if let newDesc = createFormatDescription() {
                 if !updateDecompressionSession(with: newDesc) {
                     free(rawData)
@@ -372,12 +388,22 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
     }
 
     private func createFormatDescription() -> CMVideoFormatDescription? {
+        let isHevc = (videoFormat & VIDEO_FORMAT_MASK_H265) != 0
+        let isAV1 = (videoFormat & VIDEO_FORMAT_MASK_AV1) != 0
+
+        if isAV1 {
+            guard let sequenceHeader = av1SequenceHeader else { return nil }
+            guard let formatDesc = AV1OBUParser.makeFormatDescription(sequenceHeader: sequenceHeader) else {
+                AppLogger.shared.error("Failed to create AV1 CMVideoFormatDescription from sequence header (\(sequenceHeader.count) bytes)")
+                return nil
+            }
+            return formatDesc
+        }
+
         guard let sps = spsData, let pps = ppsData else { return nil }
 
         var newFormatDesc: CMVideoFormatDescription?
         var status: OSStatus = -1
-
-        let isHevc = (videoFormat & VIDEO_FORMAT_MASK_H265) != 0
 
         if isHevc {
             guard let vps = vpsData else { return nil }

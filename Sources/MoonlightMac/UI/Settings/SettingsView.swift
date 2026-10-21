@@ -248,8 +248,17 @@ public struct SettingsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Picker("Video Codec:", selection: $settings.codec) {
                     ForEach(VideoCodec.allCases, id: \.self) { codec in
-                        Text(codec.rawValue).tag(codec)
+                        // AV1 is only offered when this Mac's VideoToolbox can decode it; a host
+                        // that picks an unsupported codec produces a black stream.
+                        if codec != .av1 || VideoCodec.isAV1DecodingSupported {
+                            Text(codec.rawValue).tag(codec)
+                        }
                     }
+                }
+                if !VideoCodec.isAV1DecodingSupported, settings.codec == .av1 {
+                    Label("AV1 is not supported by this Mac's decoder. Choose Auto, H.264, or HEVC.", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
 
                 Picker("Renderer:", selection: $settings.videoRenderer) {
