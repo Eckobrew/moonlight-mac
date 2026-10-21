@@ -43,10 +43,21 @@ jobs:
       - name: Create DMG
         run: |
           mkdir -p dist
+          TAG_NAME="${{ github.ref_name }}"
+          DMG_NAME="Moonlight-mac.${TAG_NAME}.dmg"
+
           npx create-dmg "Products/Moonlight.app" dist --overwrite --no-code-sign || {
             echo "create-dmg encountered an issue, generating DMG with hdiutil fallback..."
-            hdiutil create -volname "Moonlight" -srcfolder "Products/Moonlight.app" -ov -format UDZO "dist/Moonlight.dmg"
+            hdiutil create -volname "Moonlight" -srcfolder "Products/Moonlight.app" -ov -format UDZO "dist/${DMG_NAME}"
           }
+
+          # Ensure the DMG is named Moonlight-mac.<tag>.dmg
+          GENERATED_DMG=$(find dist -maxdepth 1 -name "*.dmg" | head -n 1)
+          if [ -n "$GENERATED_DMG" ] && [ "$GENERATED_DMG" != "dist/${DMG_NAME}" ]; then
+            echo "Renaming $GENERATED_DMG to dist/${DMG_NAME}"
+            mv "$GENERATED_DMG" "dist/${DMG_NAME}"
+          fi
+
           ls -la dist/
 
       - name: Publish GitHub Release
