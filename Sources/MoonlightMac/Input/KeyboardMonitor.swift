@@ -17,6 +17,9 @@ public final class KeyboardMonitor: @unchecked Sendable {
     /// sending them on the main thread made AppKit event dispatch block behind mouse packets.
     private let inputQueue: DispatchQueue
 
+    /// Host keyboard interpretation mode (virtual keys vs. physical scancodes).
+    public var keyboardLayout: KeyboardLayout = .us
+
     private var localMonitor: Any?
     private var appResignObserver: NSObjectProtocol?
     private var isMonitoring = false
@@ -179,7 +182,20 @@ public final class KeyboardMonitor: @unchecked Sendable {
 
     private func sendKey(_ vkCode: Int16, _ action: CChar, _ modifiers: CChar) {
         inputQueue.async {
-            LiSendKeyboardEvent(vkCode, action, modifiers)
+            if self.keyboardLayout.sendsScancodes {
+                // Scancode mode: tag the code as a physical scancode (0x8000) and ask the host not
+                // to re-map it, so it resolves the character with its own active layout. This is
+                // how moonlight-qt handles non-US hosts.
+                // 0x8000 flags a physical scancode; Int16 can't hold 32768 literally.
+                LiSendKeyboardEvent2(
+                    vkCode | Int16(bitPattern: 0x8000),
+                    action,
+                    modifiers,
+                    CChar(SS_KBE_FLAG_NON_NORMALIZED)
+                )
+            } else {
+                LiSendKeyboardEvent(vkCode, action, modifiers)
+            }
         }
     }
 
