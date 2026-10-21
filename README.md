@@ -2,7 +2,7 @@
 
 **Moonlight** lets you stream games from your gaming PC directly to your Mac. Play your PC games anywhere on your home network or across the internet with low latency, high frame rates, and crystal-clear image quality.
 
-Works seamlessly with **[Sunshine](https://github.com/LizardByte/Sunshine)**, **[Apollo](https://github.com/ClassicOldSong/Apollo)**, and NVIDIA GameStream.
+Works seamlessly with **[Sunshine](https://github.com/LizardByte/Sunshine)**, **[Apollo](https://github.com/ClassicOldSong/Apollo)**.
 
 > [!NOTE]
 > Native macOS app built from the ground up using Swift, SwiftUI, Metal, VideoToolbox, and AVFoundation using AI by a monkey with no clue what he's doing or how to effectively prompt a AI
