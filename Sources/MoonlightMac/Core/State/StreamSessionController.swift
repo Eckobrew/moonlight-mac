@@ -265,8 +265,11 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             var streamConfig = STREAM_CONFIGURATION()
             LiInitializeStreamConfiguration(&streamConfig)
 
-            let remotelyFlag = isRemote ? Int32(STREAM_CFG_REMOTE) : Int32(STREAM_CFG_LOCAL)
-            streamConfig.streamingRemotely = remotelyFlag
+            // Let the library classify the connection itself by resolving the address and testing
+            // it against private/NAT64 ranges. That classification is what enables its remote
+            // packet-size cap (1024 bytes IPv4, 1184 IPv6) and the 500 Kbps bitrate headroom
+            // subtraction in the SDP. Passing STREAM_CFG_LOCAL/.REMOTE skipped both.
+            streamConfig.streamingRemotely = Int32(STREAM_CFG_AUTO)
 
             let chosenBitrateMbps: Int
             if isRemote && settings.enableRemoteBitrate {
