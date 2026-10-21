@@ -1,5 +1,6 @@
 import Foundation
 import GameController
+import CoreHaptics
 import MoonlightCommonC
 
 public final class GameControllerManager: @unchecked Sendable {
@@ -23,6 +24,86 @@ public final class GameControllerManager: @unchecked Sendable {
         var rightStickY: Int16 = 0
     }
     private var lastSentStates = [ControllerState?](repeating: nil, count: 4)
+
+    // Rumble state per controller slot, independent of the input polling queue.
+    private let hapticsQueue = DispatchQueue(label: "com.moonlight-stream.input.haptics", qos: .userInitiated)
+    private var hapticEngines: [Int: RumbleDriver] = [:]
+
+    /// Drives one game controller's haptics from Limelight's two-motor rumble model.
+    ///
+    /// Limelight reports a low-frequency (left, "big") and high-frequency (right, "small") motor,
+    /// each 0...65535. Core Haptics has no dual-motor API, so both are folded into one continuous
+    /// event: intensity follows the stronger motor, sharpness follows the high-frequency motor.
+    /// Confined to `hapticsQueue`.
+    private final class RumbleDriver {
+        private let engine: CHHapticEngine
+        private var lastApplied: UInt32 = 0
+        private var activePlayer: CHHapticPatternPlayer?
+
+        /// Rumble is re-sent while active; a short continuous event refreshed on each update keeps
+        /// the motor running without retriggering at the packet rate.
+        private static let continuousDuration: TimeInterval = 0.25
+
+        init?(controller: GCController) {
+            guard let engine = controller.haptics?.createEngine(withLocality: .default) else { return nil }
+            self.engine = engine
+
+            engine.playsHapticsOnly = true
+            engine.isAutoShutdownEnabled = false
+            engine.stoppedHandler = { _ in }
+            engine.resetHandler = { [weak engine] in
+                try? engine?.start()
+            }
+
+            do {
+                try engine.start()
+            } catch {
+                AppLogger.shared.warning("[Rumble] Failed to start haptics engine: \(error.localizedDescription)", category: "Input")
+                return nil
+            }
+        }
+
+        deinit {
+            engine.stop()
+        }
+
+        func apply(low: UInt16, high: UInt16) {
+            // Skip redundant updates: games often resend the same rumble value every frame.
+            let packed = (UInt32(low) << 16) | UInt32(high)
+            guard packed != lastApplied else { return }
+            lastApplied = packed
+
+            guard low > 0 || high > 0 else {
+                try? activePlayer?.stop(atTime: CHHapticTimeImmediate)
+                activePlayer = nil
+                return
+            }
+
+            let lowNorm = Float(low) / 65535.0
+            let highNorm = Float(high) / 65535.0
+
+            let intensity = CHHapticEventParameter(parameterID: .hapticIntensity, value: max(lowNorm, highNorm))
+            let sharpness = CHHapticEventParameter(parameterID: .hapticSharpness, value: highNorm)
+            let event = CHHapticEvent(
+                eventType: .hapticContinuous,
+                parameters: [intensity, sharpness],
+                relativeTime: 0,
+                duration: Self.continuousDuration
+            )
+
+            do {
+                // Restart the previous event rather than stacking players, so long rumble does not
+                // accumulate one active player per update.
+                try activePlayer?.stop(atTime: CHHapticTimeImmediate)
+                let pattern = try CHHapticPattern(events: [event], parameters: [])
+                let player = try engine.makePlayer(with: pattern)
+                try player.start(atTime: CHHapticTimeImmediate)
+                activePlayer = player
+            } catch {
+                AppLogger.shared.debug("[Rumble] Failed to play haptic pattern: \(error.localizedDescription)", category: "Input")
+            }
+        }
+    }
 
     // Controller button flags (matching XInput / Moonlight controller mask)
     private let BUTTON_DPAD_UP: Int16        = 0x0001
@@ -80,6 +161,10 @@ public final class GameControllerManager: @unchecked Sendable {
         lastSentStates = [ControllerState?](repeating: nil, count: 4)
         lock.unlock()
         stopPolling()
+
+        hapticsQueue.async { [weak self] in
+            self?.hapticEngines.removeAll()
+        }
     }
 
     private func startPolling() {
@@ -122,9 +207,17 @@ public final class GameControllerManager: @unchecked Sendable {
     @objc private func handleControllerDidDisconnect(_ notification: Notification) {
         if let controller = notification.object as? GCController {
             lock.lock()
+            let removedIndex = connectedControllers.firstIndex(of: controller)
             connectedControllers.removeAll(where: { $0 == controller })
             let isEmpty = connectedControllers.isEmpty
             lock.unlock()
+
+            // Release the haptics engine for the slot that disappeared.
+            if let removedIndex = removedIndex {
+                hapticsQueue.async { [weak self] in
+                    self?.hapticEngines[removedIndex] = nil
+                }
+            }
 
             if isEmpty {
                 stopPolling()
@@ -203,6 +296,26 @@ public final class GameControllerManager: @unchecked Sendable {
     }
 
     public func rumble(controllerNumber: UInt16, lowFreqMotor: UInt16, highFreqMotor: UInt16) {
-        // Core Haptics rumble is not wired up yet; keep this a no-op on the Limelight callback thread.
+        // Runs on the Limelight video/control callback thread: never do haptics work inline.
+        hapticsQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.lock.lock()
+            let controllers = self.connectedControllers
+            self.lock.unlock()
+
+            let slot = Int(controllerNumber)
+            guard slot < controllers.count else { return }
+
+            let driver: RumbleDriver
+            if let existing = self.hapticEngines[slot] {
+                driver = existing
+            } else {
+                guard let created = RumbleDriver(controller: controllers[slot]) else { return }
+                self.hapticEngines[slot] = created
+                driver = created
+            }
+
+            driver.apply(low: lowFreqMotor, high: highFreqMotor)
+        }
     }
 }
