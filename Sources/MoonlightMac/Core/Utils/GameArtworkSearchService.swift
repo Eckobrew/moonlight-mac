@@ -147,7 +147,7 @@ public final class GameArtworkSearchService: ObservableObject {
             }
 
             // 3. If SteamGridDB API key is provided, query SteamGridDB
-            let sgdbKey = UserDefaults.standard.string(forKey: "steamgriddb_api_key")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let sgdbKey = (UserDefaults.sharedApp.string(forKey: "steamgriddb_api_key") ?? UserDefaults.standard.string(forKey: "steamgriddb_api_key"))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if !sgdbKey.isEmpty {
                 let sgdbCandidates = await searchSteamGridDB(query: trimmedQuery, apiKey: sgdbKey)
                 results.append(contentsOf: sgdbCandidates)

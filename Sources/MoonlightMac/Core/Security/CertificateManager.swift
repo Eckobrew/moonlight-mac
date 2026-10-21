@@ -16,11 +16,15 @@ public final class CertificateManager: @unchecked Sendable {
         // Disallow macOS Security framework from displaying Keychain UI password prompts
         SecKeychainSetUserInteractionAllowed(false)
 
-        if let storedId = UserDefaults.standard.string(forKey: uniqueIdKey), !storedId.isEmpty {
+        let storedId = UserDefaults.sharedApp.string(forKey: uniqueIdKey) ?? UserDefaults.standard.string(forKey: uniqueIdKey)
+        if let storedId = storedId, !storedId.isEmpty {
             self.uniqueId = storedId.lowercased()
+            UserDefaults.sharedApp.set(self.uniqueId, forKey: uniqueIdKey)
+            UserDefaults.standard.set(self.uniqueId, forKey: uniqueIdKey)
         } else {
             let uid = UInt64.random(in: 0...UInt64.max)
             let newId = String(format: "%016llx", uid)
+            UserDefaults.sharedApp.set(newId, forKey: uniqueIdKey)
             UserDefaults.standard.set(newId, forKey: uniqueIdKey)
             self.uniqueId = newId
         }
@@ -32,6 +36,7 @@ public final class CertificateManager: @unchecked Sendable {
     public func regenerateUniqueId() -> String {
         let uid = UInt64.random(in: 0...UInt64.max)
         let newId = String(format: "%016llx", uid)
+        UserDefaults.sharedApp.set(newId, forKey: uniqueIdKey)
         UserDefaults.standard.set(newId, forKey: uniqueIdKey)
         self.uniqueId = newId
         AppLogger.shared.info("Regenerated client uniqueId: \(newId)", category: "SECURITY")

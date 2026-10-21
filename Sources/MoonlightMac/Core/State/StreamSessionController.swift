@@ -44,6 +44,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
     public private(set) var activeHost: Host?
     public var isShortcutMode: Bool = false
+    public var onSessionStopped: (() -> Void)?
     private var activeApp: StreamApp?
     public private(set) var activeSettings: StreamSettings?
     private var latencyActivityToken: NSObjectProtocol?
@@ -340,7 +341,11 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
     public func stopSession() {
         let isShortcut = isShortcutMode
-        if isShortcut {
+        let hostToQuit = activeHost
+        let shouldQuitHostApp = isShortcut || (activeSettings?.quitAppOnStop == true)
+        let hadError = sessionError != nil
+
+        if isShortcut && !hadError {
             for window in NSApp.windows {
                 window.orderOut(nil)
                 window.setIsVisible(false)
@@ -349,10 +354,6 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             WindowManager.shared.restoreWindowAfterStream()
         }
 
-        let hostToQuit = activeHost
-        let shouldQuitHostApp = isShortcut || (activeSettings?.quitAppOnStop == true)
-        let hadError = sessionError != nil
-
         guard isStreaming else {
             if isShortcut && !hadError {
                 exit(0)
@@ -360,6 +361,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             return
         }
         isStreaming = false
+        onSessionStopped?()
         stopMetricsPolling()
         ClipboardSyncManager.shared.stop()
         DisplaySleepManager.shared.stop()

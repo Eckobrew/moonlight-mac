@@ -23,7 +23,7 @@ public struct ShortcutIconPickerSheet: View {
     @State private var errorMessage: String?
     @State private var showSuccessAlert = false
 
-    @AppStorage("steamgriddb_api_key") private var steamGridDBKey: String = ""
+    @AppStorage("steamgriddb_api_key", store: .sharedApp) private var steamGridDBKey: String = ""
     @State private var showSGDBField = false
 
     public init(host: Host, app: StreamApp, boxArtImage: NSImage?) {

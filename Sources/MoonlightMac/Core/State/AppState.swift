@@ -33,6 +33,14 @@ public final class AppState: @unchecked Sendable {
     private let settingsKey = "com.moonlight.mac.savedSettings"
 
     public init() {
+        StreamSessionController.shared.onSessionStopped = { [weak self] in
+            Task { @MainActor in
+                self?.isStreaming = false
+                self?.activeHost = nil
+                self?.activeApp = nil
+            }
+        }
+
         loadSettings()
         loadHosts()
 
@@ -52,7 +60,7 @@ public final class AppState: @unchecked Sendable {
     }
 
     public func loadSettings() {
-        if let data = UserDefaults.standard.data(forKey: settingsKey),
+        if let data = UserDefaults.sharedApp.data(forKey: settingsKey) ?? UserDefaults.standard.data(forKey: settingsKey),
            let decoded = try? JSONDecoder().decode(StreamSettings.self, from: data) {
             self.settings = decoded
         }
@@ -60,13 +68,14 @@ public final class AppState: @unchecked Sendable {
 
     public func saveSettings() {
         if let encoded = try? JSONEncoder().encode(settings) {
+            UserDefaults.sharedApp.set(encoded, forKey: settingsKey)
             UserDefaults.standard.set(encoded, forKey: settingsKey)
         }
         DisplaySleepManager.shared.update(keepScreenActive: settings.keepScreenActive)
     }
 
     public func loadHosts() {
-        if let data = UserDefaults.standard.data(forKey: hostsKey),
+        if let data = UserDefaults.sharedApp.data(forKey: hostsKey) ?? UserDefaults.standard.data(forKey: hostsKey),
            let decoded = try? JSONDecoder().decode([Host].self, from: data) {
             // Only restore legitimately paired hosts from persistent storage.
             // On startup, paired hosts start in .offline status until Bonjour or refreshHosts probes them.
@@ -83,6 +92,7 @@ public final class AppState: @unchecked Sendable {
         // Only persist paired hosts to storage so unpaired or transient PCs are never saved to disk
         let pairedOnly = hosts.filter { $0.isPaired }
         if let encoded = try? JSONEncoder().encode(pairedOnly) {
+            UserDefaults.sharedApp.set(encoded, forKey: hostsKey)
             UserDefaults.standard.set(encoded, forKey: hostsKey)
         }
     }
@@ -337,7 +347,8 @@ public final class AppState: @unchecked Sendable {
         }
 
         if targetHost == nil {
-            targetHost = Host(name: hostQuery, address: hostQuery)
+            let address = hostQuery.contains(".") ? hostQuery : "\(hostQuery).local"
+            targetHost = Host(name: hostQuery, address: address)
         }
 
         guard var host = targetHost else {
@@ -345,25 +356,7 @@ public final class AppState: @unchecked Sendable {
             return
         }
 
-        // 2. If host is offline, wake via WoL and wait up to 60s
-        if !host.isOnline {
-            if let mac = host.macAddress {
-                self.cliStreamStatus = "Waking up '\(host.name)' via Wake-on-LAN..."
-                AppLogger.shared.info("Target host is offline. Sending Wake-on-LAN packets every 2.5s (up to 60s timeout)...", category: "CLI")
-                for i in 0..<24 {
-                    self.cliStreamStatus = "Waking up '\(host.name)' (\(24 - i) attempts remaining)..."
-                    try? await WakeOnLAN.wake(macAddress: mac)
-                    try? await Task.sleep(for: .milliseconds(2500))
-                    if let (updated, _) = try? await SunshineHTTPClient.shared.fetchServerInfo(host: host), updated.isOnline {
-                        host = updated
-                        self.addOrUpdateHost(updated)
-                        break
-                    }
-                }
-            }
-        }
-
-        // 3. Verify serverinfo (with automatic Wake-on-LAN retry fallback if unreachable)
+        // 2. Connect to host (with automatic Wake-on-LAN recovery if sleeping or unreachable)
         self.cliStreamStatus = "Connecting to '\(host.name)'..."
         do {
             let (updated, _) = try await SunshineHTTPClient.shared.fetchServerInfo(host: host)

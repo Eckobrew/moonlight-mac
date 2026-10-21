@@ -56,7 +56,7 @@ struct RootContentView: View {
 
     var body: some View {
         Group {
-            if sessionController.isStreaming || appState.isStreaming {
+            if sessionController.isStreaming {
                 StreamingSessionView(
                     sessionController: sessionController,
                     onDisconnect: {
@@ -73,8 +73,8 @@ struct RootContentView: View {
             }
         }
         .frame(
-            minWidth: appState.isShortcutLaunch && !sessionController.isStreaming && !appState.isStreaming ? 460 : 800,
-            minHeight: appState.isShortcutLaunch && !sessionController.isStreaming && !appState.isStreaming ? 380 : 550
+            minWidth: appState.isShortcutLaunch && !sessionController.isStreaming ? 460 : 800,
+            minHeight: appState.isShortcutLaunch && !sessionController.isStreaming ? 380 : 550
         )
         .onAppear {
             NSApplication.shared.setActivationPolicy(.regular)
@@ -89,6 +89,7 @@ struct RootContentView: View {
             set: { if !$0 { sessionController.clearError() } }
         )) {
             Button("OK", role: .cancel) {
+                appState.stopActiveStream()
                 sessionController.clearError()
                 if sessionController.isShortcutMode {
                     exit(0)
