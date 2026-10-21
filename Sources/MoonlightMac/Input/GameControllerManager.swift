@@ -120,7 +120,10 @@ public final class GameControllerManager: @unchecked Sendable {
     private let BUTTON_A: Int16              = 0x1000
     private let BUTTON_B: Int16              = 0x2000
     private let BUTTON_X: Int16              = 0x4000
-    private let BUTTON_Y: Int16              = -0x8000 // 0x8000 as signed Int16
+    /// Sign bit of the XInput button mask. Held as Int32 (`0x8000`, not `-0x8000`) so that
+    /// combining it with other buttons does not sign-extend into 0xFFFF8000: the host parses this
+    /// field as an unsigned 32-bit mask, and a sign-extended value does not match the Y bit.
+    private let BUTTON_Y: Int32              = 0x8000
 
     private init() {}
 
@@ -247,7 +250,6 @@ public final class GameControllerManager: @unchecked Sendable {
             if gamepad.buttonA.isPressed { buttonFlags |= BUTTON_A }
             if gamepad.buttonB.isPressed { buttonFlags |= BUTTON_B }
             if gamepad.buttonX.isPressed { buttonFlags |= BUTTON_X }
-            if gamepad.buttonY.isPressed { buttonFlags |= BUTTON_Y }
 
             if gamepad.leftShoulder.isPressed { buttonFlags |= BUTTON_LEFT_BUMPER }
             if gamepad.rightShoulder.isPressed { buttonFlags |= BUTTON_RIGHT_BUMPER }
@@ -268,7 +270,9 @@ public final class GameControllerManager: @unchecked Sendable {
             let rightStickY = Int16(clamping: Int(gamepad.rightThumbstick.yAxis.value * 32767.0))
 
             let state = ControllerState(
-                buttons: Int32(buttonFlags),
+                // BUTTON_Y is the 0x8000 bit; combine in the unsigned 32-bit domain, then feed the
+                // low 16 bits as the limelight mask (which is an int32 on the wire).
+                buttons: Int32(UInt16(bitPattern: buttonFlags)) | (gamepad.buttonY.isPressed ? BUTTON_Y : 0),
                 leftTrigger: leftTrigger,
                 rightTrigger: rightTrigger,
                 leftStickX: leftStickX,

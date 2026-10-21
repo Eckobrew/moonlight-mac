@@ -206,10 +206,19 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
                     }
                 },
                 onPaste: {
-                    if let text = NSPasteboard.general.string(forType: .string) {
-                        let clean = text.replacingOccurrences(of: "\r\n", with: "\n")
-                        _ = clean.withCString { cStr in
-                            LiSendUtf8TextEvent(cStr, UInt32(strlen(cStr)))
+                    guard let text = NSPasteboard.general.string(forType: .string) else { return }
+                    let clean = text.replacingOccurrences(of: "\r\n", with: "\n")
+                    // LiSendUtf8TextEvent packs the whole string into a single reliable control
+                    // packet and takes its length as UInt32, so truncate oversized pastes instead
+                    // of overflowing the length or the allocator.
+                    let utf8 = Array(clean.utf8.prefix(Self.maxPasteBytes))
+                    guard !utf8.isEmpty else { return }
+                    if utf8.count < clean.utf8.count {
+                        AppLogger.shared.warning("Pasted text truncated to \(Self.maxPasteBytes) bytes", category: "CLIPBOARD")
+                    }
+                    utf8.withUnsafeBufferPointer { buffer in
+                        buffer.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buffer.count) { cStr in
+                            _ = LiSendUtf8TextEvent(cStr, UInt32(buffer.count))
                         }
                     }
                 }
@@ -227,6 +236,10 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     }
 
     private var streamConfigRemotely: Int32 = STREAM_CFG_LOCAL
+
+    /// Upper bound for the in-stream paste shortcut. The control packet holds the text inline, so
+    /// this keeps one paste from allocating a multi-megabyte enet packet.
+    private nonisolated static let maxPasteBytes = 64 * 1024
 
     private func waitForRtspPortReady(host: Host, sessionUrl: String?, timeoutSeconds: Double = 3.0) async {
         var port: UInt16 = 48010

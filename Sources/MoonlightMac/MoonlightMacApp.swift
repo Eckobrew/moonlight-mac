@@ -105,11 +105,13 @@ struct RootContentView: View {
             set: { if !$0 { sessionController.clearError() } }
         )) {
             Button("OK", role: .cancel) {
-                appState.stopActiveStream()
-                sessionController.clearError()
-                if sessionController.isShortcutMode {
-                    exit(0)
+                if sessionController.isShortcutMode || appState.isShortcutLaunch {
+                    // A shortcut launch hid the windows; restore one so the app is reachable.
+                    appState.failShortcutLaunch()
+                } else {
+                    appState.stopActiveStream()
                 }
+                sessionController.clearError()
             }
         } message: {
             if let error = sessionController.sessionError {
