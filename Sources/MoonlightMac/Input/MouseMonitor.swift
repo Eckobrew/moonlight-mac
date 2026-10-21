@@ -190,8 +190,10 @@ public final class MouseMonitor: @unchecked Sendable {
 
     private func handleMouseEvent(_ event: NSEvent) -> NSEvent? {
         if !isCaptured {
-            // Moonlight-Qt behavior: recapture mouse on left click release inside window
-            if event.type == .leftMouseUp && event.window != nil {
+            // Moonlight-Qt behavior: recapture on left click release inside the *stream* window.
+            // The monitors are app-wide, so checking only `event.window != nil` also recaptured on
+            // clicks in other Moonlight windows (e.g. the host grid) and trapped the cursor.
+            if event.type == .leftMouseUp, isStreamWindow(event.window) {
                 isCaptured = true
                 return nil
             }
@@ -297,6 +299,19 @@ public final class MouseMonitor: @unchecked Sendable {
         default:
             return event
         }
+    }
+
+    /// True only for the window that is currently presenting the stream.
+    ///
+    /// During a session the streaming window is the key/main window, so tying recapture to it keeps
+    /// clicks in other Moonlight windows (host grid, settings, sheets) from grabbing the cursor.
+    private func isStreamWindow(_ window: NSWindow?) -> Bool {
+        guard let window = window else { return false }
+        guard let streamWindow = WindowManager.shared.currentWindow else { return false }
+        guard window === streamWindow else { return false }
+
+        // Sheets and panels presented over the stream window are not the stream itself.
+        return !(window is NSPanel) && window.parent == nil
     }
 
     private func buttonForNumber(_ number: Int) -> Int32 {
