@@ -135,6 +135,21 @@ public struct StreamSettings: Codable, Equatable, Sendable {
     public var captureSystemKeys: SystemKeyCaptureMode
     public var keepScreenActive: Bool
 
+    // Mouse scaling
+    public var mouseSensitivityX: Double
+    public var mouseSensitivityY: Double
+    public var mouseSubPixelAccumulation: Bool
+
+    // Audio
+    /// Unique ID (`UID`) of the chosen CoreAudio output device, or nil for the system default.
+    public var audioOutputDeviceUID: String?
+    /// Silence playback while Moonlight is not the focused app.
+    public var muteAudioOnFocusLoss: Bool
+
+    // Keyboard
+    /// Host keyboard layout used to translate non-US key positions.
+    public var keyboardLayout: KeyboardLayout
+
     public init(
         width: Int = 1920,
         height: Int = 1080,
@@ -160,7 +175,13 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         hideUnpairedHosts: Bool = false,
         muteHostAudio: Bool = true,
         captureSystemKeys: SystemKeyCaptureMode = .fullscreenOnly,
-        keepScreenActive: Bool = true
+        keepScreenActive: Bool = true,
+        mouseSensitivityX: Double = 1.0,
+        mouseSensitivityY: Double = 1.0,
+        mouseSubPixelAccumulation: Bool = true,
+        audioOutputDeviceUID: String? = nil,
+        muteAudioOnFocusLoss: Bool = false,
+        keyboardLayout: KeyboardLayout = .us
     ) {
         self.width = width
         self.height = height
@@ -187,6 +208,12 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.muteHostAudio = muteHostAudio
         self.captureSystemKeys = captureSystemKeys
         self.keepScreenActive = keepScreenActive
+        self.mouseSensitivityX = mouseSensitivityX
+        self.mouseSensitivityY = mouseSensitivityY
+        self.mouseSubPixelAccumulation = mouseSubPixelAccumulation
+        self.audioOutputDeviceUID = audioOutputDeviceUID
+        self.muteAudioOnFocusLoss = muteAudioOnFocusLoss
+        self.keyboardLayout = keyboardLayout
     }
 
     enum CodingKeys: String, CodingKey {
@@ -197,6 +224,8 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         case optimizeGameSettings, quitAppOnStop, mouseSensitivity
         case enableRemoteBitrate, remoteBitrateMbps, enableClipboardSync, hideUnpairedHosts
         case muteHostAudio, captureSystemKeys, keepScreenActive
+        case mouseSensitivityX, mouseSensitivityY, mouseSubPixelAccumulation
+        case audioOutputDeviceUID, muteAudioOnFocusLoss, keyboardLayout
     }
 
     public init(from decoder: Decoder) throws {
@@ -226,6 +255,12 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.muteHostAudio = (try? container.decode(Bool.self, forKey: .muteHostAudio)) ?? true
         self.captureSystemKeys = (try? container.decode(SystemKeyCaptureMode.self, forKey: .captureSystemKeys)) ?? .fullscreenOnly
         self.keepScreenActive = (try? container.decode(Bool.self, forKey: .keepScreenActive)) ?? true
+        self.mouseSensitivityX = (try? container.decode(Double.self, forKey: .mouseSensitivityX)) ?? 1.0
+        self.mouseSensitivityY = (try? container.decode(Double.self, forKey: .mouseSensitivityY)) ?? 1.0
+        self.mouseSubPixelAccumulation = (try? container.decode(Bool.self, forKey: .mouseSubPixelAccumulation)) ?? true
+        self.audioOutputDeviceUID = try? container.decode(String.self, forKey: .audioOutputDeviceUID)
+        self.muteAudioOnFocusLoss = (try? container.decode(Bool.self, forKey: .muteAudioOnFocusLoss)) ?? false
+        self.keyboardLayout = (try? container.decode(KeyboardLayout.self, forKey: .keyboardLayout)) ?? .us
     }
 }
 

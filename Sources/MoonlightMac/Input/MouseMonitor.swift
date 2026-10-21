@@ -15,6 +15,16 @@ public final class MouseMonitor: @unchecked Sendable {
     public var onCaptureStateChanged: (() -> Void)?
 
     public var sensitivity: Double = 1.0
+    /// Independent horizontal multiplier. Applied on top of `sensitivity`, matching
+    /// moonlight-qt's per-axis scaling (useful for aspect ratio and preference corrections).
+    public var sensitivityX: Double = 1.0
+    /// Independent vertical multiplier, applied on top of `sensitivity`.
+    public var sensitivityY: Double = 1.0
+
+    /// When true, non-integer deltas accumulate across events (no movement is dropped).
+    /// When false, each event is rounded independently, which matches moonlight-qt's default
+    /// behavior for mice that already report whole-pixel deltas.
+    public var useSubPixelAccumulation: Bool = true
 
     private var localMonitor: Any?
     private var isMonitoring = false
@@ -213,10 +223,21 @@ public final class MouseMonitor: @unchecked Sendable {
             var deltaX = Double(event.deltaX)
             var deltaY = Double(event.deltaY)
 
-            // Apply sensitivity scaling if configured
-            if sensitivity != 1.0 {
-                deltaX *= sensitivity
-                deltaY *= sensitivity
+            // Apply per-axis scaling on top of the global sensitivity.
+            let scaleX = sensitivity * sensitivityX
+            let scaleY = sensitivity * sensitivityY
+            if scaleX != 1.0 { deltaX *= scaleX }
+            if scaleY != 1.0 { deltaY *= scaleY }
+
+            if !useSubPixelAccumulation {
+                let stepX = Int16(clamping: Int(deltaX.rounded()))
+                let stepY = Int16(clamping: Int(deltaY.rounded()))
+                if stepX != 0 || stepY != 0 {
+                    inputQueue.async {
+                        LiSendMouseMoveEvent(stepX, stepY)
+                    }
+                }
+                return nil
             }
 
             // Sub-pixel fractional accumulator: accumulates micro-movements across events

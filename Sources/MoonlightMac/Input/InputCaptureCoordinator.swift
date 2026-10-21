@@ -22,7 +22,11 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
     public func startCapturing(
         captureMouse: Bool = true,
         mouseSensitivity: Double = 1.0,
+        mouseSensitivityX: Double = 1.0,
+        mouseSensitivityY: Double = 1.0,
+        mouseSubPixelAccumulation: Bool = true,
         swapWinAltKeys: Bool = true,
+        keyboardLayout: KeyboardLayout = .us,
         systemKeyCaptureMode: SystemKeyCaptureMode = .off,
         onQuit: @escaping @Sendable () -> Void,
         onToggleMouseCapture: (@Sendable () -> Void)? = nil,
@@ -36,6 +40,7 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         self.systemKeyCaptureMode = systemKeyCaptureMode
 
         keyboardMonitor.swapWinAltKeys = swapWinAltKeys
+        keyboardMonitor.keyboardLayout = keyboardLayout
         keyboardMonitor.onQuitRequested = onQuit
         keyboardMonitor.onToggleMouseCaptureRequested = onToggleMouseCapture
         keyboardMonitor.onToggleFullscreenRequested = onToggleFullscreen
@@ -46,6 +51,9 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         keyboardMonitor.start()
 
         mouseMonitor.sensitivity = mouseSensitivity
+        mouseMonitor.sensitivityX = mouseSensitivityX
+        mouseMonitor.sensitivityY = mouseSensitivityY
+        mouseMonitor.useSubPixelAccumulation = mouseSubPixelAccumulation
         mouseMonitor.onCaptureStateChanged = { [weak self] in
             self?.updateKeyboardGrabState()
         }
