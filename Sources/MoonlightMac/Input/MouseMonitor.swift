@@ -22,19 +22,25 @@ public final class MouseMonitor: @unchecked Sendable {
     private var fractionalX: Double = 0.0
     private var fractionalY: Double = 0.0
     private var isCursorHidden: Bool = false
+    /// Process-global coalescing flag we changed in `start()`, restored in `stop()`.
+    private var previousCoalescingState: Bool?
 
     private var appResignObserver: NSObjectProtocol?
     private var appBecomeActiveObserver: NSObjectProtocol?
     private var spaceObserver: NSObjectProtocol?
 
-    /// Dedicated high-priority serial queue for Limelight network socket I/O (matches moonlight-macos-enhanced)
-    private let inputQueue = DispatchQueue(label: "com.moonlight.input", qos: .userInteractive)
+    /// Dedicated high-priority serial queue for Limelight network socket I/O (matches moonlight-macos-enhanced).
+    /// Shared with `KeyboardMonitor` so all `LiSend*` calls are serialized on one queue.
+    private let inputQueue: DispatchQueue
 
-    public init() {}
+    public init(inputQueue: DispatchQueue = DispatchQueue(label: "com.moonlight.input", qos: .userInteractive)) {
+        self.inputQueue = inputQueue
+    }
 
     public func start() {
         guard !isMonitoring else { return }
         isMonitoring = true
+        previousCoalescingState = NSEvent.isMouseCoalescingEnabled
 
         let mask: NSEvent.EventTypeMask = [
             .mouseMoved,
@@ -98,7 +104,11 @@ public final class MouseMonitor: @unchecked Sendable {
         if isCaptured {
             isCaptured = false
         }
-        NSEvent.isMouseCoalescingEnabled = true
+        // Only restore the global flag if this monitor is the one that changed it.
+        if let previous = previousCoalescingState {
+            NSEvent.isMouseCoalescingEnabled = previous
+            previousCoalescingState = nil
+        }
         if let monitor = localMonitor {
             NSEvent.removeMonitor(monitor)
             localMonitor = nil

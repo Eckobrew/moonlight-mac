@@ -12,6 +12,11 @@ public final class KeyboardMonitor: @unchecked Sendable {
     public var onMinimizeRequested: (@Sendable () -> Void)?
     public var onPasteRequested: (@Sendable () -> Void)?
 
+    /// Serial queue shared with `MouseMonitor` for Limelight input writes. All `LiSend*` calls take
+    /// the same control-stream mutex inside moonlight-common-c, so they must be sent from one queue:
+    /// sending them on the main thread made AppKit event dispatch block behind mouse packets.
+    private let inputQueue: DispatchQueue
+
     private var localMonitor: Any?
     private var appResignObserver: NSObjectProtocol?
     private var isMonitoring = false
@@ -19,7 +24,9 @@ public final class KeyboardMonitor: @unchecked Sendable {
     private let KEY_ACTION_DOWN: CChar = 0x03
     private let KEY_ACTION_UP: CChar = 0x04
 
-    public init() {}
+    public init(inputQueue: DispatchQueue = DispatchQueue(label: "com.moonlight.input", qos: .userInteractive)) {
+        self.inputQueue = inputQueue
+    }
 
     public func start() {
         guard !isMonitoring else { return }
@@ -149,11 +156,11 @@ public final class KeyboardMonitor: @unchecked Sendable {
         switch event.type {
         case .keyDown:
             keysDown.insert(vkCode)
-            LiSendKeyboardEvent(vkCode, KEY_ACTION_DOWN, modifiers)
+            sendKey(vkCode, KEY_ACTION_DOWN, modifiers)
             return nil // consume event
         case .keyUp:
             keysDown.remove(vkCode)
-            LiSendKeyboardEvent(vkCode, KEY_ACTION_UP, modifiers)
+            sendKey(vkCode, KEY_ACTION_UP, modifiers)
             return nil
         case .flagsChanged:
             // Determine press/release of this specific (left or right) modifier key
@@ -163,10 +170,16 @@ public final class KeyboardMonitor: @unchecked Sendable {
             } else {
                 keysDown.remove(vkCode)
             }
-            LiSendKeyboardEvent(vkCode, isDown ? KEY_ACTION_DOWN : KEY_ACTION_UP, modifiers)
+            sendKey(vkCode, isDown ? KEY_ACTION_DOWN : KEY_ACTION_UP, modifiers)
             return nil
         default:
             return event
+        }
+    }
+
+    private func sendKey(_ vkCode: Int16, _ action: CChar, _ modifiers: CChar) {
+        inputQueue.async {
+            LiSendKeyboardEvent(vkCode, action, modifiers)
         }
     }
 
@@ -186,22 +199,33 @@ public final class KeyboardMonitor: @unchecked Sendable {
         return CChar(truncatingIfNeeded: mods)
     }
 
-    /// Releases every key we've pressed on the host (matches moonlight-qt raiseAllKeys)
+    /// Releases every key we've pressed on the host (matches moonlight-qt raiseAllKeys).
+    /// Synchronous so the releases are ordered after any queued keyDown.
     public func raiseAllKeys() {
-        for vk in keysDown {
-            LiSendKeyboardEvent(vk, KEY_ACTION_UP, 0)
-        }
+        let keys = keysDown
         keysDown.removeAll()
+        guard !keys.isEmpty else { return }
+        inputQueue.sync {
+            for vk in keys {
+                LiSendKeyboardEvent(vk, self.KEY_ACTION_UP, 0)
+            }
+        }
     }
 
     /// Releases modifier keys on the host to avoid sticky keys when special combos are consumed
     private func raiseModifierKeys() {
-        raiseAllKeys()
-        for vk in [KeycodeMappings.VK_LCONTROL, KeycodeMappings.VK_RCONTROL,
-                   KeycodeMappings.VK_LMENU, KeycodeMappings.VK_RMENU,
-                   KeycodeMappings.VK_LSHIFT, KeycodeMappings.VK_RSHIFT,
-                   KeycodeMappings.VK_LWIN, KeycodeMappings.VK_RWIN] {
-            LiSendKeyboardEvent(vk, KEY_ACTION_UP, 0)
+        let keys = keysDown
+        keysDown.removeAll()
+        inputQueue.sync {
+            for vk in keys {
+                LiSendKeyboardEvent(vk, self.KEY_ACTION_UP, 0)
+            }
+            for vk in [KeycodeMappings.VK_LCONTROL, KeycodeMappings.VK_RCONTROL,
+                       KeycodeMappings.VK_LMENU, KeycodeMappings.VK_RMENU,
+                       KeycodeMappings.VK_LSHIFT, KeycodeMappings.VK_RSHIFT,
+                       KeycodeMappings.VK_LWIN, KeycodeMappings.VK_RWIN] {
+                LiSendKeyboardEvent(vk, self.KEY_ACTION_UP, 0)
+            }
         }
     }
 

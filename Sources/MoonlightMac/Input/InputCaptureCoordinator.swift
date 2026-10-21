@@ -5,15 +5,19 @@ import AppKit
 public final class InputCaptureCoordinator: @unchecked Sendable {
     public static let shared = InputCaptureCoordinator()
 
-    public let keyboardMonitor = KeyboardMonitor()
-    public let mouseMonitor = MouseMonitor()
+    private let inputQueue = DispatchQueue(label: "com.moonlight.input", qos: .userInteractive)
+    public let keyboardMonitor: KeyboardMonitor
+    public let mouseMonitor: MouseMonitor
     public let gameControllerManager = GameControllerManager.shared
 
     private var systemKeyCaptureMode: SystemKeyCaptureMode = .off
     private var isActive = false
     private var observers: [NSObjectProtocol] = []
 
-    private init() {}
+    private init() {
+        keyboardMonitor = KeyboardMonitor(inputQueue: inputQueue)
+        mouseMonitor = MouseMonitor(inputQueue: inputQueue)
+    }
 
     public func startCapturing(
         captureMouse: Bool = true,

@@ -239,7 +239,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         let deadline = start.addingTimeInterval(timeoutSeconds)
 
         while Date() < deadline {
-            if canConnectToTcpPort(address: address, port: port) {
+            if TCPProbe.canConnect(address: address, port: port) {
                 let elapsed = String(format: "%.0f", Date().timeIntervalSince(start) * 1000)
                 AppLogger.shared.info("RTSP port \(port) is ready on \(address) (waited \(elapsed)ms)", category: "SESSION")
                 return
@@ -250,37 +250,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     }
 
     private func canConnectToTcpPort(address: String, port: UInt16) -> Bool {
-        var hints = addrinfo()
-        hints.ai_family = AF_UNSPEC
-        hints.ai_socktype = SOCK_STREAM
-        hints.ai_protocol = IPPROTO_TCP
-
-        var res: UnsafeMutablePointer<addrinfo>?
-        guard getaddrinfo(address, String(port), &hints, &res) == 0, let res = res else {
-            return false
-        }
-        defer { freeaddrinfo(res) }
-
-        let sock = socket(res.pointee.ai_family, res.pointee.ai_socktype, res.pointee.ai_protocol)
-        if sock < 0 { return false }
-        defer { close(sock) }
-
-        let flags = fcntl(sock, F_GETFL, 0)
-        _ = fcntl(sock, F_SETFL, flags | O_NONBLOCK)
-
-        let ret = connect(sock, res.pointee.ai_addr, res.pointee.ai_addrlen)
-        if ret == 0 { return true }
-        if errno == EINPROGRESS {
-            var pfd = pollfd(fd: sock, events: Int16(POLLOUT), revents: 0)
-            let pollRet = poll(&pfd, 1, 200)
-            if pollRet > 0 {
-                var err: Int32 = 0
-                var len = socklen_t(MemoryLayout<Int32>.size)
-                getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &len)
-                return err == 0
-            }
-        }
-        return false
+        TCPProbe.canConnect(address: address, port: port)
     }
 
     private func startLimelightConnection(
@@ -482,34 +452,50 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
         metricsTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self = self else { return }
-
-                let snap = self.metricsAccumulator.snapshot(currentFps: self.metrics.currentFps)
-
-                var estimatedRtt: UInt32 = 0
-                var estimatedRttVar: UInt32 = 0
-                if LiGetEstimatedRttInfo(&estimatedRtt, &estimatedRttVar) {
-                    self.metrics.roundTripTimeMs = Double(estimatedRtt)
-                }
-
-                self.metrics.currentFps = snap.fps
-                self.metrics.decodeTimeMs = snap.decodeTime
-                self.metrics.totalFramesRendered = snap.rendered
-                self.metrics.totalFramesReceived = snap.received
-                self.metrics.totalFramesDropped = snap.dropped
-                self.metrics.networkDroppedFrames = snap.netDropped
-
-                if let settings = self.activeSettings {
-                    self.metrics.targetFps = settings.fps
-                    let isRemote = (self.streamConfigRemotely == STREAM_CFG_REMOTE)
-                    let activeBitrate = (isRemote && settings.enableRemoteBitrate) ? settings.remoteBitrateMbps : settings.bitrateMbps
-                    self.metrics.bitrateMbps = Double(activeBitrate)
-                    self.metrics.resolution = "\(settings.width)x\(settings.height)"
-                    self.metrics.vsyncEnabled = settings.enableVsync
-                    self.metrics.pacingEnabled = settings.enableFramePacing
-                }
+                self?.updateMetricsIfNeeded()
             }
         }
+    }
+
+    /// Samples the accumulator and publishes a single `metrics` update.
+    ///
+    /// Assigning a whole struct once means SwiftUI sees one change per tick instead of the eight
+    /// separate `@Published` sends the previous per-field assignment produced.
+    private func updateMetricsIfNeeded() {
+        // With the HUD hidden nothing reads these numbers, so avoid invalidating the view tree.
+        guard showPerformanceOverlay else {
+            metricsAccumulator.resetFpsWindow()
+            return
+        }
+
+        let snap = metricsAccumulator.snapshot(currentFps: metrics.currentFps)
+
+        var estimatedRtt: UInt32 = 0
+        var estimatedRttVar: UInt32 = 0
+        if LiGetEstimatedRttInfo(&estimatedRtt, &estimatedRttVar) {
+            metrics.roundTripTimeMs = Double(estimatedRtt)
+        }
+
+        var updated = metrics
+        updated.currentFps = snap.fps
+        updated.decodeTimeMs = snap.decodeTime
+        updated.totalFramesRendered = snap.rendered
+        updated.totalFramesReceived = snap.received
+        updated.totalFramesDropped = snap.dropped
+        updated.networkDroppedFrames = snap.netDropped
+
+        if let settings = activeSettings {
+            updated.targetFps = settings.fps
+            let isRemote = (streamConfigRemotely == STREAM_CFG_REMOTE)
+            let activeBitrate = (isRemote && settings.enableRemoteBitrate) ? settings.remoteBitrateMbps : settings.bitrateMbps
+            updated.bitrateMbps = Double(activeBitrate)
+            updated.resolution = "\(settings.width)x\(settings.height)"
+            updated.vsyncEnabled = settings.enableVsync
+            updated.pacingEnabled = settings.enableFramePacing
+            updated.currentCodec = settings.codec.rawValue
+        }
+
+        metrics = updated
     }
 
     private func stopMetricsPolling() {
@@ -699,6 +685,15 @@ private final class StreamMetricsAccumulator: @unchecked Sendable {
         networkDropped = 0
         lastFpsSampleTime = CACurrentMediaTime()
         lastFpsFrameCount = 0
+        lock.unlock()
+    }
+
+    /// Moves the FPS sampling window forward without producing a snapshot (used while the HUD is hidden
+    /// so re-enabling it does not report a spike averaged over the entire hidden period).
+    func resetFpsWindow() {
+        lock.lock()
+        lastFpsSampleTime = CACurrentMediaTime()
+        lastFpsFrameCount = framesRendered
         lock.unlock()
     }
 }

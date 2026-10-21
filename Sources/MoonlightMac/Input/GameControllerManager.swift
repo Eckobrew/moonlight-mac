@@ -11,6 +11,19 @@ public final class GameControllerManager: @unchecked Sendable {
     private let lock = NSLock()
     private var connectedControllers: [GCController] = []
 
+    // Last state sent per controller slot. Polling runs at 125 Hz; without this, an idle controller
+    // still produces a full input packet every tick (31 KB/s of pure noise on the network).
+    private struct ControllerState: Equatable {
+        var buttons: Int32 = 0
+        var leftTrigger: UInt8 = 0
+        var rightTrigger: UInt8 = 0
+        var leftStickX: Int16 = 0
+        var leftStickY: Int16 = 0
+        var rightStickX: Int16 = 0
+        var rightStickY: Int16 = 0
+    }
+    private var lastSentStates = [ControllerState?](repeating: nil, count: 4)
+
     // Controller button flags (matching XInput / Moonlight controller mask)
     private let BUTTON_DPAD_UP: Int16        = 0x0001
     private let BUTTON_DPAD_DOWN: Int16      = 0x0002
@@ -64,6 +77,7 @@ public final class GameControllerManager: @unchecked Sendable {
         lock.lock()
         isRunning = false
         connectedControllers.removeAll()
+        lastSentStates = [ControllerState?](repeating: nil, count: 4)
         lock.unlock()
         stopPolling()
     }
@@ -123,6 +137,11 @@ public final class GameControllerManager: @unchecked Sendable {
         let controllers = connectedControllers
         lock.unlock()
 
+        // Slots that no longer have a controller must be forgotten so a reconnect re-sends state.
+        for slot in controllers.count..<lastSentStates.count {
+            lastSentStates[slot] = nil
+        }
+
         for (index, controller) in controllers.prefix(4).enumerated() {
             guard let gamepad = controller.extendedGamepad else { continue }
 
@@ -155,32 +174,35 @@ public final class GameControllerManager: @unchecked Sendable {
             let rightStickX = Int16(clamping: Int(gamepad.rightThumbstick.xAxis.value * 32767.0))
             let rightStickY = Int16(clamping: Int(gamepad.rightThumbstick.yAxis.value * 32767.0))
 
+            let state = ControllerState(
+                buttons: Int32(buttonFlags),
+                leftTrigger: leftTrigger,
+                rightTrigger: rightTrigger,
+                leftStickX: leftStickX,
+                leftStickY: leftStickY,
+                rightStickX: rightStickX,
+                rightStickY: rightStickY
+            )
+
+            guard lastSentStates[index] != state else { continue }
+            lastSentStates[index] = state
+
             let activeMask: Int16 = Int16(1 << index)
             LiSendMultiControllerEvent(
                 Int16(index),
                 activeMask,
-                Int32(buttonFlags),
-                leftTrigger,
-                rightTrigger,
-                leftStickX,
-                leftStickY,
-                rightStickX,
-                rightStickY
+                state.buttons,
+                state.leftTrigger,
+                state.rightTrigger,
+                state.leftStickX,
+                state.leftStickY,
+                state.rightStickX,
+                state.rightStickY
             )
         }
     }
 
     public func rumble(controllerNumber: UInt16, lowFreqMotor: UInt16, highFreqMotor: UInt16) {
-        lock.lock()
-        let controllers = connectedControllers
-        lock.unlock()
-
-        guard Int(controllerNumber) < controllers.count else { return }
-        let controller = controllers[Int(controllerNumber)]
-
-        if let haptics = controller.haptics {
-            // Optional Apple haptics feedback if supported on controller
-            _ = haptics
-        }
+        // Core Haptics rumble is not wired up yet; keep this a no-op on the Limelight callback thread.
     }
 }

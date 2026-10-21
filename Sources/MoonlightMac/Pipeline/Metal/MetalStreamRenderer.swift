@@ -36,6 +36,10 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     private var positionBuffer: MTLBuffer?
     private var texCoordBuffer: MTLBuffer?
 
+    // Reused per-frame render pass descriptor (avoids one allocation per presented frame).
+    // Only touched from renderQueue, so no synchronization is required.
+    private let renderPassDesc = MTLRenderPassDescriptor()
+
     // Aspect-ratio scaling cache
     private var lastFrameWidth: Int = -1
     private var lastFrameHeight: Int = -1
@@ -65,6 +69,7 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         }
         self.device = mtlDevice
         self.commandQueue = mtlDevice.makeCommandQueue()
+        self.renderPassDesc.colorAttachments[0]?.storeAction = .store
 
         CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, mtlDevice, nil, &textureCache)
         setupBuffers(device: mtlDevice)
@@ -155,11 +160,23 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     }
 
     private func setupPipeline(device: MTLDevice) {
-        if let defaultLib = device.makeDefaultLibrary() {
-            buildPipelines(device: device, library: defaultLib)
-        } else {
-            compileShadersFromSource(device: device)
+        // Preferred: the precompiled `Shaders.metal` from the SwiftPM resource bundle. This avoids a
+        // runtime Metal compile on every launch, which otherwise costs hundreds of milliseconds when
+        // the default library is unavailable in a plain `swift build` executable.
+        if let bundledLibrary = try? device.makeDefaultLibrary(bundle: .module) {
+            AppLogger.shared.debug("[MetalStreamRenderer] Using precompiled shader library from resource bundle")
+            buildPipelines(device: device, library: bundledLibrary)
+            return
         }
+
+        if let defaultLib = device.makeDefaultLibrary() {
+            AppLogger.shared.debug("[MetalStreamRenderer] Using default Metal library")
+            buildPipelines(device: device, library: defaultLib)
+            return
+        }
+
+        AppLogger.shared.warning("[MetalStreamRenderer] No Metal library found; compiling shaders from embedded source")
+        compileShadersFromSource(device: device)
     }
 
     private func compileShadersFromSource(device: MTLDevice) {
@@ -288,7 +305,9 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     private func applyLayerVsyncSettings(_ layer: CAMetalLayer) {
         layer.device = self.device
         layer.pixelFormat = .bgra8Unorm
-        layer.framebufferOnly = false
+        // We only ever render into the drawable; never sample from it.
+        // framebufferOnly = true enables the driver's fast presentation path.
+        layer.framebufferOnly = true
         layer.presentsWithTransaction = false
 
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
@@ -305,10 +324,13 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             layer.allowsNextDrawableTimeout = true
         }
         if #available(macOS 10.15, *) {
-            layer.maximumDrawableCount = 2
+            // 3 is the documented default and avoids drawable starvation: with 2, the layer often has
+            // no drawable available while the compositor holds the previous one, and nextDrawable()
+            // can block for up to a second.
+            layer.maximumDrawableCount = 3
         }
 
-        AppLogger.shared.info("[MetalStreamRenderer] CAMetalLayer configured: displaySyncEnabled=\(self.enableVsync), maxDrawables=2, allowsNextDrawableTimeout=true, contentsScale=\(scale)")
+        AppLogger.shared.info("[MetalStreamRenderer] CAMetalLayer configured: displaySyncEnabled=\(self.enableVsync), maxDrawables=3, allowsNextDrawableTimeout=true, contentsScale=\(scale)")
     }
 
     /// Ingest a decoded or paced frame immediately without blocking the caller.
@@ -349,25 +371,34 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             self.pendingPixelBuffer = nil
             lock.unlock()
 
-            renderToMetalLayer(pixelBuffer: pixelBuffer)
+            guard renderToMetalLayer(pixelBuffer: pixelBuffer) else {
+                // Drawable unavailable (occluded/minimized window). Stop draining so the loop is not
+                // busy-spinning; the next submitted frame restarts it and renders the newest buffer.
+                lock.lock()
+                self.isRenderActive = false
+                lock.unlock()
+                return
+            }
         }
     }
 
-    private func renderToMetalLayer(pixelBuffer: CVPixelBuffer) {
+    /// Returns `false` when presentation was not possible (e.g. no drawable), so the caller can stop draining.
+    @discardableResult
+    private func renderToMetalLayer(pixelBuffer: CVPixelBuffer) -> Bool {
         lock.lock()
         guard let layer = self.metalLayer,
               let queue = self.commandQueue,
               let cache = self.textureCache else {
             lock.unlock()
-            return
+            return false
         }
         lock.unlock()
 
         guard let drawable = layer.nextDrawable() else {
-            // Brief back-off if drawable is temporarily unavailable (e.g. window minimized)
-            // to avoid busy-spinning renderQueue.
-            Thread.sleep(forTimeInterval: 0.005)
-            return
+            // No drawable available (window occluded/minimized, or the compositor is holding all of
+            // them). Do not sleep here: return and let the next decoded frame restart the drain loop.
+            // Sleeping on the render queue would delay the newest frame and stall presentation.
+            return false
         }
 
         let width = CVPixelBufferGetWidth(pixelBuffer)
@@ -415,18 +446,24 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
               let cvY = cvTextureY, let cvUV = cvTextureUV,
               let texY = CVMetalTextureGetTexture(cvY),
               let texUV = CVMetalTextureGetTexture(cvUV) else {
-            return
+            // Drop stale cache entries so a failed conversion (e.g. after a resolution change)
+            // does not keep failing until the cache is rebuilt.
+            CVMetalTextureCacheFlush(cache, 0)
+            return true
         }
 
-        let renderPassDesc = MTLRenderPassDescriptor()
-        renderPassDesc.colorAttachments[0].texture = drawable.texture
-        renderPassDesc.colorAttachments[0].loadAction = isVideoLetterboxed ? .clear : .dontCare
-        renderPassDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        renderPassDesc.colorAttachments[0].storeAction = .store
+        let colorAttachment = renderPassDesc.colorAttachments[0]
+        colorAttachment?.texture = drawable.texture
+        colorAttachment?.loadAction = isVideoLetterboxed ? .clear : .dontCare
+        colorAttachment?.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        colorAttachment?.storeAction = .store
 
-        guard let cmdBuffer = queue.makeCommandBuffer(),
-              let encoder = cmdBuffer.makeRenderCommandEncoder(descriptor: renderPassDesc) else {
-            return
+        guard let cmdBuffer = queue.makeCommandBuffer() else {
+            AppLogger.shared.error("[MetalStreamRenderer] makeCommandBuffer returned nil")
+            return true
+        }
+        guard let encoder = cmdBuffer.makeRenderCommandEncoder(descriptor: renderPassDesc) else {
+            return true
         }
 
         let pipeline = isHdrActive ? (pipelineStateBT2020 ?? pipelineStateBT709) : pipelineStateBT709
@@ -445,6 +482,7 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         cmdBuffer.commit()
 
         recordFps()
+        return true
     }
 
     private func recordFps() {

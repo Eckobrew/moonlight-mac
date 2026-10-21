@@ -5,10 +5,18 @@ import Copus
 import MoonlightCommonC
 import QuartzCore
 
+/// Planar float ring buffer shared between the network/Opus decode thread (writer) and the
+/// CoreAudio render thread (reader).
+///
+/// All channel planes live in a single allocation so a wrapped write/read is at most two
+/// `memcpy`s per channel instead of a per-element modulo + bounds-checked loop. This keeps the
+/// lock hold time low enough that the real-time audio callback never blocks long enough to
+/// underrun.
 final class AudioRingBuffer: @unchecked Sendable {
     let channels: Int
     let capacity: Int
-    private var channelData: [UnsafeMutablePointer<Float>]
+
+    private let storage: UnsafeMutablePointer<Float>
     private var writeHead: Int = 0
     private var readHead: Int = 0
     private let lock = NSLock()
@@ -16,18 +24,18 @@ final class AudioRingBuffer: @unchecked Sendable {
     init(channels: Int, capacity: Int = 48000) {
         self.channels = channels
         self.capacity = capacity
-        self.channelData = (0..<channels).map { _ in
-            let ptr = UnsafeMutablePointer<Float>.allocate(capacity: capacity)
-            ptr.initialize(repeating: 0, count: capacity)
-            return ptr
-        }
+        self.storage = UnsafeMutablePointer<Float>.allocate(capacity: channels * capacity)
+        self.storage.initialize(repeating: 0, count: channels * capacity)
     }
 
     deinit {
-        for ptr in channelData {
-            ptr.deinitialize(count: capacity)
-            ptr.deallocate()
-        }
+        storage.deinitialize(count: channels * capacity)
+        storage.deallocate()
+    }
+
+    /// Base pointer of one channel plane.
+    private func plane(_ channel: Int) -> UnsafeMutablePointer<Float> {
+        storage + channel * capacity
     }
 
     func reset() {
@@ -42,21 +50,49 @@ final class AudioRingBuffer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        let chCount = channels
-        for f in 0..<frames {
-            let writePos = (writeHead + f) % capacity
-            let frameOffset = f * chCount
-            for ch in 0..<chCount {
-                channelData[ch][writePos] = interleaved[frameOffset + ch]
+        // Never write more than one full buffer; keeping the newest tail of the packet.
+        let framesToWrite = min(frames, capacity)
+        let source = interleaved + (frames - framesToWrite) * channels
+        let firstChunk = min(framesToWrite, capacity - writeHead)
+        let secondChunk = framesToWrite - firstChunk
+
+        for ch in 0..<channels {
+            let dest = plane(ch)
+            if secondChunk == 0 {
+                // Contiguous: de-interleave directly into the plane.
+                var src = source + ch
+                var dst = dest + writeHead
+                for _ in 0..<framesToWrite {
+                    dst.pointee = src.pointee
+                    src += channels
+                    dst += 1
+                }
+            } else {
+                var src = source + ch
+                var dst = dest + writeHead
+                for _ in 0..<firstChunk {
+                    dst.pointee = src.pointee
+                    src += channels
+                    dst += 1
+                }
+                dst = dest
+                for _ in 0..<secondChunk {
+                    dst.pointee = src.pointee
+                    src += channels
+                    dst += 1
+                }
             }
         }
-        writeHead = (writeHead + frames) % capacity
 
-        // Low-latency buffer clamp: if accumulated buffer exceeds 50ms (2400 frames at 48kHz), drain excess
+        writeHead += framesToWrite
+        if writeHead >= capacity { writeHead -= capacity }
+
+        // Low-latency buffer clamp: if accumulated buffer exceeds 50ms (2400 frames at 48kHz), drop the oldest audio
         let available = (writeHead >= readHead) ? (writeHead - readHead) : (capacity - readHead + writeHead)
         let maxAllowed = 2400
         if available > maxAllowed {
-            readHead = (writeHead - maxAllowed + capacity) % capacity
+            readHead = writeHead - maxAllowed
+            if readHead < 0 { readHead += capacity }
         }
     }
 
@@ -70,24 +106,26 @@ final class AudioRingBuffer: @unchecked Sendable {
         }
 
         let framesToRead = min(available, frames)
-        let chCount = channels
+        let firstChunk = min(framesToRead, capacity - readHead)
+        let secondChunk = framesToRead - firstChunk
         let bufferListPtr = UnsafeMutableAudioBufferListPointer(bufferList)
 
-        for ch in 0..<min(chCount, bufferListPtr.count) {
+        for ch in 0..<min(channels, bufferListPtr.count) {
             guard let dest = bufferListPtr[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
-            for f in 0..<framesToRead {
-                let readPos = (readHead + f) % capacity
-                dest[f] = channelData[ch][readPos]
+            let source = plane(ch)
+
+            dest.update(from: source + readHead, count: firstChunk)
+            if secondChunk > 0 {
+                (dest + firstChunk).update(from: source, count: secondChunk)
             }
             if framesToRead < frames {
                 // Zero out remaining frames in underrun
-                for f in framesToRead..<frames {
-                    dest[f] = 0
-                }
+                (dest + framesToRead).initialize(repeating: 0, count: frames - framesToRead)
             }
         }
 
-        readHead = (readHead + framesToRead) % capacity
+        readHead += framesToRead
+        if readHead >= capacity { readHead -= capacity }
         return true
     }
 }

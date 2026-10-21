@@ -30,13 +30,29 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
     private let lock = NSLock()
     private var lastFrameNumber: Int32 = 0
 
+    // Reusable decode contexts handed to VideoToolbox via frameRefcon, so each decoded frame does not
+    // allocate a class instance. Slots are drawn from a circular pool sized well above the number of
+    // frames VideoToolbox can hold in flight. The submission time is only read by the output callback
+    // and the callback for a forwards-ordered frame stream always resolves before the slot wraps.
+    private static let decodeContextPoolSize = 64
+    private let decodeContexts: UnsafeMutablePointer<DecodeContext>
+    private var nextDecodeContextSlot = 0
+
     // Held for a whole decode submission and by teardownSession. The stream
     // library calls teardownSession / stop before joining the thread that submits frames,
     // so this lock ensures no frame is inside VideoToolbox when the session is invalidated.
     private let submitLock = NSRecursiveLock()
     private var isStopped = false
 
-    public init() {}
+    public init() {
+        decodeContexts = UnsafeMutablePointer<DecodeContext>.allocate(capacity: Self.decodeContextPoolSize)
+        decodeContexts.initialize(repeating: DecodeContext(), count: Self.decodeContextPoolSize)
+    }
+
+    deinit {
+        decodeContexts.deinitialize(count: Self.decodeContextPoolSize)
+        decodeContexts.deallocate()
+    }
 
     public func setup(videoFormat: Int32, width: Int32, height: Int32) -> Int32 {
         submitLock.lock()
@@ -141,8 +157,10 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
             return DR_OK
         }
 
-        // If IDR or format description not yet created, build format description
-        if formatDescription == nil || du.frameType == FRAME_TYPE_IDR || hasNewParamSets {
+        // If the format description is missing, or this decode unit carried new parameter sets,
+        // (re)build it. An IDR without new SPS/PPS is compatible with the existing description, so
+        // there is no need to rebuild it on every keyframe.
+        if formatDescription == nil || hasNewParamSets {
             if let newDesc = createFormatDescription() {
                 if !updateDecompressionSession(with: newDesc) {
                     free(rawData)
@@ -270,11 +288,14 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
             }
         }
 
-        let context = DecodeContext(
-            presentationTimeUs: du.presentationTimeUs,
-            frameNumber: Int(du.frameNumber),
-            submissionTime: CACurrentMediaTime()
-        )
+        let context = decodeContexts + nextDecodeContextSlot
+        nextDecodeContextSlot += 1
+        if nextDecodeContextSlot >= Self.decodeContextPoolSize {
+            nextDecodeContextSlot = 0
+        }
+        context.pointee.presentationTimeUs = du.presentationTimeUs
+        context.pointee.frameNumber = Int(du.frameNumber)
+        context.pointee.submissionTime = CACurrentMediaTime()
 
         let flags: VTDecodeFrameFlags = [._EnableAsynchronousDecompression, ._1xRealTimePlayback]
         var infoFlagsOut: VTDecodeInfoFlags = []
@@ -283,7 +304,7 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
             session,
             sampleBuffer: sample,
             flags: flags,
-            frameRefcon: Unmanaged.passRetained(context).toOpaque(),
+            frameRefcon: UnsafeMutableRawPointer(context),
             infoFlagsOut: &infoFlagsOut
         )
 
@@ -499,15 +520,9 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
 }
 
 private final class DecodeContext {
-    let presentationTimeUs: UInt64
-    let frameNumber: Int
-    let submissionTime: TimeInterval
-
-    init(presentationTimeUs: UInt64, frameNumber: Int, submissionTime: TimeInterval) {
-        self.presentationTimeUs = presentationTimeUs
-        self.frameNumber = frameNumber
-        self.submissionTime = submissionTime
-    }
+    var presentationTimeUs: UInt64 = 0
+    var frameNumber: Int = 0
+    var submissionTime: TimeInterval = 0
 }
 
 private func decompressionOutputCallback(
@@ -523,9 +538,16 @@ private func decompressionOutputCallback(
     var decodeTimeMs: Double = 0.0
 
     if let frameRef = sourceFrameRefCon {
-        let context = Unmanaged<DecodeContext>.fromOpaque(frameRef).takeRetainedValue()
-        presentationTimeUs = context.presentationTimeUs
-        decodeTimeMs = (CACurrentMediaTime() - context.submissionTime) * 1000.0
+        // Successful frames resolve their own slot immediately. Error frames can resolve late, after the
+        // ring slot may already have been handed to a newer frame, so they fall back to the
+        // presentation timestamp VideoToolbox reported.
+        if status == noErr {
+            let context = frameRef.assumingMemoryBound(to: DecodeContext.self).pointee
+            presentationTimeUs = context.presentationTimeUs
+            decodeTimeMs = (CACurrentMediaTime() - context.submissionTime) * 1000.0
+        } else if presentationTimeStamp.isNumeric {
+            presentationTimeUs = UInt64(max(0, presentationTimeStamp.seconds * 1_000_000))
+        }
     }
 
     guard let refCon = decompressionOutputRefCon else { return }

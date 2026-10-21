@@ -16,14 +16,21 @@ public struct LogEntry: Identifiable, Sendable, Hashable {
     public let message: String
 
     public var formattedTimestamp: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
-        return formatter.string(from: timestamp)
+        LogEntry.formatter.string(from: timestamp)
     }
 
     public var logLine: String {
         "[\(formattedTimestamp)] [\(category)] [\(level.rawValue)] \(message)"
     }
+
+    // One shared formatter instead of allocating a DateFormatter per access. The log viewer renders up
+    // to 500 rows twice a second, and `DateFormatter` construction is comparatively expensive.
+    // DateFormatter is thread-safe for `string(from:)` on macOS 10.9+.
+    private static let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        return formatter
+    }()
 }
 
 public final class AppLogger: @unchecked Sendable {
@@ -87,7 +94,6 @@ public final class AppLogger: @unchecked Sendable {
 
             if let data = (line + "\n").data(using: .utf8) {
                 self.fileHandle?.write(data)
-                try? self.fileHandle?.synchronize()
             }
         }
     }

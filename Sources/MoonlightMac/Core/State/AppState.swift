@@ -33,6 +33,9 @@ public final class AppState: @unchecked Sendable {
     private let hostsKey = "com.moonlight.mac.savedHosts"
     private let settingsKey = "com.moonlight.mac.savedSettings"
 
+    /// Last array written to `UserDefaults`, used to skip no-op saves during periodic refreshes.
+    private var lastPersistedHosts: [Host] = []
+
     public init() {
         StreamSessionController.shared.onSessionStopped = { [weak self] in
             Task { @MainActor in
@@ -85,13 +88,24 @@ public final class AppState: @unchecked Sendable {
                 restored.status = .offline
                 return restored
             }
+            // Seeding the snapshot prevents the first refresh from rewriting the same data.
+            lastPersistedHosts = hosts
             saveHosts()
         }
     }
 
-    public func saveHosts() {
+    public func saveHosts(ifChanged onlyWhenChanged: Bool = false) {
         // Only persist paired hosts to storage so unpaired or transient PCs are never saved to disk
         let pairedOnly = hosts.filter { $0.isPaired }
+
+        // The UI refreshes hosts every few seconds; most refreshes change nothing. Comparing against
+        // the last persisted snapshot avoids a JSON encode + two cross-process UserDefaults writes
+        // on every single refresh tick.
+        if onlyWhenChanged, pairedOnly == lastPersistedHosts {
+            return
+        }
+        lastPersistedHosts = pairedOnly
+
         if let encoded = try? JSONEncoder().encode(pairedOnly) {
             UserDefaults.sharedApp.set(encoded, forKey: hostsKey)
             UserDefaults.standard.set(encoded, forKey: hostsKey)
@@ -238,7 +252,7 @@ public final class AppState: @unchecked Sendable {
                 }
             }
         }
-        saveHosts()
+        saveHosts(ifChanged: true)
     }
 
     public func loadApps(for host: Host) async {

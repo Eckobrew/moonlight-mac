@@ -16,7 +16,8 @@ public final class MetalStreamView: NSView {
             layer.device = device
         }
         layer.pixelFormat = .bgra8Unorm
-        layer.framebufferOnly = false
+        // Never sampled from, only rendered into: keep the fast presentation path.
+        layer.framebufferOnly = true
         layer.presentsWithTransaction = false
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         layer.contentsScale = scale

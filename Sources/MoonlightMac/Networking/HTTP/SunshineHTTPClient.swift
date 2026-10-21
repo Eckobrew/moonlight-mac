@@ -64,7 +64,13 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         var responseData: Data?
         var isHttps = false
 
-        if httpsPort > 0,
+        // Skip protocols whose port is definitively closed. A sleeping or unreachable host used to cost
+        // a full HTTPS timeout followed by a full HTTP timeout on every refresh tick.
+        let httpsReachable = httpsPort > 0 && TCPProbe.canConnect(address: address, port: UInt16(clamping: httpsPort))
+        let httpReachable = TCPProbe.canConnect(address: address, port: UInt16(clamping: httpPort))
+        guard httpsReachable || httpReachable else { return nil }
+
+        if httpsReachable,
            let httpsUrl = URL(string: "https://\(address):\(httpsPort)/serverinfo?uniqueid=\(uniqueId)") {
             do {
                 var request = URLRequest(url: httpsUrl)
@@ -86,7 +92,7 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
             }
         }
 
-        if responseData == nil,
+        if responseData == nil, httpReachable,
            let httpUrl = URL(string: "http://\(address):\(httpPort)/serverinfo?uniqueid=\(uniqueId)") {
             do {
                 var request = URLRequest(url: httpUrl)
@@ -420,16 +426,25 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         }
     }
 
+    // Compiled once. The old code built two NSRegularExpressions for every parsed response, and
+    // parseAppListXML calls the parser once per <app> block.
+    private static let innerTagRegex = try? NSRegularExpression(pattern: "<([a-zA-Z0-9_-]+)>([^<]*)</\\1>", options: [])
+    private static let attributeRegex = try? NSRegularExpression(pattern: "([a-zA-Z0-9_-]+)=[\"']([^\"']*)[\"']", options: [])
+    private static let appBlockRegex = try? NSRegularExpression(pattern: "(?si)<app>(.*?)</app>", options: [])
+
     public func parseSimpleXML(data: Data) -> [String: String] {
         guard let xmlString = String(data: data, encoding: .utf8) else { return [:] }
+        return parseSimpleXML(xmlString: xmlString)
+    }
+
+    public func parseSimpleXML(xmlString: String) -> [String: String] {
         var result: [String: String] = [:]
+        let nsString = xmlString as NSString
+        let fullRange = NSRange(location: 0, length: nsString.length)
 
         // 1. Match inner tags: <tag>val</tag>
-        let pattern = "<([a-zA-Z0-9_-]+)>([^<]*)</\\1>"
-        if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
-            let nsString = xmlString as NSString
-            let matches = regex.matches(in: xmlString, options: [], range: NSRange(location: 0, length: nsString.length))
-            for match in matches {
+        if let regex = Self.innerTagRegex {
+            for match in regex.matches(in: xmlString, options: [], range: fullRange) {
                 let key = nsString.substring(with: match.range(at: 1))
                 let val = nsString.substring(with: match.range(at: 2))
                 result[key] = val
@@ -437,11 +452,8 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         }
 
         // 2. Match XML attributes: attr="val" or attr='val' (e.g. status_code="200", paired="1")
-        let attrPattern = "([a-zA-Z0-9_-]+)=[\"']([^\"']*)[\"']"
-        if let regex = try? NSRegularExpression(pattern: attrPattern, options: []) {
-            let nsString = xmlString as NSString
-            let matches = regex.matches(in: xmlString, options: [], range: NSRange(location: 0, length: nsString.length))
-            for match in matches {
+        if let regex = Self.attributeRegex {
+            for match in regex.matches(in: xmlString, options: [], range: fullRange) {
                 let key = nsString.substring(with: match.range(at: 1))
                 let val = nsString.substring(with: match.range(at: 2))
                 if result[key] == nil {
@@ -458,15 +470,15 @@ public final class SunshineHTTPClient: NSObject, URLSessionDelegate, @unchecked 
         var apps: [StreamApp] = []
 
         // Match <App>...</App> or <app>...</app> case-insensitively
-        let appBlockPattern = "(?si)<app>(.*?)</app>"
-        guard let appBlockRegex = try? NSRegularExpression(pattern: appBlockPattern, options: []) else { return [] }
+        guard let appBlockRegex = Self.appBlockRegex else { return [] }
 
         let nsString = xmlString as NSString
         let matches = appBlockRegex.matches(in: xmlString, options: [], range: NSRange(location: 0, length: nsString.length))
 
         for match in matches {
+            // Parse the substring directly; the previous version round-tripped it through Data.
             let appContent = nsString.substring(with: match.range(at: 1))
-            let appDict = parseSimpleXML(data: appContent.data(using: .utf8) ?? Data())
+            let appDict = parseSimpleXML(xmlString: appContent)
 
             let rawTitle = appDict["AppTitle"] ?? appDict["apptitle"]
             let rawId = appDict["ID"] ?? appDict["id"]
