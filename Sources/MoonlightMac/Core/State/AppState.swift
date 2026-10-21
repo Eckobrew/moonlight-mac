@@ -23,6 +23,7 @@ public final class AppState: @unchecked Sendable {
 
     // Shortcut / CLI Launch State
     public var isShortcutLaunch: Bool = false
+    public var hasStartedStreaming: Bool = false
     public var cliStreamStatus: String = "Connecting..."
     public var cliStreamError: String? = nil
     public var cliGameTitle: String = ""
@@ -302,6 +303,7 @@ public final class AppState: @unchecked Sendable {
         self.activeHost = host
         self.activeApp = app
         self.isStreaming = true
+        self.hasStartedStreaming = true
         StreamSessionController.shared.isShortcutMode = self.isShortcutLaunch
         Task {
             await StreamSessionController.shared.startSession(host: host, app: app, settings: settings)
@@ -317,6 +319,16 @@ public final class AppState: @unchecked Sendable {
 
     public func cancelShortcutLaunch() {
         self.isStreaming = false
+        for window in NSApp.windows {
+            window.alphaValue = 0
+            if window.styleMask.contains(.fullScreen) {
+                window.toggleFullScreen(nil)
+            }
+            window.orderOut(nil)
+            window.setIsVisible(false)
+        }
+        NSApp.hide(nil)
+
         let host = activeHost ?? hosts.first(where: { $0.name.localizedCaseInsensitiveCompare(cliHostName) == .orderedSame })
         Task {
             if let host = host {

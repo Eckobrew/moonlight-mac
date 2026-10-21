@@ -63,8 +63,10 @@ struct RootContentView: View {
                         appState.stopActiveStream()
                     }
                 )
-            } else if appState.isShortcutLaunch {
+            } else if appState.isShortcutLaunch && !appState.hasStartedStreaming {
                 StreamNegotiationView(appState: appState)
+            } else if appState.isShortcutLaunch {
+                Color.black.ignoresSafeArea()
             } else {
                 NavigationStack {
                     HostGridView(appState: appState)
@@ -73,8 +75,8 @@ struct RootContentView: View {
             }
         }
         .frame(
-            minWidth: appState.isShortcutLaunch && !sessionController.isStreaming ? 460 : 800,
-            minHeight: appState.isShortcutLaunch && !sessionController.isStreaming ? 380 : 550
+            minWidth: appState.isShortcutLaunch && !appState.hasStartedStreaming ? 460 : 800,
+            minHeight: appState.isShortcutLaunch && !appState.hasStartedStreaming ? 380 : 550
         )
         .onAppear {
             NSApplication.shared.setActivationPolicy(.regular)

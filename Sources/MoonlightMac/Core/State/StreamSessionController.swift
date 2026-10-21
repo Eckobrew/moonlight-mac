@@ -343,19 +343,23 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         let isShortcut = isShortcutMode
         let hostToQuit = activeHost
         let shouldQuitHostApp = isShortcut || (activeSettings?.quitAppOnStop == true)
-        let hadError = sessionError != nil
 
-        if isShortcut && !hadError {
+        if isShortcut {
             for window in NSApp.windows {
+                window.alphaValue = 0
+                if window.styleMask.contains(.fullScreen) {
+                    window.toggleFullScreen(nil)
+                }
                 window.orderOut(nil)
                 window.setIsVisible(false)
             }
+            NSApp.hide(nil)
         } else {
             WindowManager.shared.restoreWindowAfterStream()
         }
 
         guard isStreaming else {
-            if isShortcut && !hadError {
+            if isShortcut {
                 exit(0)
             }
             return
@@ -406,11 +410,11 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
                     _ = await group.next()
                 }
 
-                if isShortcut && !hadError {
+                if isShortcut {
                     exit(0)
                 }
             }
-        } else if isShortcut && !hadError {
+        } else if isShortcut {
             exit(0)
         }
     }
