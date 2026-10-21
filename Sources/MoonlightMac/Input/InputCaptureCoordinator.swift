@@ -91,17 +91,25 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         KeyboardGrab.shared.setGrabbed(shouldGrab)
     }
 
+    /// Whether the *stream* window is currently covering the display.
+    ///
+    /// Checked against the window itself rather than the configured window mode: the previous
+    /// implementation returned true whenever `currentMode` was `.fullscreen`/`.fullscreenDesktop`
+    /// (the default), so "In fullscreen" behaved exactly like "Always" even in a windowed stream.
     private func isStreamWindowFullscreen() -> Bool {
-        if let window = WindowManager.shared.currentWindow ?? NSApp.keyWindow,
-           window.styleMask.contains(.fullScreen) {
+        guard let window = WindowManager.shared.currentWindow ?? NSApp.keyWindow else { return false }
+
+        // Native macOS fullscreen Space.
+        if window.styleMask.contains(.fullScreen) {
             return true
         }
-        switch WindowManager.shared.currentMode {
-        case .fullscreen, .fullscreenDesktop:
-            return true
-        default:
-            return false
+
+        // Borderless "Fullscreen" mode covers the display without using a fullscreen Space.
+        if window.styleMask == .borderless, let screen = window.screen {
+            return window.frame.equalTo(screen.frame)
         }
+
+        return false
     }
 
     private func installObservers() {
@@ -116,6 +124,10 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         ]
         for name in names {
             let isResign = (name == NSApplication.didResignActiveNotification)
+            // Fullscreen transitions post these notifications before AppKit finishes updating the
+            // window's style mask and frame, so evaluating synchronously would read stale state.
+            let isFullscreenTransition = (name == NSWindow.didEnterFullScreenNotification ||
+                                          name == NSWindow.didExitFullScreenNotification)
             let obs = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self = self else { return }
@@ -124,7 +136,11 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
                         KeyboardGrab.shared.setGrabbed(false)
                         self.keyboardMonitor.raiseAllKeys()
                     }
-                    self.updateKeyboardGrabState()
+                    if isFullscreenTransition {
+                        DispatchQueue.main.async { self.updateKeyboardGrabState() }
+                    } else {
+                        self.updateKeyboardGrabState()
+                    }
                 }
             }
             observers.append(obs)
