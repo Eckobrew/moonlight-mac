@@ -112,8 +112,6 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
         DisplaySleepManager.shared.start(keepScreenActive: effectiveSettings.keepScreenActive)
 
-        WindowManager.shared.applyStartupWindowMode(effectiveSettings.windowMode)
-
         // Generate 16-byte random key for remote input AES encryption
         let rikey = CryptoUtils.randomBytes(count: 16)
         let rikeyId = UInt32.random(in: 1...UInt32.max)
@@ -157,6 +155,9 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
             let isRemote = await NetworkReachability.isRemoteSession(host: host)
             self.streamConfigRemotely = isRemote ? Int32(STREAM_CFG_REMOTE) : Int32(STREAM_CFG_LOCAL)
+
+            // Probe and wait up to 3s for host RTSP port to accept connections before starting Limelight
+            await waitForRtspPortReady(host: host, sessionUrl: sessionUrl)
 
             startLimelightConnection(
                 host: host,
@@ -226,6 +227,61 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     }
 
     private var streamConfigRemotely: Int32 = STREAM_CFG_LOCAL
+
+    private func waitForRtspPortReady(host: Host, sessionUrl: String?, timeoutSeconds: Double = 3.0) async {
+        var port: UInt16 = 48010
+        if let sUrl = sessionUrl, let url = URL(string: sUrl), let p = url.port {
+            port = UInt16(p)
+        }
+
+        let address = host.effectiveAddress
+        let start = Date()
+        let deadline = start.addingTimeInterval(timeoutSeconds)
+
+        while Date() < deadline {
+            if canConnectToTcpPort(address: address, port: port) {
+                let elapsed = String(format: "%.0f", Date().timeIntervalSince(start) * 1000)
+                AppLogger.shared.info("RTSP port \(port) is ready on \(address) (waited \(elapsed)ms)", category: "SESSION")
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        AppLogger.shared.info("Proceeding to RTSP handshake for \(address):\(port)", category: "SESSION")
+    }
+
+    private func canConnectToTcpPort(address: String, port: UInt16) -> Bool {
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        hints.ai_protocol = IPPROTO_TCP
+
+        var res: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(address, String(port), &hints, &res) == 0, let res = res else {
+            return false
+        }
+        defer { freeaddrinfo(res) }
+
+        let sock = socket(res.pointee.ai_family, res.pointee.ai_socktype, res.pointee.ai_protocol)
+        if sock < 0 { return false }
+        defer { close(sock) }
+
+        let flags = fcntl(sock, F_GETFL, 0)
+        _ = fcntl(sock, F_SETFL, flags | O_NONBLOCK)
+
+        let ret = connect(sock, res.pointee.ai_addr, res.pointee.ai_addrlen)
+        if ret == 0 { return true }
+        if errno == EINPROGRESS {
+            var pfd = pollfd(fd: sock, events: Int16(POLLOUT), revents: 0)
+            let pollRet = poll(&pfd, 1, 200)
+            if pollRet > 0 {
+                var err: Int32 = 0
+                var len = socklen_t(MemoryLayout<Int32>.size)
+                getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &len)
+                return err == 0
+            }
+        }
+        return false
+    }
 
     private func startLimelightConnection(
         host: Host,
@@ -331,9 +387,10 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             }
 
             Task { @MainActor [weak self] in
-                if result != 0 {
-                    self?.sessionError = "Connection failed with code \(result)"
-                    self?.stopSession()
+                guard let self = self else { return }
+                if result != 0 && self.sessionError == nil {
+                    self.sessionError = "Connection failed with code \(result)"
+                    self.stopSession()
                 }
             }
         }
