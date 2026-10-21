@@ -5,7 +5,7 @@
 Works seamlessly with **[Sunshine](https://github.com/LizardByte/Sunshine)**, **[Apollo](https://github.com/ClassicOldSong/Apollo)**, and NVIDIA GameStream.
 
 > [!NOTE]
-> Native macOS app built from the ground up using Swift, SwiftUI, Metal, VideoToolbox, and AVFoundation.
+> Native macOS app built from the ground up using Swift, SwiftUI, Metal, VideoToolbox, and AVFoundation using AI by a monkey with no clue what he's doing or how to effectively prompt a AI
 
 ---
 
