@@ -42,6 +42,15 @@ public struct SettingsView: View {
     public let onSave: () -> Void
 
     @State private var selectedTab: SettingsTab = .video
+    @State private var audioDevices: [AudioOutputDevice] = AudioOutputDevices.available()
+
+    /// Bridges the optional device UID to a `Picker` tag (“” = system default).
+    private var audioOutputBinding: Binding<String> {
+        Binding(
+            get: { settings.audioOutputDeviceUID ?? "" },
+            set: { settings.audioOutputDeviceUID = $0.isEmpty ? nil : $0 }
+        )
+    }
 
     private var nativeResolutionLabel: String {
         let (w, h) = DisplayManager.getNativeResolution()
@@ -307,8 +316,30 @@ public struct SettingsView: View {
 
                 Divider()
 
+                Picker("Output device:", selection: audioOutputBinding) {
+                    Text("System Default").tag("")
+                    ForEach(audioDevices) { device in
+                        Text(device.name).tag(device.id)
+                    }
+                }
+                HStack(spacing: 8) {
+                    Text("Devices are listed as reported by CoreAudio.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Refresh") { audioDevices = AudioOutputDevices.available() }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                }
+
+                Divider()
+
                 Toggle("Mute host PC speakers while streaming", isOn: $settings.muteHostAudio)
                 Text("Mutes physical sound on the host computer while streaming to this Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Mute my Mac when Moonlight is in the background", isOn: $settings.muteAudioOnFocusLoss)
+                Text("Silences streaming audio whenever another app is focused, and restores it on return.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -338,12 +369,60 @@ public struct SettingsView: View {
                 Text("Scales hardware mouse movement sent to the host PC.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Divider()
+
+                HStack {
+                    Text("Horizontal scaling:")
+                    Slider(value: $settings.mouseSensitivityX, in: 0.25...3.0, step: 0.05)
+                    Text(String(format: "%.2fx", settings.mouseSensitivityX))
+                        .monospacedDigit()
+                        .frame(width: 45, alignment: .trailing)
+                }
+                HStack {
+                    Text("Vertical scaling:")
+                    Slider(value: $settings.mouseSensitivityY, in: 0.25...3.0, step: 0.05)
+                    Text(String(format: "%.2fx", settings.mouseSensitivityY))
+                        .monospacedDigit()
+                        .frame(width: 45, alignment: .trailing)
+                }
+                Text("Per-axis multipliers, applied on top of the global sensitivity.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Accumulate sub-pixel movement", isOn: $settings.mouseSubPixelAccumulation)
+                Text("When off, each mouse event is rounded independently, matching hosts that expect whole-pixel deltas.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(8)
+        }
+
+        GroupBox("Game Controllers") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("DS4 and DualSense touchpad and motion data are forwarded automatically when the host requests them.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Rumble is delivered through Core Haptics. Controllers must be connected before streaming begins.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .padding(8)
         }
 
         GroupBox("Keyboard Shortcuts & Layout") {
             VStack(alignment: .leading, spacing: 14) {
+                Picker("Host keyboard layout:", selection: $settings.keyboardLayout) {
+                    ForEach(KeyboardLayout.allCases, id: \.self) { layout in
+                        Text(layout.rawValue).tag(layout)
+                    }
+                }
+                Text(settings.keyboardLayout.explanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Divider()
+
                 Picker("Capture system keyboard shortcuts:", selection: $settings.captureSystemKeys) {
                     ForEach(SystemKeyCaptureMode.allCases, id: \.self) { mode in
                         Text(mode.rawValue).tag(mode)
