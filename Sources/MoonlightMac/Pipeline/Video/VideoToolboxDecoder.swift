@@ -44,6 +44,12 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
     private let submitLock = NSRecursiveLock()
     private var isStopped = false
 
+    /// Set when VideoToolbox reports an asynchronous decode error. The next submission rebuilds the
+    /// decompression session and asks the host for a keyframe: an error frame means the reference
+    /// picture chain is broken, so every subsequent inter frame would decode as garbage.
+    private let recoveryLock = NSLock()
+    private var needsRecovery = false
+
     public init() {
         decodeContexts = UnsafeMutablePointer<DecodeContext>.allocate(capacity: Self.decodeContextPoolSize)
         decodeContexts.initialize(repeating: DecodeContext(), count: Self.decodeContextPoolSize)
@@ -66,6 +72,9 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         self.vpsData = nil
         self.lastFrameNumber = 0
         self.isStopped = false
+        recoveryLock.lock()
+        needsRecovery = false
+        recoveryLock.unlock()
         teardownDecompressionSession()
         formatDescription = nil
         lock.lock()
@@ -101,6 +110,23 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         guard !isStopped else { return DR_OK }
 
         let du = decodeUnit.pointee
+
+        // Recover from an asynchronous decode failure reported by VideoToolbox.
+        if consumeRecoveryRequest() {
+            AppLogger.shared.warning("Decoder recovering: rebuilding session and requesting IDR after a decode error")
+            teardownDecompressionSession()
+            formatDescription = nil
+            lock.lock()
+            lastDecodedPixelBuffer = nil
+            lock.unlock()
+
+            // The current unit cannot be trusted as a reference frame boundary.
+            if du.frameType != FRAME_TYPE_IDR {
+                delegate?.decoderDidDropFrame(frameNumber: Int(du.frameNumber))
+                lastFrameNumber = du.frameNumber
+                return DR_NEED_IDR
+            }
+        }
 
         // Detect missing network frames
         if lastFrameNumber != 0 && du.frameNumber > lastFrameNumber + 1 {
@@ -321,6 +347,22 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         lock.lock()
         lastDecodedPixelBuffer = buffer
         lock.unlock()
+    }
+
+    /// Called from the VideoToolbox output callback when a frame fails to decode.
+    /// The callback runs on a VideoToolbox thread, so this only raises a flag.
+    fileprivate func signalAsyncDecodeFailure() {
+        recoveryLock.lock()
+        needsRecovery = true
+        recoveryLock.unlock()
+    }
+
+    private func consumeRecoveryRequest() -> Bool {
+        recoveryLock.lock()
+        defer { recoveryLock.unlock() }
+        let pending = needsRecovery
+        needsRecovery = false
+        return pending
     }
 
     public func getLastDecodedBuffer() -> CVPixelBuffer? {
@@ -568,6 +610,10 @@ private func decompressionOutputCallback(
         decoder.delegate?.decoderDidOutputPixelBuffer(pixelBuffer, presentationTimeUs: presentationTimeUs, decodeTimeMs: decodeTimeMs)
     } else {
         AppLogger.shared.warning("VT decompression output error: \(status)")
+        // Asynchronous failure: the reference chain is broken. Flag the decoder so the next
+        // submission rebuilds the session and returns DR_NEED_IDR, which makes the stream
+        // library request a fresh keyframe from the host.
+        decoder.signalAsyncDecodeFailure()
         if let fallback = decoder.getLastDecodedBuffer() {
             decoder.delegate?.decoderDidOutputPixelBuffer(fallback, presentationTimeUs: presentationTimeUs, decodeTimeMs: decodeTimeMs)
         } else {
