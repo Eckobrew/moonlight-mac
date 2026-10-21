@@ -198,7 +198,7 @@ public final class GameShortcutManager {
         // Set Finder custom icon via NSWorkspace
         NSWorkspace.shared.setIcon(image, forFile: bundleUrl.path, options: [])
 
-        // 3. Launch script
+        // 3. Launch script and internal binary symlinks
         let moonlightBin: String
         let mainExec = Bundle.main.executablePath ?? ""
         if mainExec.contains("Moonlight.app") || mainExec.contains("MoonlightMac") {
@@ -206,6 +206,17 @@ public final class GameShortcutManager {
         } else {
             moonlightBin = "/Applications/Moonlight.app/Contents/MacOS/MoonlightMac"
         }
+
+        // Create internal symlinks so the shortcut bundle runs as its own independent bundle process
+        let binSymlink = macOsDir.appendingPathComponent("MoonlightMac")
+        try? FileManager.default.removeItem(at: binSymlink)
+        try? FileManager.default.createSymbolicLink(at: binSymlink, withDestinationURL: URL(fileURLWithPath: moonlightBin))
+
+        let appResources = URL(fileURLWithPath: moonlightBin).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/MoonlightMac_MoonlightMac.bundle")
+        let bundleSymlink = resourcesDir.appendingPathComponent("MoonlightMac_MoonlightMac.bundle")
+        try? FileManager.default.removeItem(at: bundleSymlink)
+        try? FileManager.default.createSymbolicLink(at: bundleSymlink, withDestinationURL: appResources)
+
         let escapedHost = host.name
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
@@ -225,6 +236,10 @@ public final class GameShortcutManager {
             ICON="$DIR/../Resources/app.icns"
         fi
 
+        if [ -x "$DIR/MoonlightMac" ]; then
+            exec "$DIR/MoonlightMac" stream "\(escapedHost)" "\(escapedApp)" --icon "$ICON"
+        fi
+
         MOONLIGHT_BIN="\(moonlightBin)"
         if [ ! -x "$MOONLIGHT_BIN" ]; then
             MOONLIGHT_BIN="/Applications/Moonlight.app/Contents/MacOS/MoonlightMac"
@@ -236,11 +251,7 @@ public final class GameShortcutManager {
             MOONLIGHT_BIN="$HOME/Applications/Moonlight.app/Contents/MacOS/MoonlightMac"
         fi
 
-        if [ -x "$MOONLIGHT_BIN" ]; then
-            exec "$MOONLIGHT_BIN" stream "\(escapedHost)" "\(escapedApp)" --icon "$ICON"
-        else
-            open -a Moonlight --args stream "\(escapedHost)" "\(escapedApp)" --icon "$ICON"
-        fi
+        exec "$MOONLIGHT_BIN" stream "\(escapedHost)" "\(escapedApp)" --icon "$ICON"
         """
 
         let launchUrl = macOsDir.appendingPathComponent("launch")

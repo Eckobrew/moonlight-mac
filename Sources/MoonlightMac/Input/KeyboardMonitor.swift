@@ -63,6 +63,12 @@ public final class KeyboardMonitor: @unchecked Sendable {
                 case 0x0C, 0x0E, 0x35: // Q, E, or Esc: Quit / Disconnect stream
                     raiseModifierKeys()
                     DispatchQueue.main.async { [weak self] in
+                        if StreamSessionController.shared.isShortcutMode {
+                            for window in NSApp.windows {
+                                window.orderOut(nil)
+                                window.setIsVisible(false)
+                            }
+                        }
                         self?.onQuitRequested?()
                     }
                     return nil

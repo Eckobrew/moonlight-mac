@@ -339,10 +339,17 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     }
 
     public func stopSession() {
-        WindowManager.shared.restoreWindowAfterStream()
+        let isShortcut = isShortcutMode
+        if isShortcut {
+            for window in NSApp.windows {
+                window.orderOut(nil)
+                window.setIsVisible(false)
+            }
+        } else {
+            WindowManager.shared.restoreWindowAfterStream()
+        }
 
         let hostToQuit = activeHost
-        let isShortcut = isShortcutMode
         let shouldQuitHostApp = isShortcut || (activeSettings?.quitAppOnStop == true)
         let hadError = sessionError != nil
 
@@ -385,8 +392,8 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
         // 5. Request host to terminate app if in shortcut mode or quitAppOnStop is enabled
         if let host = hostToQuit, shouldQuitHostApp {
-            Task {
-                AppLogger.shared.info("Quitting game on host (shortcutMode: \(isShortcut))", category: "SESSION")
+            Task.detached(priority: .userInitiated) {
+                AppLogger.shared.info("Quitting game on host in background (shortcutMode: \(isShortcut))", category: "SESSION")
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask {
                         try? await SunshineHTTPClient.shared.quitApp(host: host)
@@ -398,15 +405,11 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
                 }
 
                 if isShortcut && !hadError {
-                    await MainActor.run {
-                        exit(0)
-                    }
+                    exit(0)
                 }
             }
         } else if isShortcut && !hadError {
-            Task { @MainActor in
-                exit(0)
-            }
+            exit(0)
         }
     }
 

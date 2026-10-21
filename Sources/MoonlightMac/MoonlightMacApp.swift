@@ -16,7 +16,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = StreamSessionController.shared
         if (controller.isShortcutMode || controller.activeSettings?.quitAppOnStop == true),
            let host = controller.activeHost {
-            Task {
+            for window in sender.windows {
+                window.orderOut(nil)
+                window.setIsVisible(false)
+            }
+            Task.detached(priority: .userInitiated) {
                 AppLogger.shared.info("Application terminating: requesting host to quit app...", category: "SESSION")
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask {
@@ -27,9 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     _ = await group.next()
                 }
-                await MainActor.run {
-                    sender.reply(toApplicationShouldTerminate: true)
-                }
+                exit(0)
             }
             return .terminateLater
         }
