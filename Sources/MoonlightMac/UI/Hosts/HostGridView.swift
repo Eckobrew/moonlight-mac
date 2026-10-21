@@ -17,6 +17,7 @@ public struct HostGridView: View {
                 AppGridView(
                     host: selectedHost,
                     apps: appState.appsForSelectedHost,
+                    globalSettings: appState.settings,
                     onLaunchApp: { app in
                         appState.launchStream(host: selectedHost, app: app)
                     },

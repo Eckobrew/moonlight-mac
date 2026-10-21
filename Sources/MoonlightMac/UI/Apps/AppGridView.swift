@@ -3,6 +3,8 @@ import SwiftUI
 public struct AppGridView: View {
     public let host: Host
     public let apps: [StreamApp]
+    /// Global settings, forwarded to each card for per-app overrides.
+    public var globalSettings: StreamSettings = StreamSettings()
     public let onLaunchApp: (StreamApp) -> Void
     public let onQuitCurrentApp: () -> Void
     public let onBack: () -> Void
@@ -15,6 +17,7 @@ public struct AppGridView: View {
     public init(
         host: Host,
         apps: [StreamApp],
+        globalSettings: StreamSettings = StreamSettings(),
         onLaunchApp: @escaping (StreamApp) -> Void,
         onQuitCurrentApp: @escaping () -> Void,
         onBack: @escaping () -> Void,
@@ -22,6 +25,7 @@ public struct AppGridView: View {
     ) {
         self.host = host
         self.apps = apps
+        self.globalSettings = globalSettings
         self.onLaunchApp = onLaunchApp
         self.onQuitCurrentApp = onQuitCurrentApp
         self.onBack = onBack
@@ -85,22 +89,24 @@ public struct AppGridView: View {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 24) {
                         ForEach(apps) { app in
-                            AppCardView(
-                                host: host,
-                                app: app,
-                                isStreaming: host.currentAppId == app.id,
-                                onLaunch: {
-                                    onLaunchApp(app)
-                                },
-                                onStop: {
-                                    onQuitCurrentApp()
-                                }
-                            )
+                            appCard(for: app)
                         }
                     }
                     .padding(24)
                 }
             }
         }
+    }
+
+    /// Extracted so the grid body type-checks quickly; the inline closure was too complex.
+    private func appCard(for app: StreamApp) -> some View {
+        AppCardView(
+            host: host,
+            app: app,
+            isStreaming: host.currentAppId == app.id,
+            globalSettings: globalSettings,
+            onLaunch: { onLaunchApp(app) },
+            onStop: { onQuitCurrentApp() }
+        )
     }
 }

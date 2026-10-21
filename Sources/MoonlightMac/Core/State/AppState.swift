@@ -319,8 +319,13 @@ public final class AppState: @unchecked Sendable {
         self.isStreaming = true
         self.hasStartedStreaming = true
         StreamSessionController.shared.isShortcutMode = self.isShortcutLaunch
+
+        // Apply any per-app overrides on top of the global settings.
+        let overrides = PerAppSettingsStore.shared.overrides(for: host, appId: app.id)
+        let effectiveSettings = settings.applying(overrides)
+
         Task {
-            await StreamSessionController.shared.startSession(host: host, app: app, settings: settings)
+            await StreamSessionController.shared.startSession(host: host, app: app, settings: effectiveSettings)
         }
     }
 

@@ -11,17 +11,23 @@ public struct AppCardView: View {
     @State private var boxArtImage: NSImage?
     @State private var isLoading = false
     @State private var showingShortcutSheet = false
+    @State private var showingPerAppSettings = false
+
+    /// Global settings, needed so the per-app sheet can show inherited values.
+    public var globalSettings: StreamSettings = StreamSettings()
 
     public init(
         host: Host,
         app: StreamApp,
         isStreaming: Bool = false,
+        globalSettings: StreamSettings = StreamSettings(),
         onLaunch: @escaping () -> Void,
         onStop: (() -> Void)? = nil
     ) {
         self.host = host
         self.app = app
         self.isStreaming = isStreaming
+        self.globalSettings = globalSettings
         self.onLaunch = onLaunch
         self.onStop = onStop
     }
@@ -136,9 +142,20 @@ public struct AppCardView: View {
             } label: {
                 Label("Create Desktop Shortcut...", systemImage: "arrow.up.forward.app")
             }
+
+            Divider()
+
+            Button {
+                showingPerAppSettings = true
+            } label: {
+                Label("Game Settings...", systemImage: "slider.horizontal.3")
+            }
         }
         .sheet(isPresented: $showingShortcutSheet) {
             ShortcutIconPickerSheet(host: host, app: app, boxArtImage: boxArtImage)
+        }
+        .sheet(isPresented: $showingPerAppSettings) {
+            PerAppSettingsSheet(host: host, app: app, globalSettings: globalSettings)
         }
         .task(id: app.id) {
             isLoading = true
