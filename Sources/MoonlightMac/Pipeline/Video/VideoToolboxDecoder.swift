@@ -33,14 +33,6 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
     private let lock = NSLock()
     private var lastFrameNumber: Int32 = 0
 
-    // Reusable decode contexts handed to VideoToolbox via frameRefcon, so each decoded frame does not
-    // allocate a class instance. Slots are drawn from a circular pool sized well above the number of
-    // frames VideoToolbox can hold in flight. The submission time is only read by the output callback
-    // and the callback for a forwards-ordered frame stream always resolves before the slot wraps.
-    private static let decodeContextPoolSize = 64
-    private let decodeContexts: UnsafeMutablePointer<DecodeContext>
-    private var nextDecodeContextSlot = 0
-
     // Held for a whole decode submission and by teardownSession. The stream
     // library calls teardownSession / stop before joining the thread that submits frames,
     // so this lock ensures no frame is inside VideoToolbox when the session is invalidated.
@@ -53,14 +45,14 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
     private let recoveryLock = NSLock()
     private var needsRecovery = false
 
-    public init() {
-        decodeContexts = UnsafeMutablePointer<DecodeContext>.allocate(capacity: Self.decodeContextPoolSize)
-        decodeContexts.initialize(repeating: DecodeContext(), count: Self.decodeContextPoolSize)
-    }
+    public init() {}
 
     deinit {
-        decodeContexts.deinitialize(count: Self.decodeContextPoolSize)
-        decodeContexts.deallocate()
+        // The frame handlers capture self weakly. Invalidation also cancels any
+        // pending handlers before this decoder's resources disappear.
+        if let session = decompressionSession {
+            VTDecompressionSessionInvalidate(session)
+        }
     }
 
     public func setup(videoFormat: Int32, width: Int32, height: Int32) -> Int32 {
@@ -116,15 +108,11 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         let du = decodeUnit.pointee
 
         // Recover from an asynchronous decode failure reported by VideoToolbox.
+        // Request a fresh IDR keyframe without destroying the VTDecompressionSession: tearing down
+        // the session invalidates in-flight frames (triggering cascading error callbacks) and
+        // stalls the decode thread on a full XPC session recreation.
         if consumeRecoveryRequest() {
-            AppLogger.shared.warning("Decoder recovering: rebuilding session and requesting IDR after a decode error")
-            teardownDecompressionSession()
-            formatDescription = nil
-            lock.lock()
-            lastDecodedPixelBuffer = nil
-            lock.unlock()
-
-            // The current unit cannot be trusted as a reference frame boundary.
+            AppLogger.shared.warning("Decoder recovering: requesting IDR after an async decode error")
             if du.frameType != FRAME_TYPE_IDR {
                 delegate?.decoderDidDropFrame(frameNumber: Int(du.frameNumber))
                 lastFrameNumber = du.frameNumber
@@ -242,54 +230,6 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
             return DR_NEED_IDR
         }
 
-        // Create empty frameBlockBuffer to hold 4-byte length prefixes and references to dataBuffer
-        var frameBlockBuffer: CMBlockBuffer?
-        status = CMBlockBufferCreateEmpty(
-            allocator: kCFAllocatorDefault,
-            capacity: 0,
-            flags: 0,
-            blockBufferOut: &frameBlockBuffer
-        )
-        guard status == noErr, let frameBuffer = frameBlockBuffer else {
-            AppLogger.shared.error("CMBlockBufferCreateEmpty failed: \(status)")
-            return DR_NEED_IDR
-        }
-
-        // Scan rawData for Annex-B NAL unit start codes (00 00 01)
-        var lastNaluOffset: Int = -1
-        let scanLimit = picDataOffset - 3
-        if scanLimit >= 0 {
-            for i in 0...scanLimit {
-                if rawData[i] == 0 && rawData[i+1] == 0 && rawData[i+2] == 1 {
-                    if lastNaluOffset != -1 {
-                        appendNalu(
-                            to: frameBuffer,
-                            from: dataBuffer,
-                            data: rawData,
-                            startOffset: lastNaluOffset,
-                            endOffset: i
-                        )
-                    }
-                    lastNaluOffset = i
-                }
-            }
-        }
-
-        if lastNaluOffset != -1 {
-            appendNalu(
-                to: frameBuffer,
-                from: dataBuffer,
-                data: rawData,
-                startOffset: lastNaluOffset,
-                endOffset: picDataOffset
-            )
-        }
-
-        let totalLength = CMBlockBufferGetDataLength(frameBuffer)
-        guard totalLength > 0 else {
-            return DR_OK
-        }
-
         // Create CMSampleBuffer
         let pts = CMTimeMake(value: Int64(du.rtpTimestamp), timescale: 90000)
         var timing = CMSampleTimingInfo(
@@ -299,17 +239,81 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         )
 
         var sampleBuffer: CMSampleBuffer?
-        status = CMSampleBufferCreateReady(
-            allocator: kCFAllocatorDefault,
-            dataBuffer: frameBuffer,
-            formatDescription: formatDesc,
-            sampleCount: 1,
-            sampleTimingEntryCount: 1,
-            sampleTimingArray: &timing,
-            sampleSizeEntryCount: 0,
-            sampleSizeArray: nil,
-            sampleBufferOut: &sampleBuffer
-        )
+        if isAV1 {
+            // AV1 frames arrive as raw OBU bitstreams (not Annex-B NALUs); wrap dataBuffer directly.
+            var sampleSize = picDataOffset
+            status = CMSampleBufferCreateReady(
+                allocator: kCFAllocatorDefault,
+                dataBuffer: dataBuffer,
+                formatDescription: formatDesc,
+                sampleCount: 1,
+                sampleTimingEntryCount: 1,
+                sampleTimingArray: &timing,
+                sampleSizeEntryCount: 1,
+                sampleSizeArray: &sampleSize,
+                sampleBufferOut: &sampleBuffer
+            )
+        } else {
+            // Create empty frameBlockBuffer to hold 4-byte length prefixes and references to dataBuffer
+            var frameBlockBuffer: CMBlockBuffer?
+            status = CMBlockBufferCreateEmpty(
+                allocator: kCFAllocatorDefault,
+                capacity: 0,
+                flags: 0,
+                blockBufferOut: &frameBlockBuffer
+            )
+            guard status == noErr, let frameBuffer = frameBlockBuffer else {
+                AppLogger.shared.error("CMBlockBufferCreateEmpty failed: \(status)")
+                return DR_NEED_IDR
+            }
+
+            // Scan rawData for Annex-B NAL unit start codes (00 00 01)
+            var lastNaluOffset: Int = -1
+            let scanLimit = picDataOffset - 3
+            if scanLimit >= 0 {
+                for i in 0...scanLimit {
+                    if rawData[i] == 0 && rawData[i+1] == 0 && rawData[i+2] == 1 {
+                        if lastNaluOffset != -1 {
+                            appendNalu(
+                                to: frameBuffer,
+                                from: dataBuffer,
+                                data: rawData,
+                                startOffset: lastNaluOffset,
+                                endOffset: i
+                            )
+                        }
+                        lastNaluOffset = i
+                    }
+                }
+            }
+
+            if lastNaluOffset != -1 {
+                appendNalu(
+                    to: frameBuffer,
+                    from: dataBuffer,
+                    data: rawData,
+                    startOffset: lastNaluOffset,
+                    endOffset: picDataOffset
+                )
+            }
+
+            let totalLength = CMBlockBufferGetDataLength(frameBuffer)
+            guard totalLength > 0 else {
+                return DR_OK
+            }
+
+            status = CMSampleBufferCreateReady(
+                allocator: kCFAllocatorDefault,
+                dataBuffer: frameBuffer,
+                formatDescription: formatDesc,
+                sampleCount: 1,
+                sampleTimingEntryCount: 1,
+                sampleTimingArray: &timing,
+                sampleSizeEntryCount: 0,
+                sampleSizeArray: nil,
+                sampleBufferOut: &sampleBuffer
+            )
+        }
 
         guard status == noErr, let sample = sampleBuffer else {
             AppLogger.shared.error("CMSampleBufferCreateReady failed: \(status)")
@@ -330,28 +334,27 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
             }
         }
 
-        let context = decodeContexts + nextDecodeContextSlot
-        nextDecodeContextSlot += 1
-        if nextDecodeContextSlot >= Self.decodeContextPoolSize {
-            nextDecodeContextSlot = 0
-        }
-        context.pointee.presentationTimeUs = du.presentationTimeUs
-        context.pointee.frameNumber = Int(du.frameNumber)
-        context.pointee.submissionTime = CACurrentMediaTime()
-
+        // The VideoToolbox output handler owns this immutable value for exactly
+        // as long as the decode is in flight. There is no reusable raw refcon to
+        // overwrite when callbacks are delayed or arrive out of order.
+        let context = DecodeContext(presentationTimeUs: du.presentationTimeUs,
+                                    frameNumber: Int(du.frameNumber),
+                                    submissionTime: CACurrentMediaTime())
         let flags: VTDecodeFrameFlags = [._EnableAsynchronousDecompression, ._1xRealTimePlayback]
         var infoFlagsOut: VTDecodeInfoFlags = []
-
         status = VTDecompressionSessionDecodeFrame(
-            session,
-            sampleBuffer: sample,
-            flags: flags,
-            frameRefcon: UnsafeMutableRawPointer(context),
-            infoFlagsOut: &infoFlagsOut
-        )
+            session, sampleBuffer: sample, flags: flags, infoFlagsOut: &infoFlagsOut
+        ) { [weak self] status, infoFlags, imageBuffer, _, _ in
+            self?.handleDecodedFrame(context: context, status: status,
+                                     infoFlags: infoFlags, imageBuffer: imageBuffer)
+        }
 
         if status != noErr {
             AppLogger.shared.error("VTDecompressionSessionDecodeFrame failed: \(status) (frame: \(du.frameNumber))")
+            if status == kVTInvalidSessionErr || status == kVTVideoDecoderMalfunctionErr {
+                teardownDecompressionSession()
+                formatDescription = nil
+            }
             delegate?.decoderDidDropFrame(frameNumber: Int(du.frameNumber))
             return DR_NEED_IDR
         }
@@ -475,35 +478,23 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         teardownDecompressionSession()
 
         let is10Bit = (videoFormat & VIDEO_FORMAT_MASK_10BIT) != 0
-        // 10-bit content is HDR-capable: request full-range 10-bit output so the renderer receives
-        // the complete signal range (the previous video-range-only request silently clipped it).
-        let pixelFormat = is10Bit ? kCVPixelFormatType_420YpCbCr10BiPlanarFullRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        let pixelFormat = is10Bit ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
 
         // Do not constrain width/height here; allow VideoToolbox to output CVPixelBuffers at the
         // full native resolution of the incoming video stream (from the SPS parameter set),
         // preventing unwanted downscaling or blur when the host overrides resolution.
-        var destinationAttributes: [CFString: Any] = [
+        // Note: Do not attach CGColorSpace objects to destinationAttributes, as VTDecompressionSessionCreate
+        // serializes imageBufferAttributes over XPC to VTDecoderXPCService and rejects non-plist CFTypeRefs
+        // with OSStatus -17281.
+        let destinationAttributes: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: pixelFormat,
             kCVPixelBufferMetalCompatibilityKey: true,
             kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary
         ]
 
-        // Tag the buffers so CoreAnimation/CoreVideo interpret the 10-bit plane correctly.
-        // (`kCVPixelBufferCGColorSpaceKey` is not exposed to Swift, so use its documented value.)
-        if is10Bit {
-            destinationAttributes["CVImageBufferCGColorSpaceKey" as CFString] = CGColorSpace(name: CGColorSpace.itur_2020)
-            destinationAttributes[kCVPixelBufferCGImageCompatibilityKey] = false
-            destinationAttributes[kCVPixelBufferCGBitmapContextCompatibilityKey] = false
-        }
-
         let decoderSpecification: [CFString: Any] = [
             kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: true
         ]
-
-        var callbackRecord = VTDecompressionOutputCallbackRecord(
-            decompressionOutputCallback: decompressionOutputCallback,
-            decompressionOutputRefCon: Unmanaged.passUnretained(self).toOpaque()
-        )
 
         var session: VTDecompressionSession?
         let status = VTDecompressionSessionCreate(
@@ -511,7 +502,7 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
             formatDescription: formatDesc,
             decoderSpecification: decoderSpecification as CFDictionary,
             imageBufferAttributes: destinationAttributes as CFDictionary,
-            outputCallback: &callbackRecord,
+            outputCallback: nil,
             decompressionSessionOut: &session
         )
 
@@ -597,53 +588,30 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
     }
 }
 
-private final class DecodeContext {
-    var presentationTimeUs: UInt64 = 0
-    var frameNumber: Int = 0
-    var submissionTime: TimeInterval = 0
+private struct DecodeContext: Sendable {
+    let presentationTimeUs: UInt64
+    let frameNumber: Int
+    let submissionTime: TimeInterval
 }
 
-private func decompressionOutputCallback(
-    decompressionOutputRefCon: UnsafeMutableRawPointer?,
-    sourceFrameRefCon: UnsafeMutableRawPointer?,
-    status: OSStatus,
-    infoFlags: VTDecodeInfoFlags,
-    imageBuffer: CVImageBuffer?,
-    presentationTimeStamp: CMTime,
-    presentationDuration: CMTime
-) {
-    var presentationTimeUs: UInt64 = 0
-    var decodeTimeMs: Double = 0.0
-
-    if let frameRef = sourceFrameRefCon {
-        // Successful frames resolve their own slot immediately. Error frames can resolve late, after the
-        // ring slot may already have been handed to a newer frame, so they fall back to the
-        // presentation timestamp VideoToolbox reported.
-        if status == noErr {
-            let context = frameRef.assumingMemoryBound(to: DecodeContext.self).pointee
-            presentationTimeUs = context.presentationTimeUs
-            decodeTimeMs = (CACurrentMediaTime() - context.submissionTime) * 1000.0
-        } else if presentationTimeStamp.isNumeric {
-            presentationTimeUs = UInt64(max(0, presentationTimeStamp.seconds * 1_000_000))
-        }
-    }
-
-    guard let refCon = decompressionOutputRefCon else { return }
-    let decoder = Unmanaged<VideoToolboxDecoder>.fromOpaque(refCon).takeUnretainedValue()
-
-    if status == noErr, let pixelBuffer = imageBuffer {
-        decoder.storeLastDecodedBuffer(pixelBuffer)
-        decoder.delegate?.decoderDidOutputPixelBuffer(pixelBuffer, presentationTimeUs: presentationTimeUs, decodeTimeMs: decodeTimeMs)
-    } else {
-        AppLogger.shared.warning("VT decompression output error: \(status)")
-        // Asynchronous failure: the reference chain is broken. Flag the decoder so the next
-        // submission rebuilds the session and returns DR_NEED_IDR, which makes the stream
-        // library request a fresh keyframe from the host.
-        decoder.signalAsyncDecodeFailure()
-        if let fallback = decoder.getLastDecodedBuffer() {
-            decoder.delegate?.decoderDidOutputPixelBuffer(fallback, presentationTimeUs: presentationTimeUs, decodeTimeMs: decodeTimeMs)
+extension VideoToolboxDecoder {
+    private func handleDecodedFrame(context: DecodeContext, status: OSStatus,
+                                    infoFlags: VTDecodeInfoFlags, imageBuffer: CVImageBuffer?) {
+        if status == noErr, let pixelBuffer = imageBuffer {
+            storeLastDecodedBuffer(pixelBuffer)
+            delegate?.decoderDidOutputPixelBuffer(pixelBuffer,
+                                                  presentationTimeUs: context.presentationTimeUs,
+                                                  decodeTimeMs: (CACurrentMediaTime() - context.submissionTime) * 1000)
+        } else if status == noErr && infoFlags.contains(.frameDropped) {
+            delegate?.decoderDidDropFrame(frameNumber: context.frameNumber)
         } else {
-            decoder.delegate?.decoderDidDropFrame(frameNumber: 0)
+            AppLogger.shared.warning("VT decompression output error: \(status)")
+            signalAsyncDecodeFailure()
+            delegate?.decoderDidDropFrame(frameNumber: context.frameNumber)
+            if let fallback = getLastDecodedBuffer() {
+                delegate?.decoderDidOutputPixelBuffer(fallback,
+                                                      presentationTimeUs: context.presentationTimeUs, decodeTimeMs: 0)
+            }
         }
     }
 }
