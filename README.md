@@ -1,118 +1,179 @@
 # Moonlight for macOS
 
-**Moonlight** lets you stream games from your gaming PC directly to your Mac. Play your PC games anywhere on your home network or across the internet with low latency, high frame rates, and crystal-clear image quality.
+A native macOS game-streaming client for PCs running
+[Sunshine](https://github.com/LizardByte/Sunshine) or
+[Apollo](https://github.com/ClassicOldSong/Apollo).
 
-Works seamlessly with **[Sunshine](https://github.com/LizardByte/Sunshine)**, **[Apollo](https://github.com/ClassicOldSong/Apollo)**.
+The app uses SwiftUI and AppKit for its interface and input, VideoToolbox for
+video decoding, Metal or AVSampleBufferDisplayLayer for presentation, and
+AVAudioEngine/CoreAudio for audio. The GameStream protocol is provided by
+[moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c).
+It does not use Qt for its interface.
 
 > [!NOTE]
-> Native macOS app built from the ground up using Swift, SwiftUI, Metal, VideoToolbox, and AVFoundation using AI by a monkey with no clue what he's doing or how to effectively prompt a AI
+> This project is under active development. Automated tests and release-package
+> checks pass locally, but full Moonlight Qt feature parity and end-to-end latency
+> have not been established. HDR, surround audio and controller extras still need
+> validation across real hardware. See the [validation checklist](Docs/HARDWARE_VALIDATION.md).
 
----
+## Features
 
-## Highlights
+- H.264 and HEVC decoding, with AV1 offered when VideoToolbox reports hardware support.
+- Metal and native sample-buffer presentation, configurable V-Sync and frame pacing.
+- Native-display and preset resolutions, configurable frame rates and bitrates,
+  HDR options, and per-game overrides.
+- Stereo, 5.1 and 7.1 audio options, output-device selection and background muting.
+- Keyboard and relative mouse capture, sensitivity controls and game-controller input.
+- Bonjour discovery, manual host entry, Wake-on-LAN and remote-address fallback.
+- PIN pairing with server-signature verification and certificate pinning.
+- Host/game shortcuts, optional clipboard synchronization and a performance HUD.
 
-- **Smooth & Responsive**: Hardware-accelerated video decoding with Apple Metal rendering for lowest possible input lag.
-- **High Refresh Rates**: Supports 60, 90, 120 (Apple ProMotion), 144, and up to 240 FPS.
-- **HDR & Vibrant Color**: 10-bit High Dynamic Range (HDR) color support for HDR-capable displays and MacBooks.
-- **Surround Sound Audio**: Crisp, low-latency audio with support for Stereo, 5.1, and 7.1 surround sound.
-- **Game Controllers**: Plug and play with Xbox, PlayStation, Nintendo Switch, and MFi Bluetooth controllers (with rumble vibration support).
-- **Physical PC Keyboard Layout**: Your Mac keyboard's bottom row automatically matches a real Windows PC keyboard (`[Control]` `[Windows]` `[Alt]`), so game controls and shortcuts like Alt+Tab feel natural.
-- **System Shortcut Capture**: Send ⌘Tab, Mission Control, and other Mac shortcuts straight into your PC game without accidentally switching Mac apps.
+Codec, resolution, frame-rate and HDR availability depend on the Mac, host and
+display. Controller rumble, touchpad and motion support depend on the controller
+and host. Automatic clipboard synchronization requires a compatible host endpoint;
+the paste shortcut sends text through the streaming protocol.
 
----
+## Requirements
 
-## Quick Start Guide
+- An Apple Silicon or Intel Mac running **macOS 14 Sonoma or newer**.
+- A PC running Sunshine or Apollo, reachable from the Mac.
+- **Swift 6 or newer** to build from source, supplied by a compatible Xcode or
+  Xcode Command Line Tools installation.
 
-### 1. Requirements
-- A Mac running **macOS Sonoma (14.0)** or newer (Apple Silicon or Intel).
-- A gaming PC on your network running **Sunshine** (recommended) or Apollo.
+## Build and install
 
-### 2. Pair Your Mac with Your PC
-1. Open **Moonlight** on your Mac.
-2. Your PC will appear automatically in the list. Click on it.
-3. Moonlight will display a 4-digit PIN.
-4. On your PC, open the Sunshine web interface (or click the pairing notification) and type in the 4-digit PIN.
-5. Your PC is now paired! Click any game to start playing.
+```sh
+git clone https://github.com/Eckobrew/moonlight-mac.git
+cd moonlight-mac
+./Scripts/package_app.sh release
+```
 
----
+The script creates **`Products/Moonlight.app`** and checks its executable, plist,
+Metal resources, bundled licenses and signature. Drag the app into `/Applications`,
+or install it from the terminal:
 
-## In-Game Keyboard Shortcuts
+```sh
+cp -R Products/Moonlight.app /Applications/
+```
 
-While streaming a game, hold down **Control + Option + Shift** (`⌃ ⌥ ⇧`) and press any of the following keys:
+Local builds use ad-hoc signing. This does not provide Developer ID notarization.
+For development, use `swift build` or `./Scripts/package_app.sh debug`.
 
-| Shortcut | What It Does |
-| :--- | :--- |
-| **`⌃ ⌥ ⇧ Q`** | **Disconnect** / Quit the streaming session |
-| **`⌃ ⌥ ⇧ Z`** | **Release or Recapture mouse cursor** (free your mouse to use other Mac apps) |
-| **`⌃ ⌥ ⇧ X`** | **Toggle Fullscreen** / Windowed mode |
-| **`⌃ ⌥ ⇧ S`** | **Toggle Performance HUD** (shows live FPS, latency, and packet stats) |
-| **`⌃ ⌥ ⇧ M`** | **Toggle Mouse Mode** |
-| **`⌃ ⌥ ⇧ D`** | **Minimize** streaming window |
-| **`⌃ ⌥ ⇧ V`** | **Paste clipboard text** from your Mac into the host PC |
+## Pair and connect
 
----
+1. Start Sunshine or Apollo on the PC, then open Moonlight on the Mac.
+2. Select the discovered PC, or add its IP address/hostname manually.
+3. Enter Moonlight's four-digit PIN in the host's web interface.
+4. After pairing succeeds, select a game or desktop session.
 
-## Helpful Settings Explained
+Pairing verifies the host's signature and PIN challenge, then confirms the
+connection over HTTPS using that host's certificate. The certificate is saved
+with the PC and checked on later authenticated requests.
 
-Open **Settings** (gear icon) to adjust how your games look and feel:
+**PCs paired with older builds need a one-time re-pair** because those builds did
+not save host certificates. Saved PCs and per-game settings are retained. A
+changed certificate is never accepted automatically. After intentionally
+reinstalling or replacing a host, unpair it and pair again.
 
-### Display & Video
-- **Resolution**: Choose `Native` to automatically match your Mac display's exact sharp resolution, or pick 1080p / 1440p / 4K.
-- **Frame Rate**: Match your monitor's refresh rate (e.g. 120 FPS on MacBook ProMotion displays).
-- **Target Bitrate**: Controls video quality. 25–50 Mbps looks great on local Wi-Fi / Ethernet.
-- **Remote Bitrate**: Automatically lowers the bitrate when connecting over the internet or Tailscale to prevent lag.
-- **V-Sync**: Keeps the picture smooth and prevents horizontal screen tearing.
+Remote connections require a working network route to the host, such as a VPN or
+an appropriately configured host/network. Discovery does not configure remote
+access automatically.
 
-### Audio
-- **Channel Layout**: Choose Stereo or 5.1/7.1 surround sound.
-- **Mute Host PC Speakers**: Silences the physical speakers on your PC while you are streaming to your Mac.
+## Streaming shortcuts
 
-### Keyboard & Mouse
-- **Capture Mouse Pointer Automatically**: Keeps the mouse locked inside the game window so first-person games and camera controls work properly.
-- **Capture System Keyboard Shortcuts**: Sends shortcuts like `⌘ Tab` directly to Windows instead of triggering macOS app switching. Press `⌃ ⌥ ⇧ Z` whenever you want to release the cursor back to your Mac.
-- **Match Physical Windows PC Keyboard Layout**: Enabled by default. Maps your bottom-row keys (`Control`, `Option`, `Command`) to (`Ctrl`, `Windows`, `Alt`), so key positions match a real Windows keyboard.
+Hold **Control + Option + Shift** (`⌃ ⌥ ⇧`) and press:
 
----
+| Key | Action |
+| --- | --- |
+| `Q` | Disconnect |
+| `Z` or `M` | Release or recapture the mouse |
+| `X` | Toggle fullscreen/windowed mode |
+| `S` | Toggle the performance HUD |
+| `D` | Minimize the stream window |
+| `V` | Paste text from the Mac clipboard to the PC |
 
-## Installing and Building
+`M` currently performs the same capture action as `Z`; it does not select a
+separate absolute-mouse mode. Whether disconnecting also quits the host game
+is controlled by the session settings; desktop-shortcut sessions quit it on exit.
 
-### Ready-to-Use App
-Download or package **`Moonlight.app`** and drag it into your **`/Applications`** folder.
+## Settings
 
-### Building from Source (Command Line)
-If you want to compile Moonlight yourself:
+- **Resolution and frame rate:** choose the stream size and requested FPS. `Native`
+  resolves the physical resolution of the Mac's current display at session start.
+- **Bitrate:** set the target stream bitrate. Enabling a custom remote bitrate
+  uses that value for connections classified as remote, including Tailscale; it
+  does not measure bandwidth or automatically tune the value.
+- **Renderer, V-Sync and frame pacing:** select the presentation path and whether
+  to synchronize/pace frames against display refresh. The latency/smoothness
+  tradeoff depends on the setup.
+- **Audio:** select stereo/surround and a Mac output device. Host-speaker muting
+  and muting the Mac stream when another app is focused are separate options.
+- **Mouse capture:** locks the cursor for continuous relative input. Use the
+  release shortcut to return to normal Mac interaction.
+- **System keyboard shortcuts:** choose Off, In fullscreen or Always. Capture also
+  depends on the app being focused and the mouse being captured.
+- **Physical Windows keyboard layout:** when enabled, maps Control → Ctrl,
+  Option → Windows and Command → Alt. Disable it to keep Option → Alt and
+  Command → Windows.
 
-1. Make sure Xcode Command Line Tools are installed:
-   ```bash
-   xcode-select --install
-   ```
-2. Clone this repository:
-   ```bash
-   git clone https://github.com/Eckobrew/moonlight-mac.git
-   cd moonlight-mac
-   ```
-3. Run the packaging script:
-   ```bash
-   ./Scripts/package_app.sh release
-   ```
-4. Copy the app to Applications:
-   ```bash
-   cp -R Products/Moonlight.app /Applications/
-   ```
+Keys follow physical positions using GameStream's normalized Windows virtual-key
+mapping; the PC applies its active keyboard layout. Keypad Enter and right-side
+modifiers carry their extended-key flags. Use clipboard paste when exact text
+characters matter. The previous host-layout selector was removed; its saved
+values remain readable.
 
----
+## Tests and validation
 
-## Acknowledgments & Credits
+```sh
+swift test --jobs 4
+./Scripts/verify_app.sh Products/Moonlight.app
+```
 
-Moonlight for macOS is built upon these open-source projects:
-- **[moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c)** (GPLv3): Core GameStream protocol and packet pipeline.
-- **[moonlight-qt](https://github.com/moonlight-stream/moonlight-qt)** (GPLv3): Architecture reference for sub-pixel cursor handling and keyboard grab behavior.
-- **[moonlight-macos-enhanced](https://github.com/Mariotaku/moonlight-macos-enhanced)** (GPLv3): Reference patterns for native macOS integration.
-- **[libopus](https://opus-codec.org/)**: High-fidelity, low-latency audio codec.
-- **[Sunshine](https://github.com/LizardByte/Sunshine)** & **[Apollo](https://github.com/ClassicOldSong/Apollo)**: GameStream host server software.
+The regression suite covers audio buffering, frame-pacer lifecycle, codec masks,
+TCP fallback, IPv6 URLs, keyboard mapping, certificate/signature checks, legacy
+host migration, redirect rejection and relocated shader resources. Its local TLS
+server checks correct, incorrect and missing certificate pins. Tests use
+`/usr/bin/openssl` and Python 3 and require permission to open localhost sockets.
 
----
+The [macOS CI workflow](.github/workflows/macos.yml) runs tests and release
+packaging. The latest local validation passed **25 tests** and built and verified
+an optimized, ad-hoc-signed app. CI has not yet been exercised on GitHub.
 
-## License
+See the [project review](Docs/PROJECT_REVIEW.md) for implementation details and the
+[hardware checklist](Docs/HARDWARE_VALIDATION.md) for outstanding live-host checks.
+Build success is not a streaming-latency benchmark.
 
-This project is licensed under the **GNU General Public License v3.0** (GPLv3). Bundled Opus components are licensed under the **BSD 3-Clause License**.
+## Developer ID releases
+
+Set `MOONLIGHT_SIGNING_IDENTITY` to an installed Developer ID Application identity.
+To notarize and staple during packaging, also set `MOONLIGHT_NOTARY_PROFILE` to a
+profile previously stored using `xcrun notarytool store-credentials`.
+
+```sh
+MOONLIGHT_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+MOONLIGHT_NOTARY_PROFILE="your-notary-profile" \
+./Scripts/package_app.sh release
+```
+
+Signing/notarization requires the owner's Apple credentials and has not been
+validated here. Credentials are not stored in the repository.
+`MOONLIGHT_BUILD_PATH` optionally selects the SwiftPM build directory, and
+`MOONLIGHT_BUILD_JOBS` controls build parallelism.
+
+Distribute binaries with their matching source revision and build instructions.
+Exact historical imported revisions of some vendored libraries were not recorded;
+future dependency updates should record immutable upstream commits.
+
+## Credits and license
+
+This project uses [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c),
+[ENet](https://github.com/cgutman/enet), [nanors](https://github.com/sleepybishop/nanors)
+and [Opus](https://opus-codec.org/).
+[Moonlight Qt](https://github.com/moonlight-stream/moonlight-qt) and
+[moonlight-macos-enhanced](https://github.com/Mariotaku/moonlight-macos-enhanced)
+provided architecture and native-integration references. Sunshine and Apollo
+provide the host software.
+
+MoonlightMac is licensed under [GPLv3](LICENSE). Bundled dependencies retain their
+own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md). Packaging includes
+the license texts in `Contents/Resources/Licenses`.
