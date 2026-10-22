@@ -10,6 +10,13 @@ public final class StreamSessionEngine: @unchecked Sendable {
     public let videoDecoder = VideoToolboxDecoder()
     public let audioEngine = AudioPlaybackEngine.shared
 
+    private let callbackLock = NSLock()
+    private var callbackGenerationStorage: UInt64 = 0
+    fileprivate var callbackGeneration: UInt64 {
+        get { callbackLock.withLock { callbackGenerationStorage } }
+        set { callbackLock.withLock { callbackGenerationStorage = newValue } }
+    }
+
     private init() {}
 }
 
@@ -38,13 +45,15 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     public let inputCoordinator = InputCaptureCoordinator.shared
 
     private var streamTask: Task<Void, Never>?
+    private var stoppingTask: Task<Void, Never>?
+    private var sessionGeneration: UInt64 = 0
     private var metricsTimer: Timer?
 
     private let metricsAccumulator = StreamMetricsAccumulator()
 
     public private(set) var activeHost: Host?
     public var isShortcutMode: Bool = false
-    public var onSessionStopped: (() -> Void)?
+    public var onSessionStopped: (@MainActor () -> Void)?
     private var activeApp: StreamApp?
     public private(set) var activeSettings: StreamSettings?
     private var latencyActivityToken: NSObjectProtocol?
@@ -53,12 +62,18 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         StreamSessionEngine.shared.videoDecoder.delegate = self
     }
 
+    fileprivate func acceptsCallback(generation: UInt64) -> Bool {
+        isStreaming && sessionGeneration == generation
+    }
+
     public func updateStage(stage: Int, name: String) {
+        guard isStreaming else { return }
         self.currentStage = stage
         self.currentStageName = name
     }
 
     public func markConnected() {
+        guard isStreaming else { return }
         self.currentStageName = "Connected"
         if let settings = activeSettings {
             WindowManager.shared.applyStartupWindowMode(settings.windowMode)
@@ -66,11 +81,13 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     }
 
     public func handleStageFailed(stage: Int, code: Int) {
+        guard isStreaming else { return }
         self.sessionError = "Stage \(stage) failed (code \(code))"
         self.stopSession()
     }
 
     public func handleTerminated(code: Int) {
+        guard isStreaming else { return }
         self.sessionError = code == 0 ? nil : "Connection terminated (Error \(code))"
         self.stopSession()
     }
@@ -81,6 +98,13 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
     public func startSession(host: Host, app: StreamApp, settings: StreamSettings) async {
         guard !isStreaming else { return }
+        // moonlight-common-c has process-global connection state. Finish the previous
+        // teardown before another startup can touch it.
+        let requestGeneration = sessionGeneration
+        await stoppingTask?.value
+        guard !isStreaming, sessionGeneration == requestGeneration, !Task.isCancelled else { return }
+        sessionGeneration &+= 1
+        let generation = sessionGeneration
 
         // Request real-time scheduler priority from Darwin kernel and disable App Nap / system sleep throttling
         self.latencyActivityToken = ProcessInfo.processInfo.beginActivity(
@@ -136,6 +160,9 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
                 )
             }
 
+            guard isStreaming, sessionGeneration == generation else { return }
+            try Task.checkCancellation()
+
             MetalStreamRenderer.shared.enableVsync = effectiveSettings.enableVsync
             MetalStreamRenderer.shared.isHdrActive = effectiveSettings.enableHdr
 
@@ -160,11 +187,15 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             }
 
             let isRemote = await NetworkReachability.isRemoteSession(host: host)
+            guard isStreaming, sessionGeneration == generation else { return }
+            try Task.checkCancellation()
             self.streamConfigRemotely = isRemote ? Int32(STREAM_CFG_REMOTE) : Int32(STREAM_CFG_LOCAL)
 
             // Probe and wait up to 3s for host RTSP port to accept connections before starting Limelight
             await waitForRtspPortReady(host: host, sessionUrl: sessionUrl)
 
+            guard isStreaming, sessionGeneration == generation else { return }
+            try Task.checkCancellation()
             startLimelightConnection(
                 host: host,
                 sessionUrl: sessionUrl,
@@ -240,6 +271,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             }
 
         } catch {
+            guard sessionGeneration == generation, isStreaming else { return }
             self.sessionError = error.localizedDescription
             self.stopSession()
         }
@@ -253,16 +285,22 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
     private func waitForRtspPortReady(host: Host, sessionUrl: String?, timeoutSeconds: Double = 3.0) async {
         var port: UInt16 = 48010
-        if let sUrl = sessionUrl, let url = URL(string: sUrl), let p = url.port {
-            port = UInt16(p)
+        if let sUrl = sessionUrl, let url = URL(string: sUrl), let p = url.port, let validPort = UInt16(exactly: p), validPort > 0 {
+            port = validPort
         }
 
         let address = host.effectiveAddress
+        let generation = sessionGeneration
+        let probePort = port
         let start = Date()
         let deadline = start.addingTimeInterval(timeoutSeconds)
 
         while Date() < deadline {
-            if TCPProbe.canConnect(address: address, port: port) {
+            guard isStreaming, sessionGeneration == generation, !Task.isCancelled else { return }
+            let reachable = await Task.detached(priority: .utility) {
+                TCPProbe.canConnect(address: address, port: probePort)
+            }.value
+            if reachable {
                 let elapsed = String(format: "%.0f", Date().timeIntervalSince(start) * 1000)
                 AppLogger.shared.info("RTSP port \(port) is ready on \(address) (waited \(elapsed)ms)", category: "SESSION")
                 return
@@ -284,7 +322,10 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         rikeyId: UInt32,
         isRemote: Bool
     ) {
+        let generation = sessionGeneration
+        StreamSessionEngine.shared.callbackGeneration = generation
         streamTask = Task.detached(priority: .high) {
+            guard !Task.isCancelled else { return }
             var streamConfig = STREAM_CONFIGURATION()
             LiInitializeStreamConfiguration(&streamConfig)
 
@@ -308,7 +349,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             streamConfig.fps = Int32(settings.fps)
             streamConfig.bitrate = Int32(chosenBitrateMbps * 1000)
             streamConfig.packetSize = Int32(settings.packetSize)
-            streamConfig.supportedVideoFormats = settings.codec.limelightMask
+            streamConfig.supportedVideoFormats = settings.codec.limelightMask(enableHdr: settings.enableHdr)
             streamConfig.audioConfiguration = settings.audioMode.limelightValue
             streamConfig.colorSpace = Int32(COLORSPACE_REC_709)
             streamConfig.colorRange = Int32(settings.fullRangeColor ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED)
@@ -364,17 +405,25 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             arCallbacks.stop = sessionAudioStop
             arCallbacks.cleanup = sessionAudioCleanup
             arCallbacks.decodeAndPlaySample = sessionAudioDecodeAndPlaySample
-            arCallbacks.capabilities = CAPABILITY_DIRECT_SUBMIT | CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION
+            // Match moonlight-qt: omit CAPABILITY_DIRECT_SUBMIT so moonlight-common-c decouples
+            // UDP socket reception/FEC (AudioRecv) from AES decryption and Opus decoding (AudioDec)
+            // via its packet queue, and enables LiGetPendingAudioDuration() backpressure.
+            arCallbacks.capabilities = CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION
 
-            let result = LiStartConnection(
-                &serverInfo,
-                &streamConfig,
-                &clCallbacks,
-                &drCallbacks,
-                &arCallbacks,
-                nil, 0,
-                nil, 0
-            )
+            let result: Int32
+            if Task.isCancelled {
+                result = -1
+            } else {
+                result = LiStartConnection(
+                    &serverInfo,
+                    &streamConfig,
+                    &clCallbacks,
+                    &drCallbacks,
+                    &arCallbacks,
+                    nil, 0,
+                    nil, 0
+                )
+            }
 
             free(UnsafeMutableRawPointer(mutating: addressCString))
             free(UnsafeMutableRawPointer(mutating: appVersionCString))
@@ -384,7 +433,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             }
 
             Task { @MainActor [weak self] in
-                guard let self = self else { return }
+                guard let self = self, self.isStreaming, self.sessionGeneration == generation else { return }
                 if result != 0 && self.sessionError == nil {
                     self.sessionError = "Connection failed with code \(result)"
                     self.stopSession()
@@ -394,6 +443,8 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     }
 
     public func stopSession() {
+        // Also invalidate a reconnect that is still waiting for old cleanup.
+        sessionGeneration &+= 1
         let isShortcut = isShortcutMode
         let hostToQuit = activeHost
         let shouldQuitHostApp = isShortcut || (activeSettings?.quitAppOnStop == true)
@@ -439,20 +490,27 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
         // 3. Stop input capture on next main runloop tick to prevent reentrant NSEvent callback crashes
         DispatchQueue.main.async { [weak self] in
-            self?.inputCoordinator.stopCapturing()
+            guard let self, !self.isStreaming else { return }
+            self.inputCoordinator.stopCapturing()
         }
 
         // 4. Stop Limelight C connection on background thread (waits for and joins worker threads)
-        Task.detached(priority: .userInitiated) {
+        let connectionTask = streamTask
+        connectionTask?.cancel()
+        LiInterruptConnection()
+        stoppingTask = Task.detached(priority: .userInitiated) {
+            // LiStartConnection performs its own cleanup on failure. Never run
+            // LiStopConnection concurrently with that cleanup.
+            await connectionTask?.value
             LiStopConnection()
         }
-
-        streamTask?.cancel()
         streamTask = nil
 
         // 5. Request host to terminate app if in shortcut mode or quitAppOnStop is enabled
         if let host = hostToQuit, shouldQuitHostApp {
-            Task.detached(priority: .userInitiated) {
+            let connectionStop = stoppingTask
+            stoppingTask = Task.detached(priority: .userInitiated) {
+                await connectionStop?.value
                 AppLogger.shared.info("Quitting game on host in background (shortcutMode: \(isShortcut))", category: "SESSION")
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask {
@@ -462,6 +520,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
                         try? await Task.sleep(for: .seconds(2))
                     }
                     _ = await group.next()
+                    group.cancelAll()
                 }
 
                 if isShortcut {
@@ -548,32 +607,42 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 // Global C Callbacks for Limelight
 private func sessionStageStarting(stage: Int32) {
     let stageName = LiGetStageName(stage).map { String(cString: $0) } ?? "Stage \(stage)"
+    let generation = StreamSessionEngine.shared.callbackGeneration
     Task { @MainActor in
+        guard StreamSessionController.shared.acceptsCallback(generation: generation) else { return }
         StreamSessionController.shared.updateStage(stage: Int(stage), name: stageName)
     }
 }
 
 private func sessionStageComplete(stage: Int32) {
     let stageName = LiGetStageName(stage).map { String(cString: $0) } ?? "Stage \(stage)"
+    let generation = StreamSessionEngine.shared.callbackGeneration
     Task { @MainActor in
+        guard StreamSessionController.shared.acceptsCallback(generation: generation) else { return }
         StreamSessionController.shared.updateStage(stage: Int(stage), name: stageName)
     }
 }
 
 private func sessionStageFailed(stage: Int32, errorCode: Int32) {
+    let generation = StreamSessionEngine.shared.callbackGeneration
     Task { @MainActor in
+        guard StreamSessionController.shared.acceptsCallback(generation: generation) else { return }
         StreamSessionController.shared.handleStageFailed(stage: Int(stage), code: Int(errorCode))
     }
 }
 
 private func sessionConnectionStarted() {
+    let generation = StreamSessionEngine.shared.callbackGeneration
     Task { @MainActor in
+        guard StreamSessionController.shared.acceptsCallback(generation: generation) else { return }
         StreamSessionController.shared.markConnected()
     }
 }
 
 private func sessionConnectionTerminated(errorCode: Int32) {
+    let generation = StreamSessionEngine.shared.callbackGeneration
     Task { @MainActor in
+        guard StreamSessionController.shared.acceptsCallback(generation: generation) else { return }
         StreamSessionController.shared.handleTerminated(code: Int(errorCode))
     }
 }
