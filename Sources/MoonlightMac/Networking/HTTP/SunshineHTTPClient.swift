@@ -272,7 +272,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
             throw URLError(.badURL)
         }
 
-        AppLogger.shared.info("Launching app \(appId) on \(host.effectiveAddress)", category: "HTTP")
+        AppLogger.shared.info("Launching app \(appId) on \(host.effectiveAddress), requested mode=\(mode)", category: "HTTP")
         let (data, response) = try await data(for: URLRequest(url: url), host: host)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
@@ -325,7 +325,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
             throw URLError(.badURL)
         }
 
-        AppLogger.shared.info("Resuming stream on \(host.effectiveAddress)", category: "HTTP")
+        AppLogger.shared.info("Resuming stream on \(host.effectiveAddress), requested mode=\(mode)", category: "HTTP")
         let (data, response) = try await data(for: URLRequest(url: url), host: host)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw URLError(.badServerResponse)

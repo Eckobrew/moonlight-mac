@@ -92,6 +92,7 @@ struct RootContentView: View {
             minWidth: appState.isShortcutLaunch && !appState.hasStartedStreaming ? 460 : 800,
             minHeight: appState.isShortcutLaunch && !appState.hasStartedStreaming ? 380 : 550
         )
+        .background(ContentWindowReader())
         .onAppear {
             NSApplication.shared.setActivationPolicy(.regular)
             NSApplication.shared.activate(ignoringOtherApps: true)
@@ -119,6 +120,20 @@ struct RootContentView: View {
             }
         }
     }
+}
+
+/// Track the window hosting the UI instead of guessing from transient key-window
+/// state during sheet dismissal, view replacement, or fullscreen restoration.
+private struct ContentWindowReader: NSViewRepresentable {
+    final class WindowView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window { WindowManager.shared.setContentWindow(window) }
+        }
+    }
+
+    func makeNSView(context: Context) -> WindowView { WindowView() }
+    func updateNSView(_ nsView: WindowView, context: Context) {}
 }
 
 @main

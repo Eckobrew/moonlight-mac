@@ -99,6 +99,16 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
     public func startSession(host: Host, app: StreamApp, settings: StreamSettings) async {
         guard !isStreaming else { return }
+        // Snapshot the launching window/display before awaiting teardown or
+        // replacing views. AppKit's key window can change during those operations.
+        var effectiveSettings = settings
+        if effectiveSettings.width == 0 || effectiveSettings.height == 0 {
+            let window = WindowManager.shared.currentWindow
+            let (nativeW, nativeH) = DisplayManager.getNativeResolution(for: window)
+            effectiveSettings.width = nativeW
+            effectiveSettings.height = nativeH
+            AppLogger.shared.info("Resolved Native display resolution: \(nativeW)x\(nativeH) on \(window?.screen?.localizedName ?? "default display")", category: "Session")
+        }
         // moonlight-common-c has process-global connection state. Finish the previous
         // teardown before another startup can touch it.
         let requestGeneration = sessionGeneration
@@ -112,15 +122,6 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled],
             reason: "Moonlight Low-Latency Game Streaming"
         )
-
-        // If Native resolution is requested, resolve the native physical resolution of the display the app is running on
-        var effectiveSettings = settings
-        if effectiveSettings.width == 0 || effectiveSettings.height == 0 {
-            let (nativeW, nativeH) = DisplayManager.getNativeResolution()
-            effectiveSettings.width = nativeW
-            effectiveSettings.height = nativeH
-            AppLogger.shared.info("Resolved Native display resolution: \(nativeW)x\(nativeH)", category: "Session")
-        }
 
         self.activeHost = host
         self.activeApp = app

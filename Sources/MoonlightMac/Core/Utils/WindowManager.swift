@@ -10,6 +10,7 @@ public final class WindowManager: ObservableObject {
     private var previousLevel: NSWindow.Level?
     private var previousPresentationOptions: NSApplication.PresentationOptions?
     private var startupWorkItem: DispatchWorkItem?
+    private weak var contentWindow: NSWindow?
     public private(set) var currentMode: WindowMode?
 
     private init() {}
@@ -18,8 +19,12 @@ public final class WindowManager: ObservableObject {
         targetWindow()
     }
 
+    public func setContentWindow(_ window: NSWindow) {
+        contentWindow = window
+    }
+
     private func targetWindow(provided: NSWindow? = nil) -> NSWindow? {
-        return provided ?? NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) })
+        return provided ?? contentWindow ?? NSApp.keyWindow?.sheetParent ?? NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) })
     }
 
     /// Applies the window mode with a slight delay (0.12s) to allow view transition layout to complete

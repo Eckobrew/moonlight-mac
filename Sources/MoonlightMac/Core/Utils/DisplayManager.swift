@@ -6,8 +6,16 @@ public enum DisplayManager {
     /// Returns the native physical/safe-area resolution of the display the app or window is currently on,
     /// matching moonlight-qt commit 3c2d163981ef3b97d856c724421ff4b6bcb9724d (StreamUtils::getNativeDesktopMode).
     public static func getNativeResolution(for window: NSWindow? = nil) -> (width: Int, height: Int) {
-        let win = window ?? NSApp?.keyWindow ?? NSApp?.mainWindow ?? WindowManager.shared.currentWindow ?? NSApp?.windows.first(where: { $0.isVisible && !($0 is NSPanel) })
-        let screen = win?.screen ?? NSScreen.main ?? NSScreen.screens.first
+        let win = window ?? WindowManager.shared.currentWindow
+        let screens = NSScreen.screens
+        let screen: NSScreen?
+        if let win, let index = screenIndex(for: win.frame, screens: screens.map(\.frame)) {
+            // During restoration/fullscreen AppKit may briefly report no screen
+            // (or the previous one). The window's actual desktop position wins.
+            screen = screens[index]
+        } else {
+            screen = win?.screen ?? NSScreen.main ?? screens.first
+        }
 
         return getNativeResolution(for: screen)
     }
@@ -15,31 +23,13 @@ public enum DisplayManager {
     /// Queries CoreGraphics for the native physical display mode and safe area (notch-aware) of the specified screen,
     /// matching moonlight-qt (StreamUtils::getNativeDesktopMode).
     public static func getNativeResolution(for screen: NSScreen?) -> (width: Int, height: Int) {
-        let maxDisplays: UInt32 = 16
-        var displayCount: UInt32 = 0
-        var displayIds = [CGDirectDisplayID](repeating: 0, count: Int(maxDisplays))
-        CGGetActiveDisplayList(maxDisplays, &displayIds, &displayCount)
-
-        guard displayCount > 0 else {
-            return (1920, 1080)
+        guard let screenNum = screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return fallbackResolution(for: screen)
         }
 
-        var displayIndex = 0
-        if let targetScreen = screen,
-           let screenNum = targetScreen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID {
-            for i in 0..<Int(displayCount) {
-                if displayIds[i] == screenNum {
-                    displayIndex = i
-                    break
-                }
-            }
-        }
-
-        guard displayIndex < Int(displayCount) else {
-            return (1920, 1080)
-        }
-
-        let displayID = displayIds[displayIndex]
+        // Query the chosen screen directly. Active-display enumeration order is
+        // unrelated to window ownership and must never silently select display 0.
+        let displayID = screenNum.uint32Value
 
         // Retina displays have non-native resolutions both below and above their
         // native resolution. CoreGraphics flags the true native mode with kDisplayModeNativeFlag.
@@ -86,6 +76,20 @@ public enum DisplayManager {
         }
 
         return fallbackResolution(for: screen)
+    }
+
+    nonisolated static func screenIndex(for windowFrame: CGRect, screens: [CGRect]) -> Int? {
+        var bestIndex: Int?
+        var largestArea: CGFloat = 0
+        for (index, frame) in screens.enumerated() {
+            let overlap = windowFrame.intersection(frame)
+            let area = overlap.isNull ? 0 : overlap.width * overlap.height
+            if area > largestArea {
+                largestArea = area
+                bestIndex = index
+            }
+        }
+        return bestIndex
     }
 
     private static func fallbackResolution(for screen: NSScreen?) -> (width: Int, height: Int) {
