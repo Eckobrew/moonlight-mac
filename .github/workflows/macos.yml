@@ -1,0 +1,18 @@
+name: macOS build and tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version
+      - name: Regression tests
+        run: swift test --jobs 4
+      - name: Release package and verification
+        run: ./Scripts/package_app.sh release
