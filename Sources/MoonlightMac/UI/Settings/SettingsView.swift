@@ -412,11 +412,6 @@ public struct SettingsView: View {
 
         GroupBox("Keyboard Shortcuts & Layout") {
             VStack(alignment: .leading, spacing: 14) {
-                Picker("Host keyboard layout:", selection: $settings.keyboardLayout) {
-                    ForEach(KeyboardLayout.allCases, id: \.self) { layout in
-                        Text(layout.rawValue).tag(layout)
-                    }
-                }
                 Text(settings.keyboardLayout.explanation)
                     .font(.caption)
                     .foregroundStyle(.secondary)

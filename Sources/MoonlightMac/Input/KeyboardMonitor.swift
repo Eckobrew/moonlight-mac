@@ -17,13 +17,13 @@ public final class KeyboardMonitor: @unchecked Sendable {
     /// sending them on the main thread made AppKit event dispatch block behind mouse packets.
     private let inputQueue: DispatchQueue
 
-    /// Host keyboard interpretation mode (virtual keys vs. physical scancodes).
+    /// Legacy saved preference; both values now use normalized position-based virtual keys.
     public var keyboardLayout: KeyboardLayout = .us
 
     private var localMonitor: Any?
     private var appResignObserver: NSObjectProtocol?
     private var isMonitoring = false
-    private var keysDown = Set<Int16>()
+    private var keysDown = Set<HostKey>()
     private let KEY_ACTION_DOWN: CChar = 0x03
     private let KEY_ACTION_UP: CChar = 0x04
 
@@ -58,6 +58,7 @@ public final class KeyboardMonitor: @unchecked Sendable {
             NotificationCenter.default.removeObserver(obs)
             appResignObserver = nil
         }
+        raiseAllKeys()
         isMonitoring = false
     }
 
@@ -148,55 +149,49 @@ public final class KeyboardMonitor: @unchecked Sendable {
             }
         }
 
-        let vkCode = KeycodeMappings.macToWindowsVirtualKey(
-            macKeyCode: event.keyCode,
-            swapWinAltKeys: swapWinAltKeys
-        )
-        if vkCode == 0 { return event }
-
+        guard let key = KeycodeMappings.hostKey(macKeyCode: event.keyCode,
+                                               swapWinAltKeys: swapWinAltKeys) else { return event }
         let modifiers = modifierByte(for: event.modifierFlags)
+        // Caps Lock flags represent a toggle, not a held switch. Send a complete
+        // press on each transition so the host never retains a held Caps Lock key.
+        if event.type == .flagsChanged && event.keyCode == 0x39 {
+            sendKey(key, KEY_ACTION_DOWN, modifiers)
+            sendKey(key, KEY_ACTION_UP, modifiers)
+            return nil
+        }
 
         switch event.type {
         case .keyDown:
-            keysDown.insert(vkCode)
-            sendKey(vkCode, KEY_ACTION_DOWN, modifiers)
+            keysDown.insert(key)
+            sendKey(key, KEY_ACTION_DOWN, modifiers)
             return nil // consume event
         case .keyUp:
-            keysDown.remove(vkCode)
-            sendKey(vkCode, KEY_ACTION_UP, modifiers)
+            keysDown.remove(key)
+            sendKey(key, KEY_ACTION_UP, modifiers)
             return nil
         case .flagsChanged:
             // Determine press/release of this specific (left or right) modifier key
             let isDown = isModifierKeyDown(event: event)
             if isDown {
-                keysDown.insert(vkCode)
+                keysDown.insert(key)
             } else {
-                keysDown.remove(vkCode)
+                keysDown.remove(key)
             }
-            sendKey(vkCode, isDown ? KEY_ACTION_DOWN : KEY_ACTION_UP, modifiers)
+            sendKey(key, isDown ? KEY_ACTION_DOWN : KEY_ACTION_UP, modifiers)
             return nil
         default:
             return event
         }
     }
 
-    private func sendKey(_ vkCode: Int16, _ action: CChar, _ modifiers: CChar) {
+    private func sendKey(_ key: HostKey, _ action: CChar, _ modifiers: CChar) {
         inputQueue.async {
-            if self.keyboardLayout.sendsScancodes {
-                // Scancode mode: tag the code as a physical scancode (0x8000) and ask the host not
-                // to re-map it, so it resolves the character with its own active layout. This is
-                // how moonlight-qt handles non-US hosts.
-                // 0x8000 flags a physical scancode; Int16 can't hold 32768 literally.
-                LiSendKeyboardEvent2(
-                    vkCode | Int16(bitPattern: 0x8000),
-                    action,
-                    modifiers,
-                    CChar(SS_KBE_FLAG_NON_NORMALIZED)
-                )
-            } else {
-                LiSendKeyboardEvent(vkCode, action, modifiers)
-            }
+            Self.sendKeyNow(key, action, modifiers)
         }
+    }
+
+    private static func sendKeyNow(_ key: HostKey, _ action: CChar, _ modifiers: CChar) {
+        LiSendKeyboardEvent2(key.wireCode, action, modifiers | key.extendedModifier, key.flags)
     }
 
     /// Builds the Limelight modifier byte (MODIFIER_SHIFT/CTRL/ALT/META) like moonlight-qt keyboard.cpp
@@ -222,27 +217,15 @@ public final class KeyboardMonitor: @unchecked Sendable {
         keysDown.removeAll()
         guard !keys.isEmpty else { return }
         inputQueue.sync {
-            for vk in keys {
-                LiSendKeyboardEvent(vk, self.KEY_ACTION_UP, 0)
+            for key in keys {
+                Self.sendKeyNow(key, self.KEY_ACTION_UP, 0)
             }
         }
     }
 
     /// Releases modifier keys on the host to avoid sticky keys when special combos are consumed
     private func raiseModifierKeys() {
-        let keys = keysDown
-        keysDown.removeAll()
-        inputQueue.sync {
-            for vk in keys {
-                LiSendKeyboardEvent(vk, self.KEY_ACTION_UP, 0)
-            }
-            for vk in [KeycodeMappings.VK_LCONTROL, KeycodeMappings.VK_RCONTROL,
-                       KeycodeMappings.VK_LMENU, KeycodeMappings.VK_RMENU,
-                       KeycodeMappings.VK_LSHIFT, KeycodeMappings.VK_RSHIFT,
-                       KeycodeMappings.VK_LWIN, KeycodeMappings.VK_RWIN] {
-                LiSendKeyboardEvent(vk, self.KEY_ACTION_UP, 0)
-            }
-        }
+        raiseAllKeys()
     }
 
     /// Uses device-dependent flag bits (NX_DEVICE*KEYMASK) so left/right modifiers are tracked independently

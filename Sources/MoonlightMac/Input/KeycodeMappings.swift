@@ -1,4 +1,5 @@
 import Foundation
+import MoonlightCommonC
 import AppKit
 
 public enum KeycodeMappings {
@@ -92,6 +93,36 @@ public enum KeycodeMappings {
         case 0x33: return VK_BACK
         case 0x35: return VK_ESCAPE
 
+        // ISO and JIS keys, keypad, and navigation.
+        case 0x0A: return 0xE2 // ISO extra key next to left Shift
+        case 0x5D: return 0xDC // JIS Yen
+        case 0x5E: return 0xE2 // JIS underscore
+        case 0x66: return 0x1D // JIS Eisu
+        case 0x68: return 0x1C // JIS Kana
+        case 0x41: return 0x6E // Keypad decimal
+        case 0x43: return 0x6A // Keypad multiply
+        case 0x45: return 0x6B // Keypad plus
+        case 0x47: return 0x0C // Clear
+        case 0x4B: return 0x6F // Keypad divide
+        case 0x4C: return VK_RETURN // Keypad Enter (extended)
+        case 0x4E: return 0x6D // Keypad minus
+        case 0x52: return 0x60 // Keypad 0
+        case 0x53: return 0x61
+        case 0x54: return 0x62
+        case 0x55: return 0x63
+        case 0x56: return 0x64
+        case 0x57: return 0x65
+        case 0x58: return 0x66
+        case 0x59: return 0x67
+        case 0x5B: return 0x68
+        case 0x5C: return 0x69 // Keypad 9
+        case 0x72: return 0x2F // Help
+        case 0x73: return 0x24 // Home
+        case 0x74: return 0x21 // Page Up
+        case 0x75: return 0x2E // Forward Delete
+        case 0x77: return 0x23 // End
+        case 0x79: return 0x22 // Page Down
+
         // Modifiers
         case 0x37: // Left Command -> Alt (Windows position) or Win
             return swapWinAltKeys ? VK_LMENU : VK_LWIN
@@ -135,5 +166,28 @@ public enum KeycodeMappings {
         default:
             return 0
         }
+    }
+}
+
+/// All fields that identify a host key must survive from keyDown to keyUp.
+struct HostKey: Hashable, Sendable {
+    let virtualKey: Int16
+    let extended: Bool
+    let flags: CChar
+    // The GameStream tag accompanies a VK code; it is not a physical scancode.
+    var wireCode: Int16 { virtualKey | Int16(bitPattern: 0x8000) }
+    var extendedModifier: CChar { extended ? CChar(MODIFIER_EXTENDED) : 0 }
+}
+
+extension KeycodeMappings {
+    static func hostKey(macKeyCode: UInt16, swapWinAltKeys: Bool = true) -> HostKey? {
+        let vk = macToWindowsVirtualKey(macKeyCode: macKeyCode, swapWinAltKeys: swapWinAltKeys)
+        guard vk != 0 else { return nil }
+        let extendedVKs: Set<Int16> = [0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+                                       0x2D, 0x2E, 0x5B, 0x5C, 0x6F, 0xA3, 0xA5]
+        // Only the JIS special keys bypass US-scancode normalization, as in
+        // moonlight-qt. Regular keys must allow the host's layout conversion.
+        let flags: CChar = [UInt16(0x5D), 0x5E].contains(macKeyCode) ? CChar(SS_KBE_FLAG_NON_NORMALIZED) : 0
+        return HostKey(virtualKey: vk, extended: macKeyCode == 0x4C || extendedVKs.contains(vk), flags: flags)
     }
 }
