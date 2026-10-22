@@ -137,7 +137,8 @@ server checks correct, incorrect and missing certificate pins. Tests use
 
 The [macOS CI workflow](.github/workflows/macos.yml) runs tests and release
 packaging. The latest local validation passed **25 tests** and built and verified
-an optimized, ad-hoc-signed app. CI has not yet been exercised on GitHub.
+an optimized, ad-hoc-signed app. Current workflow results are available in
+[GitHub Actions](https://github.com/Eckobrew/moonlight-mac/actions/workflows/macos.yml).
 
 See the [project review](Docs/PROJECT_REVIEW.md) for implementation details and the
 [hardware checklist](Docs/HARDWARE_VALIDATION.md) for outstanding live-host checks.

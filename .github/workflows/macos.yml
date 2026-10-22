@@ -9,9 +9,11 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Toolchain
-        run: swift --version
+        run: |
+          swift --version
+          python3 --version
       - name: Regression tests
         run: swift test --jobs 4
       - name: Release package and verification
