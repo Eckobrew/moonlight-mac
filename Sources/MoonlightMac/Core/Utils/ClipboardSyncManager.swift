@@ -6,7 +6,6 @@ public final class ClipboardSyncManager {
     public static let shared = ClipboardSyncManager()
 
     private var activeHost: Host?
-    private var isSyncAvailable: Bool = true
     /// Separate failure counters: a host that rejects pushes (or lacks the clipboard endpoint for
     /// pulls) should only disable the direction that is actually failing.
     private var sendErrors: Int = 0
@@ -35,7 +34,6 @@ public final class ClipboardSyncManager {
         stop()
 
         self.activeHost = host
-        self.isSyncAvailable = true
         self.sendErrors = 0
         self.pullErrors = 0
         self.lastSyncedClipboard = ""
@@ -79,12 +77,9 @@ public final class ClipboardSyncManager {
     }
 
     private func onTimerTick() {
-        guard isSyncAvailable else { return }
-
         // Check if local pasteboard changed
         let currentCount = NSPasteboard.general.changeCount
         if currentCount != lastChangeCount {
-            lastChangeCount = currentCount
             syncClipboardToHost()
         }
 
@@ -119,23 +114,26 @@ public final class ClipboardSyncManager {
 
     /// Pushes local macOS pasteboard string to the remote host.
     public func syncClipboardToHost() {
-        guard isSyncAvailable, let host = activeHost, !isSending else { return }
+        guard sendErrors < 3, let host = activeHost, !isSending else { return }
 
+        let changeCount = NSPasteboard.general.changeCount
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
+            lastChangeCount = changeCount
             return
         }
 
         // Limit to 10 MB to prevent excessive memory or network bandwidth usage
         if text.utf8.count > 10 * 1024 * 1024 {
+            lastChangeCount = changeCount
             return
         }
 
         // Avoid echo loops
         if text == lastSyncedClipboard {
+            lastChangeCount = changeCount
             return
         }
 
-        lastSyncedClipboard = text
         isSending = true
         let generation = sessionGeneration
 
@@ -146,6 +144,8 @@ public final class ClipboardSyncManager {
                     guard generation == self.sessionGeneration else { return }
                     self.isSending = false
                     self.sendErrors = 0
+                    self.lastSyncedClipboard = text
+                    self.lastChangeCount = changeCount
                     AppLogger.shared.debug("Sent \(text.count) characters to host clipboard", category: "CLIPBOARD")
                 }
             } catch {
@@ -154,8 +154,7 @@ public final class ClipboardSyncManager {
                     self.isSending = false
                     self.sendErrors += 1
                     if self.sendErrors >= 3 {
-                        self.isSyncAvailable = false
-                        AppLogger.shared.warning("Repeated failures sending clipboard to host; disabling clipboard sync for this session.", category: "CLIPBOARD")
+                        AppLogger.shared.warning("Repeated failures sending clipboard to host; disabling clipboard pushes for this session.", category: "CLIPBOARD")
                     }
                 }
             }
@@ -164,9 +163,10 @@ public final class ClipboardSyncManager {
 
     /// Pulls remote host clipboard string to the macOS pasteboard.
     public func syncClipboardFromHost() {
-        guard isSyncAvailable, let host = activeHost, !isPulling else { return }
+        guard pullErrors < 3, let host = activeHost, !isPulling, !isSending else { return }
 
         isPulling = true
+        let changeCount = NSPasteboard.general.changeCount
         let generation = sessionGeneration
 
         Task {
@@ -177,6 +177,9 @@ public final class ClipboardSyncManager {
                     self.isPulling = false
                     self.pullErrors = 0
 
+                    // A slow response must not overwrite text copied locally while
+                    // the request was in flight.
+                    guard NSPasteboard.general.changeCount == changeCount, !self.isSending else { return }
                     if !hostText.isEmpty && hostText != self.lastSyncedClipboard {
                         self.lastSyncedClipboard = hostText
                         NSPasteboard.general.clearContents()
@@ -191,8 +194,7 @@ public final class ClipboardSyncManager {
                     self.isPulling = false
                     self.pullErrors += 1
                     if self.pullErrors >= 3 {
-                        self.isSyncAvailable = false
-                        AppLogger.shared.warning("Clipboard sync disabled: host does not support clipboard sync or returned repeated errors.", category: "CLIPBOARD")
+                        AppLogger.shared.warning("Clipboard pulls disabled: host does not support clipboard sync or returned repeated errors.", category: "CLIPBOARD")
                     }
                 }
             }
