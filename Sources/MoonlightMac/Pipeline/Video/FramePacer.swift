@@ -18,28 +18,29 @@ public final class FramePacer: @unchecked Sendable {
     private let maxQueuedFrames: Int = 2
     private var onFrameCallback: (@Sendable (CVPixelBuffer) -> Void)?
     private var currentDisplayID: CGDirectDisplayID?
-    public private(set) var currentDisplayRefreshRate: Double = 60.0
+    @MainActor public private(set) var currentDisplayRefreshRate: Double = 60.0
 
     private init() {}
 
     /// Configure the pacing behavior and callback for presented frames.
+    @MainActor
     public func configure(
         enabled: Bool,
         displayID: CGDirectDisplayID? = nil,
         onFrame: @escaping @Sendable (CVPixelBuffer) -> Void
     ) {
+        stopDisplayLink()
         lock.lock()
         self.onFrameCallback = onFrame
         self.isPacingEnabled = enabled
         self.currentDisplayID = displayID
         self.frameQueue.removeAll()
 
-        stopDisplayLinkLocked()
+        lock.unlock()
 
         if enabled {
-            startDisplayLinkLocked(displayID: displayID)
+            startDisplayLink(displayID: displayID)
         }
-        lock.unlock()
 
         AppLogger.shared.info("[FramePacer] Configured pacing enabled=\(enabled), displayFps=\(String(format: "%.1f", currentDisplayRefreshRate))")
     }
@@ -52,14 +53,13 @@ public final class FramePacer: @unchecked Sendable {
     }
 
     /// Update display link for a given display ID.
+    @MainActor
     public func updateDisplayID(_ displayID: CGDirectDisplayID?) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        self.currentDisplayID = displayID
+        guard currentDisplayID != displayID else { return }
+        currentDisplayID = displayID
         if isPacingEnabled {
-            stopDisplayLinkLocked()
-            startDisplayLinkLocked(displayID: displayID)
+            stopDisplayLink()
+            startDisplayLink(displayID: displayID)
         }
     }
 
@@ -96,17 +96,22 @@ public final class FramePacer: @unchecked Sendable {
     }
 
     /// Stop display link and flush pending frames.
+    @MainActor
     public func stop() {
         lock.lock()
-        defer { lock.unlock() }
-
-        stopDisplayLinkLocked()
+        isPacingEnabled = false
         frameQueue.removeAll()
         onFrameCallback = nil
         currentDisplayID = nil
+        lock.unlock()
+
+        // CVDisplayLinkStop can wait for an in-flight callback. Never hold the
+        // callback's lock while waiting, or both threads can wait forever.
+        stopDisplayLink()
     }
 
-    private func startDisplayLinkLocked(displayID: CGDirectDisplayID?) {
+    @MainActor
+    private func startDisplayLink(displayID: CGDirectDisplayID?) {
         var link: CVDisplayLink?
         var status: CVReturn = -1
 
@@ -120,6 +125,7 @@ public final class FramePacer: @unchecked Sendable {
 
         guard status == kCVReturnSuccess, let validLink = link else {
             AppLogger.shared.error("[FramePacer] Failed to create CVDisplayLink (status: \(status))")
+            disablePacing()
             return
         }
 
@@ -138,6 +144,7 @@ public final class FramePacer: @unchecked Sendable {
 
         guard setStatus == kCVReturnSuccess else {
             AppLogger.shared.error("[FramePacer] Failed to set CVDisplayLink output callback (status: \(setStatus))")
+            disablePacing()
             return
         }
 
@@ -148,12 +155,25 @@ public final class FramePacer: @unchecked Sendable {
             currentDisplayRefreshRate = 60.0
         }
 
-        CVDisplayLinkStart(validLink)
+        let startStatus = CVDisplayLinkStart(validLink)
+        guard startStatus == kCVReturnSuccess else {
+            AppLogger.shared.error("[FramePacer] Failed to start CVDisplayLink (status: \(startStatus))")
+            disablePacing()
+            return
+        }
         self.displayLink = validLink
         AppLogger.shared.info("[FramePacer] CVDisplayLink active at \(String(format: "%.1f", currentDisplayRefreshRate)) Hz")
     }
 
-    private func stopDisplayLinkLocked() {
+    private func disablePacing() {
+        lock.lock()
+        isPacingEnabled = false
+        frameQueue.removeAll()
+        lock.unlock()
+    }
+
+    @MainActor
+    private func stopDisplayLink() {
         if let link = displayLink {
             CVDisplayLinkStop(link)
             self.displayLink = nil
