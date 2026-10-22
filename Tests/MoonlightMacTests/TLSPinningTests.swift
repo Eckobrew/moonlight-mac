@@ -43,8 +43,8 @@ private func reserveTestPort() throws -> UInt16 {
     let pin = try #require(HostTrust.certificateDER(pem: pem))
     let port = try reserveTestPort()
     let server = Process()
-    server.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-    server.arguments = ["-c", """
+    server.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    server.arguments = ["python3", "-c", """
 import http.server, ssl, sys
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -63,19 +63,27 @@ server.serve_forever()
 """, directory.path, String(port)]
     server.standardInput = FileHandle.nullDevice
     server.standardOutput = FileHandle.nullDevice
-    server.standardError = FileHandle.nullDevice
+    let errorURL = directory.appendingPathComponent("server-stderr.log")
+    FileManager.default.createFile(atPath: errorURL.path, contents: nil)
+    let errorHandle = try FileHandle(forWritingTo: errorURL)
+    defer { try? errorHandle.close() }
+    server.standardError = errorHandle
     try server.run()
     defer {
         if server.isRunning { server.terminate() }
         server.waitUntilExit()
     }
     var ready = false
-    for _ in 0..<50 {
+    // Hosted runners and Xcode's Python launcher can take longer on a cold
+    // start. Wait for readiness rather than assuming startup fits in one second.
+    let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+    while ContinuousClock.now < deadline && server.isRunning {
         if TCPProbe.canConnect(address: "127.0.0.1", port: port) { ready = true; break }
         try await Task.sleep(for: .milliseconds(20))
     }
-    #expect(ready)
-    guard ready else { return }
+    let diagnostics = (try? String(contentsOf: errorURL, encoding: .utf8)) ?? ""
+    let state = server.isRunning ? "still running" : "exited with status \(server.terminationStatus)"
+    try #require(ready, "TLS fixture server \(state): \(diagnostics)")
     let url = try #require(URL(string: "https://127.0.0.1:\(port)/"))
     // This server does not request a client identity, so the test never accesses
     // the user's real client credentials or contacts a streaming host.
