@@ -20,9 +20,16 @@ final class AudioRingBuffer: @unchecked Sendable {
     private let storage: UnsafeMutablePointer<Float>
     private var writeHead: Int = 0
     private var readHead: Int = 0
+    // Head equality is ambiguous after a full-capacity write; track occupancy explicitly.
+    private var bufferedFrames: Int = 0
+    /// True initially and after an underrun until a ~20ms cushion accumulates, preventing the
+    /// CoreAudio 512-frame callback from repeatedly draining 240/480-frame arrivals and padding
+    /// every callback tail with zeros.
+    private var isBuffering: Bool = true
     private let lock = NSLock()
 
     init(channels: Int, capacity: Int = 48000) {
+        precondition(channels > 0 && capacity > 0)
         self.channels = channels
         self.capacity = capacity
         self.storage = UnsafeMutablePointer<Float>.allocate(capacity: channels * capacity)
@@ -44,6 +51,8 @@ final class AudioRingBuffer: @unchecked Sendable {
         defer { lock.unlock() }
         writeHead = 0
         readHead = 0
+        bufferedFrames = 0
+        isBuffering = true
     }
 
     func write(interleaved: UnsafePointer<Float>, frames: Int) {
@@ -88,21 +97,35 @@ final class AudioRingBuffer: @unchecked Sendable {
         writeHead += framesToWrite
         if writeHead >= capacity { writeHead -= capacity }
 
-        // Low-latency buffer clamp: if accumulated buffer exceeds 50ms (2400 frames at 48kHz), drop the oldest audio
-        let available = (writeHead >= readHead) ? (writeHead - readHead) : (capacity - readHead + writeHead)
-        let maxAllowed = 2400
-        if available > maxAllowed {
-            readHead = writeHead - maxAllowed
-            if readHead < 0 { readHead += capacity }
+        // Hysteresis buffer clamp: if accumulated buffer exceeds 80ms (3840 frames at 48kHz),
+        // reset to a 30ms target cushion (1440 frames) rather than clamping to the ceiling itself
+        // (which would trap `available` at `maxAllowed` and chop every subsequent packet burst).
+        bufferedFrames = min(capacity, bufferedFrames + framesToWrite)
+        let maxAllowed = min(3840, capacity)
+        let targetCushion = min(1440, capacity)
+        if bufferedFrames > maxAllowed {
+            bufferedFrames = targetCushion
         }
+        readHead = (writeHead - bufferedFrames + capacity) % capacity
     }
 
     func read(into bufferList: UnsafeMutablePointer<AudioBufferList>, frames: Int) -> Bool {
         lock.lock()
         defer { lock.unlock() }
 
-        let available = (writeHead >= readHead) ? (writeHead - readHead) : (capacity - readHead + writeHead)
-        if available == 0 {
+        guard frames > 0 else { return false }
+        let available = bufferedFrames
+        if isBuffering {
+            // Wait for at least ~20ms (or one full callback + two 5ms Opus frames) before starting
+            // playback so normal 5ms packet intervals vs 10.67ms (512-frame) CoreAudio callbacks
+            // never cause partial-buffer underruns.
+            let minPrebuffer = min(capacity, max(frames + 480, 960))
+            if available < minPrebuffer {
+                return false
+            }
+            isBuffering = false
+        } else if available == 0 {
+            isBuffering = true
             return false
         }
 
@@ -120,11 +143,22 @@ final class AudioRingBuffer: @unchecked Sendable {
                 (dest + firstChunk).update(from: source, count: secondChunk)
             }
             if framesToRead < frames {
-                // Zero out remaining frames in underrun
-                (dest + framesToRead).initialize(repeating: 0, count: frames - framesToRead)
+                // Smoothly fade the last sample to zero across the underrun tail to avoid a hard
+                // step discontinuity (click/pop), and re-enter prebuffering to rebuild the cushion.
+                let lastSample = framesToRead > 0 ? dest[framesToRead - 1] : 0.0
+                let remaining = frames - framesToRead
+                for i in 0..<remaining {
+                    let scale = Float(remaining - i - 1) / Float(remaining)
+                    dest[framesToRead + i] = lastSample * scale
+                }
             }
         }
 
+        if framesToRead < frames {
+            isBuffering = true
+        }
+
+        bufferedFrames -= framesToRead
         readHead += framesToRead
         if readHead >= capacity { readHead -= capacity }
         return true
@@ -145,6 +179,7 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
     private var channelCount: Int = 2
     private var samplesPerFrame: Int = 240
     private var isPlaying = false
+    private var didElevateDecodeThreadPriority = false
     private var scratchInterleavedBuffer: [Float] = []
     private var configurationObserver: NSObjectProtocol?
     private var focusObservers: [NSObjectProtocol] = []
@@ -174,6 +209,7 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
         self.sampleRate = sampleRate
         self.channelCount = Int(channelCount)
         self.samplesPerFrame = samplesPerFrame
+        self.didElevateDecodeThreadPriority = false
 
         AppLogger.shared.info("AudioPlaybackEngine: Initializing original low-latency AVAudioEngine (\(sampleRate) Hz, \(channelCount) ch, \(streams) streams, \(coupledStreams) coupled, \(samplesPerFrame) samples/frame)")
 
@@ -300,11 +336,12 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
 
         ringBuffer?.reset()
         do {
+            if let uid = preferredOutputDeviceUID, !uid.isEmpty {
+                AudioOutputDevices.apply(deviceUID: uid, to: engine)
+            }
             try engine.start()
             isPlaying = true
 
-            // The output unit exists only after start(), so route to the selected device now.
-            AudioOutputDevices.apply(deviceUID: preferredOutputDeviceUID, to: engine)
             // Re-apply a pending mute (e.g. session started while another app had focus).
             engine.mainMixerNode.outputVolume = isMutedForFocus ? 0.0 : 1.0
 
@@ -343,8 +380,9 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
         } else {
             lock.lock()
             isMutedForFocus = false
-            audioEngine?.mainMixerNode.outputVolume = 1.0
+            let engine = audioEngine
             lock.unlock()
+            engine?.mainMixerNode.outputVolume = 1.0
         }
     }
 
@@ -402,17 +440,16 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
 
     @MainActor
     private func applyFocusMuteState() {
-        lock.lock()
-        defer { lock.unlock() }
-        guard muteOnFocusLoss else {
-            isMutedForFocus = false
-            audioEngine?.mainMixerNode.outputVolume = 1.0
-            return
-        }
         let app = NSApplication.shared
         let isActive = app.isActive && !app.isHidden
-        isMutedForFocus = !isActive
-        audioEngine?.mainMixerNode.outputVolume = isActive ? 1.0 : 0.0
+
+        lock.lock()
+        let engine = audioEngine
+        let shouldMute = muteOnFocusLoss && !isActive
+        isMutedForFocus = shouldMute
+        lock.unlock()
+
+        engine?.mainMixerNode.outputVolume = shouldMute ? 0.0 : 1.0
     }
 
     private func cleanupInternal() {
@@ -458,8 +495,12 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
 
         AppLogger.shared.info("AudioPlaybackEngine: Output route changed, restarting audio engine...")
         do {
-            try engine.start()
-            AudioOutputDevices.apply(deviceUID: uid, to: engine)
+            if let uid = uid, !uid.isEmpty {
+                AudioOutputDevices.apply(deviceUID: uid, to: engine)
+            }
+            if !engine.isRunning {
+                try engine.start()
+            }
         } catch {
             AppLogger.shared.error("AudioPlaybackEngine: Restart after route change failed: \(error.localizedDescription)")
         }
@@ -473,9 +514,20 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
             return
         }
 
+        // Match moonlight-qt (Session::arDecodeAndPlaySample -> SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH)):
+        // PltCreateThread spawns pthreads at QOS_CLASS_DEFAULT, which macOS preempts under CPU load.
+        // Elevate the audio decode thread to QOS_CLASS_USER_INTERACTIVE on its first packet.
+        if !didElevateDecodeThreadPriority {
+            didElevateDecodeThreadPriority = true
+            pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
+        }
+
         if !isPlaying {
             do {
                 ring.reset()
+                if let engine = audioEngine, let uid = preferredOutputDeviceUID, !uid.isEmpty {
+                    AudioOutputDevices.apply(deviceUID: uid, to: engine)
+                }
                 try audioEngine?.start()
                 isPlaying = true
             } catch {
@@ -514,7 +566,10 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
             }
         }
 
-        if decodedFrames > 0 {
+        // Match moonlight-qt (SdlAudioRenderer::submitAudio): always decode the Opus packet so the
+        // decoder's internal prediction state remains valid, then drop the output if more than 30ms
+        // of audio packets are already queued behind this one in moonlight-common-c's packetQueue.
+        if decodedFrames > 0 && LiGetPendingAudioDuration() <= 30 {
             scratchInterleavedBuffer.withUnsafeBufferPointer { pcmPtr in
                 ring.write(interleaved: pcmPtr.baseAddress!, frames: Int(decodedFrames))
             }

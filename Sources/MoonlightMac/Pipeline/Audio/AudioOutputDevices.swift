@@ -91,21 +91,38 @@ public enum AudioOutputDevices {
         return deviceID
     }
 
-    /// Applies a device selection to a running engine's output audio unit.
-    /// Returns false if the engine is not running or the device could not be resolved.
+    /// Applies a device selection to an engine's output audio unit.
+    /// Returns false if the output audio unit is unavailable or the device could not be resolved.
     @discardableResult
     public static func apply(deviceUID uid: String?, to engine: AVAudioEngine) -> Bool {
-        guard engine.isRunning else { return false }
-
         guard let outputUnit = engine.outputNode.audioUnit else { return false }
 
         var targetDeviceID: AudioDeviceID
-        if let uid = uid, let resolved = deviceID(forUID: uid) {
+        if let uid = uid, !uid.isEmpty, let resolved = deviceID(forUID: uid) {
             targetDeviceID = resolved
         } else {
             // Explicitly follow the system default when no override is configured.
             guard let systemDefault = systemDefaultOutputDeviceID() else { return false }
             targetDeviceID = systemDefault
+        }
+
+        var currentDeviceID = AudioDeviceID(0)
+        var currentSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let getStatus = AudioUnitGetProperty(
+            outputUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &currentDeviceID,
+            &currentSize
+        )
+        if getStatus == noErr && currentDeviceID == targetDeviceID {
+            return true
+        }
+
+        let wasRunning = engine.isRunning
+        if wasRunning {
+            engine.stop()
         }
 
         let status = AudioUnitSetProperty(
@@ -116,6 +133,10 @@ public enum AudioOutputDevices {
             &targetDeviceID,
             UInt32(MemoryLayout<AudioDeviceID>.size)
         )
+
+        if wasRunning {
+            try? engine.start()
+        }
 
         if status != noErr {
             AppLogger.shared.warning("[Audio] Failed to select output device (status \(status))", category: "AUDIO")
