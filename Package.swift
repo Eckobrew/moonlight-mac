@@ -108,6 +108,7 @@ let package = Package(
         .target(
             name: "MoonlightCommonC",
             path: "Sources/MoonlightCommonC",
+            exclude: ["LICENSE.txt", "enet/LICENSE", "nanors/LICENSE"],
             publicHeadersPath: "include",
             cSettings: [
                 .headerSearchPath("include"),

@@ -1,74 +1,67 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-echo "==> Building Moonlight for macOS in Release mode..."
+CONFIGURATION="${1:-release}"
+case "$CONFIGURATION" in
+    release|debug) ;;
+    *) echo "Usage: $0 [release|debug]" >&2; exit 2 ;;
+esac
 cd "$PROJECT_DIR"
 
-TMPDIR=/tmp \
-CLANG_MODULE_CACHE_PATH=/tmp/clang-cache \
-SWIFT_MODULE_CACHE_PATH=/tmp/swift-cache \
-swift build -c release --disable-sandbox \
-  -Xswiftc -module-cache-path -Xswiftc /tmp/swift-cache \
-  -Xcc -fmodules-cache-path=/tmp/clang-cache
+BUILD_PATH="${MOONLIGHT_BUILD_PATH:-$PROJECT_DIR/.build}"
+CACHE_ROOT="${TMPDIR:-/tmp}/moonlight-build-cache"
+mkdir -p "$CACHE_ROOT/clang" "$CACHE_ROOT/swift"
+export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$CACHE_ROOT/clang}"
+export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-$CACHE_ROOT/swift}"
+BUILD_ARGS=(-c "$CONFIGURATION" --scratch-path "$BUILD_PATH" --disable-sandbox --jobs "${MOONLIGHT_BUILD_JOBS:-4}")
 
-# Locate binary and resources
-RELEASE_DIR=$(swift build -c release --show-bin-path)
+echo "==> Building Moonlight ($CONFIGURATION)..."
+swift build "${BUILD_ARGS[@]}"
+RELEASE_DIR="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)"
 BIN_PATH="$RELEASE_DIR/MoonlightMac"
+RESOURCE_BUNDLE="$RELEASE_DIR/MoonlightMac_MoonlightMac.bundle"
+[[ -x "$BIN_PATH" ]] || { echo "Missing executable: $BIN_PATH" >&2; exit 1; }
+[[ -d "$RESOURCE_BUNDLE" ]] || { echo "Missing SwiftPM resource bundle: $RESOURCE_BUNDLE" >&2; exit 1; }
 
-if [ ! -f "$BIN_PATH" ]; then
-    echo "Error: Binary not found at $BIN_PATH"
-    exit 1
-fi
-
-APP_NAME="Moonlight.app"
 OUTPUT_DIR="$PROJECT_DIR/Products"
-APP_DIR="$OUTPUT_DIR/$APP_NAME"
+APP_DIR="$OUTPUT_DIR/Moonlight.app"
+mkdir -p "$OUTPUT_DIR"
+# Assemble in a new directory so a failed build/sign leaves the previous app intact.
+STAGING="$(mktemp -d "$OUTPUT_DIR/.moonlight-package.XXXXXX")"
+trap 'rm -rf "$STAGING"' EXIT
+STAGED_APP="$STAGING/Moonlight.app"
+mkdir -p "$STAGED_APP/Contents/MacOS" "$STAGED_APP/Contents/Resources/Licenses"
+cp "$BIN_PATH" "$STAGED_APP/Contents/MacOS/MoonlightMac"
+ln -s MoonlightMac "$STAGED_APP/Contents/MacOS/Moonlight"
+cp "$PROJECT_DIR/Resources/Info.plist" "$STAGED_APP/Contents/Info.plist"
+printf 'APPL????' > "$STAGED_APP/Contents/PkgInfo"
+cp "$PROJECT_DIR/Resources/AppIcon.icns" "$STAGED_APP/Contents/Resources/"
+cp -R "$RESOURCE_BUNDLE" "$STAGED_APP/Contents/Resources/"
+LICENSES="$STAGED_APP/Contents/Resources/Licenses"
+cp LICENSE THIRD_PARTY_NOTICES.md "$LICENSES/"
+cp Sources/MoonlightCommonC/LICENSE.txt "$LICENSES/moonlight-common-c.txt"
+cp Sources/MoonlightCommonC/enet/LICENSE "$LICENSES/enet.txt"
+cp Sources/MoonlightCommonC/nanors/LICENSE "$LICENSES/nanors.txt"
+cp Sources/Copus/COPYING "$LICENSES/opus.txt"
 
-echo "==> Assembling $APP_NAME bundle..."
+IDENTITY="${MOONLIGHT_SIGNING_IDENTITY:--}"
+SIGN_ARGS=(--force --sign "$IDENTITY")
+if [[ "$IDENTITY" != "-" ]]; then
+    SIGN_ARGS+=(--options runtime --timestamp)
+fi
+codesign "${SIGN_ARGS[@]}" "$STAGED_APP"
+"$SCRIPT_DIR/verify_app.sh" "$STAGED_APP"
+
+if [[ -n "${MOONLIGHT_NOTARY_PROFILE:-}" ]]; then
+    [[ "$IDENTITY" != "-" ]] || { echo "Notarization requires a Developer ID signing identity." >&2; exit 1; }
+    ditto -c -k --keepParent "$STAGED_APP" "$STAGING/Moonlight.zip"
+    xcrun notarytool submit "$STAGING/Moonlight.zip" --keychain-profile "$MOONLIGHT_NOTARY_PROFILE" --wait
+    xcrun stapler staple "$STAGED_APP"
+    xcrun stapler validate "$STAGED_APP"
+    spctl --assess --type execute --verbose "$STAGED_APP"
+fi
 rm -rf "$APP_DIR"
-mkdir -p "$APP_DIR/Contents/MacOS"
-mkdir -p "$APP_DIR/Contents/Resources"
-
-# 1. Executable
-cp "$BIN_PATH" "$APP_DIR/Contents/MacOS/MoonlightMac"
-chmod +x "$APP_DIR/Contents/MacOS/MoonlightMac"
-ln -sf MoonlightMac "$APP_DIR/Contents/MacOS/Moonlight"
-
-# 2. Info.plist & PkgInfo
-cp "$PROJECT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
-echo -n "APPL????" > "$APP_DIR/Contents/PkgInfo"
-
-# 3. App Icon
-if [ -f "$PROJECT_DIR/Resources/AppIcon.icns" ]; then
-    cp "$PROJECT_DIR/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
-fi
-
-# 4. SPM Resource Bundles (Metal Shaders, Assets)
-if [ -d "$RELEASE_DIR/MoonlightMac_MoonlightMac.bundle" ]; then
-    cp -R "$RELEASE_DIR/MoonlightMac_MoonlightMac.bundle" "$APP_DIR/Contents/Resources/"
-fi
-
-# 5. Ad-hoc Code Signing
-echo "==> Applying ad-hoc code signature and entitlements..."
-codesign --force --deep --sign - \
-  --entitlements "$PROJECT_DIR/Resources/MoonlightMac.entitlements" \
-  "$APP_DIR"
-
-echo "==> Verifying signature..."
-codesign -vvv --deep --strict "$APP_DIR"
-
-echo ""
-echo "=========================================================="
-echo "  Success! Application packaged successfully:"
-echo "  $APP_DIR"
-echo "=========================================================="
-echo ""
-echo "To launch the app:"
-echo "  open \"$APP_DIR\""
-echo ""
-echo "To install in Applications:"
-echo "  cp -R \"$APP_DIR\" /Applications/"
-echo ""
+mv "$STAGED_APP" "$APP_DIR"
+echo "Packaged and verified: $APP_DIR"
