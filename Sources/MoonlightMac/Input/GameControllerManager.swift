@@ -125,7 +125,8 @@ public final class GameControllerManager: @unchecked Sendable {
     /// field as an unsigned 32-bit mask, and a sign-extended value does not match the Y bit.
     private let BUTTON_Y: Int32              = 0x8000
 
-    /// Whether the host accepts touch events, sampled once in `start()`.
+    /// Whether the host accepts touch events, queried lazily once the RTSP handshake completes.
+    private var touchReportingChecked = false
     private var touchReportingEnabled = false
 
     /// Cached answer to "can this controller produce touch/motion data", so the poll loop does not
@@ -202,10 +203,8 @@ public final class GameControllerManager: @unchecked Sendable {
         isRunning = true
         connectedControllers = GCController.controllers()
         let hasControllers = !connectedControllers.isEmpty
-        // Cache the host's touch capability once per session. Calling LiGetHostFeatureFlags() per
-        // frame took the library's control-stream lock at 125Hz. Stored under `lock` because the
-        // poll queue reads it.
-        touchReportingEnabled = (LiGetHostFeatureFlags() & UInt32(bitPattern: LI_FF_CONTROLLER_TOUCH_EVENTS)) != 0
+        touchReportingChecked = false
+        touchReportingEnabled = false
         lock.unlock()
 
         NotificationCenter.default.addObserver(
@@ -238,6 +237,7 @@ public final class GameControllerManager: @unchecked Sendable {
         primaryWasTouching = [Bool](repeating: false, count: 4)
         lastTouchX = [Float](repeating: 0, count: 4)
         lastTouchY = [Float](repeating: 0, count: 4)
+        touchReportingChecked = false
         touchReportingEnabled = false
         motionReportingEnabledStorage = false
         motionInterval = 0
@@ -276,6 +276,7 @@ public final class GameControllerManager: @unchecked Sendable {
             lock.lock()
             if !connectedControllers.contains(controller) {
                 connectedControllers.append(controller)
+                lastSentStates = [ControllerState?](repeating: nil, count: 4)
             }
             let shouldStart = isRunning
             lock.unlock()
@@ -291,13 +292,28 @@ public final class GameControllerManager: @unchecked Sendable {
             lock.lock()
             let removedIndex = connectedControllers.firstIndex(of: controller)
             connectedControllers.removeAll(where: { $0 == controller })
+            controllerCapabilities = [ControllerCapabilities?](repeating: nil, count: 4)
+            lastSentStates = [ControllerState?](repeating: nil, count: 4)
+            lastMotionValues = [nil, nil, nil, nil]
+            primaryWasTouching = [Bool](repeating: false, count: 4)
+            lastTouchX = [Float](repeating: 0.5, count: 4)
+            lastTouchY = [Float](repeating: 0.5, count: 4)
+            // Array removal shifts later controllers into lower slots. Release the old
+            // slots immediately, even when the last controller disappears and polling stops.
+            if isRunning, removedIndex != nil {
+                let count = min(connectedControllers.count, 4)
+                let mask = Int16((1 << count) - 1)
+                for slot in 0..<4 {
+                    LiSendMultiControllerEvent(Int16(slot), mask, 0, 0, 0, 0, 0, 0, 0)
+                }
+            }
             let isEmpty = connectedControllers.isEmpty
             lock.unlock()
 
             // Release the haptics engine for the slot that disappeared.
-            if let removedIndex = removedIndex {
+            if removedIndex != nil {
                 hapticsQueue.async { [weak self] in
-                    self?.hapticEngines[removedIndex] = nil
+                    self?.hapticEngines.removeAll()
                 }
             }
 
@@ -309,13 +325,18 @@ public final class GameControllerManager: @unchecked Sendable {
 
     private func pollConnectedControllers() {
         lock.lock()
+        defer { lock.unlock() }
+        guard isRunning else { return }
         let controllers = connectedControllers
-        lock.unlock()
 
         // Slots that no longer have a controller must be forgotten so a reconnect re-sends state.
-        for slot in controllers.count..<lastSentStates.count {
+        for slot in min(controllers.count, lastSentStates.count)..<lastSentStates.count {
             lastSentStates[slot] = nil
+            controllerCapabilities[slot] = nil
         }
+
+        let activeCount = min(controllers.count, 4)
+        let activeMask: Int16 = activeCount > 0 ? Int16((1 << activeCount) - 1) : 0
 
         for (index, controller) in controllers.prefix(4).enumerated() {
             guard let gamepad = controller.extendedGamepad else { continue }
@@ -360,25 +381,24 @@ public final class GameControllerManager: @unchecked Sendable {
                 rightStickY: rightStickY
             )
 
-            guard lastSentStates[index] != state else { continue }
-            lastSentStates[index] = state
+            if lastSentStates[index] != state {
+                lastSentStates[index] = state
 
-            let activeMask: Int16 = Int16(1 << index)
-            LiSendMultiControllerEvent(
-                Int16(index),
-                activeMask,
-                state.buttons,
-                state.leftTrigger,
-                state.rightTrigger,
-                state.leftStickX,
-                state.leftStickY,
-                state.rightStickX,
-                state.rightStickY
-            )
+                LiSendMultiControllerEvent(
+                    Int16(index),
+                    activeMask,
+                    state.buttons,
+                    state.leftTrigger,
+                    state.rightTrigger,
+                    state.leftStickX,
+                    state.leftStickY,
+                    state.rightStickX,
+                    state.rightStickY
+                )
+            }
 
-            // Touchpad is sampled every tick (not change-gated) because the library needs DOWN/MOVE/UP
-            // edges, which the helper derives from its own per-slot state. Skipped entirely for
-            // controllers that have no touchpad, so the capability check is not repeated per frame.
+            // Touchpad is sampled every tick (not change-gated by button/stick state) because the
+            // library needs DOWN/MOVE/UP edges, which the helper derives from its own per-slot state.
             if capabilities(of: controller, slot: index) != .basic {
                 sendTouchState(for: gamepad, controllerSlot: index, activeMask: activeMask)
             }
@@ -389,7 +409,8 @@ public final class GameControllerManager: @unchecked Sendable {
 
     /// Sends motion at most once per host-requested interval, and only when the sample changed.
     private func sendPendingMotion(controllers: [GCController]) {
-        guard motionReportingEnabled else { return }
+        // Called with the manager lock held by the poll loop.
+        guard motionReportingEnabledStorage else { return }
 
         let now = CACurrentMediaTime()
         guard now - lastMotionSendTime >= motionInterval else { return }
@@ -470,6 +491,15 @@ public final class GameControllerManager: @unchecked Sendable {
     /// normalized to -1...1 with the origin at the center; Limelight expects 0...1 with the origin
     /// at the top-left. Only controllers in `GCDualShockGamepad`/`GCDualSenseGamepad` expose it.
     func sendTouchState(for gamepad: GCExtendedGamepad, controllerSlot: Int, activeMask: Int16) {
+        if !touchReportingChecked {
+            let flags = LiGetHostFeatureFlags()
+            if flags != 0 {
+                touchReportingChecked = true
+                touchReportingEnabled = (flags & UInt32(bitPattern: LI_FF_CONTROLLER_TOUCH_EVENTS)) != 0
+            } else {
+                touchReportingEnabled = (flags & UInt32(bitPattern: LI_FF_CONTROLLER_TOUCH_EVENTS)) != 0
+            }
+        }
         guard touchReportingEnabled else { return }
 
         // DS4/DualSense expose the touchpad as a direction pad plus a click button. macOS does NOT
