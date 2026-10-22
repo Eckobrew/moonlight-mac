@@ -18,6 +18,7 @@ public struct StreamingSessionView: View {
                 SampleBufferViewRepresentable(
                     onWindowAttached: { window in
                         window.acceptsMouseMovedEvents = true
+                        InputCaptureCoordinator.shared.mouseMonitor.setStreamWindow(window)
                         let mode = sessionController.activeSettings?.windowMode ?? .fullscreenDesktop
                         WindowManager.shared.applyStartupWindowMode(mode, for: window)
                         FramePacer.shared.updateWindow(window)
@@ -28,6 +29,7 @@ public struct StreamingSessionView: View {
                 MetalStreamViewRepresentable(
                     onWindowAttached: { window in
                         window.acceptsMouseMovedEvents = true
+                        InputCaptureCoordinator.shared.mouseMonitor.setStreamWindow(window)
                         let mode = sessionController.activeSettings?.windowMode ?? .fullscreenDesktop
                         WindowManager.shared.applyStartupWindowMode(mode, for: window)
                         FramePacer.shared.updateWindow(window)

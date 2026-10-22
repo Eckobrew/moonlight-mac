@@ -64,6 +64,11 @@ public final class WindowManager: ObservableObject {
         case .fullscreenDesktop:
             applyFullscreenSpace(to: window)
         }
+
+        // Borderless transitions may leave the same window key and produce no
+        // activation notification. Re-arm capture against the completed geometry;
+        // native fullscreen is also re-armed after didEnter/ExitFullScreen.
+        InputCaptureCoordinator.shared.mouseMonitor.refreshCapture()
     }
 
     public func toggleFullscreen(for window: NSWindow? = nil) {

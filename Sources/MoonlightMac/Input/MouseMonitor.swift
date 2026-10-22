@@ -6,6 +6,7 @@ import MoonlightCommonC
 public final class MouseMonitor: @unchecked Sendable {
     public var isCaptured: Bool = false {
         didSet {
+            guard isCaptured != oldValue else { return }
             updateCursorAssociation()
             onCaptureStateChanged?()
         }
@@ -38,6 +39,8 @@ public final class MouseMonitor: @unchecked Sendable {
     private var appResignObserver: NSObjectProtocol?
     private var appBecomeActiveObserver: NSObjectProtocol?
     private var spaceObserver: NSObjectProtocol?
+    private var windowObservers: [NSObjectProtocol] = []
+    private weak var streamWindow: NSWindow?
 
     /// Dedicated high-priority serial queue for Limelight network socket I/O (matches moonlight-macos-enhanced).
     /// Shared with `KeyboardMonitor` so all `LiSend*` calls are serialized on one queue.
@@ -47,9 +50,21 @@ public final class MouseMonitor: @unchecked Sendable {
         self.inputQueue = inputQueue
     }
 
+    public func setStreamWindow(_ window: NSWindow) {
+        guard streamWindow !== window else { return }
+        streamWindow = window
+        if isMonitoring { applyCursorAssociation() }
+    }
+
+    public func refreshCapture() {
+        guard isMonitoring else { return }
+        applyCursorAssociation()
+    }
+
     public func start() {
         guard !isMonitoring else { return }
         isMonitoring = true
+        if streamWindow == nil { streamWindow = WindowManager.shared.currentWindow }
         previousCoalescingState = NSEvent.isMouseCoalescingEnabled
 
         let mask: NSEvent.EventTypeMask = [
@@ -75,6 +90,7 @@ public final class MouseMonitor: @unchecked Sendable {
             MainActor.assumeIsolated {
                 guard let self = self, self.isCaptured else { return }
                 CGAssociateMouseAndMouseCursorPosition(1)
+                self.restoreMouseCoalescing()
                 self.unhideCursorIfNeeded()
             }
         }
@@ -102,11 +118,30 @@ public final class MouseMonitor: @unchecked Sendable {
                 let isKey = (NSApp.keyWindow ?? NSApp.mainWindow)?.isKeyWindow ?? false
                 if !isKey || !NSApp.isActive {
                     CGAssociateMouseAndMouseCursorPosition(1)
+                    self.restoreMouseCoalescing()
                     self.unhideCursorIfNeeded()
                 } else {
                     self.applyCursorAssociation()
                 }
             }
+        }
+
+        // Initial capture may precede the asynchronous fullscreen transition.
+        // Re-arm when it completes, just as we do after switching back to the app.
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                     NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification,
+                     NSWindow.didEndSheetNotification] {
+            let observer = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                guard let window = notification.object as? NSWindow else { return }
+                MainActor.assumeIsolated {
+                    guard let self, window === self.streamWindow else { return }
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.isMonitoring else { return }
+                        self.applyCursorAssociation()
+                    }
+                }
+            }
+            windowObservers.append(observer)
         }
     }
 
@@ -135,6 +170,9 @@ public final class MouseMonitor: @unchecked Sendable {
             NSWorkspace.shared.notificationCenter.removeObserver(obs)
             spaceObserver = nil
         }
+        windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        windowObservers.removeAll()
+        streamWindow = nil
         isMonitoring = false
         fractionalX = 0.0
         fractionalY = 0.0
@@ -161,25 +199,24 @@ public final class MouseMonitor: @unchecked Sendable {
     }
 
     private func applyCursorAssociation() {
-        if isCaptured {
-            // Keep standard coalescing enabled so that high-polling-rate mice deliver smooth, aggregated deltas
-            NSEvent.isMouseCoalescingEnabled = true
+        if isCaptured, NSApp.isActive, let window = streamWindow,
+           window.isKeyWindow, window.attachedSheet == nil {
+            // Forward motion promptly. Limelight already batches high-rate relative
+            // input at 1 ms intervals; AppKit grouping adds another source of bursts.
+            NSEvent.isMouseCoalescingEnabled = false
 
             // Ensure the streaming window receives continuous mouseMoved events
-            if let window = NSApp.keyWindow ?? NSApp.mainWindow {
-                window.acceptsMouseMovedEvents = true
+            window.acceptsMouseMovedEvents = true
 
-                // In CoreGraphics screen coordinates, Y starts at top of the primary screen
-                let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? NSScreen.main?.frame.height ?? 1080.0
-                let centerScreenX = window.frame.midX
-                let centerScreenY = primaryScreenHeight - window.frame.midY
-                let centerPoint = CGPoint(x: centerScreenX, y: centerScreenY)
+            // In CoreGraphics screen coordinates, Y starts at top of the primary screen
+            let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? NSScreen.main?.frame.height ?? 1080.0
+            let centerScreenX = window.frame.midX
+            let centerScreenY = primaryScreenHeight - window.frame.midY
+            let centerPoint = CGPoint(x: centerScreenX, y: centerScreenY)
 
-                // Mark seenWarp to discard the single synthetic delta from CGWarpMouseCursorPosition
-                // (Matches Moonlight-Qt SDL Cocoa_SetRelativeMouseMode without artificial millisecond suppression delay)
-                seenWarp = true
-                CGWarpMouseCursorPosition(centerPoint)
-            }
+            // Discard the first motion event after entering relative mode (as SDL does).
+            seenWarp = true
+            CGWarpMouseCursorPosition(centerPoint)
 
             // Disassociate cursor position to allow infinite relative mouse travel
             CGAssociateMouseAndMouseCursorPosition(0)
@@ -187,7 +224,7 @@ public final class MouseMonitor: @unchecked Sendable {
             fractionalX = 0.0
             fractionalY = 0.0
         } else {
-            NSEvent.isMouseCoalescingEnabled = true
+            restoreMouseCoalescing()
             seenWarp = false
             fractionalX = 0.0
             fractionalY = 0.0
@@ -198,6 +235,12 @@ public final class MouseMonitor: @unchecked Sendable {
 
     // MARK: - Event Dispatching
 
+    private func restoreMouseCoalescing() {
+        if let previous = previousCoalescingState {
+            NSEvent.isMouseCoalescingEnabled = previous
+        }
+    }
+
     private func handleMouseEvent(_ event: NSEvent) -> NSEvent? {
         if !isCaptured {
             // Moonlight-Qt behavior: recapture on left click release inside the *stream* window.
@@ -207,6 +250,12 @@ public final class MouseMonitor: @unchecked Sendable {
                 isCaptured = true
                 return nil
             }
+            return event
+        }
+
+        // Capture intent survives focus changes, but input must not leak into the
+        // host while a settings window, sheet, or another app has focus.
+        guard NSApp.isActive, isStreamWindow(event.window), event.window?.isKeyWindow == true else {
             return event
         }
 
@@ -324,11 +373,9 @@ public final class MouseMonitor: @unchecked Sendable {
 
     /// True only for the window that is currently presenting the stream.
     ///
-    /// During a session the streaming window is the key/main window, so tying recapture to it keeps
-    /// clicks in other Moonlight windows (host grid, settings, sheets) from grabbing the cursor.
     private func isStreamWindow(_ window: NSWindow?) -> Bool {
         guard let window = window else { return false }
-        guard let streamWindow = WindowManager.shared.currentWindow else { return false }
+        guard let streamWindow else { return false }
         guard window === streamWindow else { return false }
 
         // Sheets and panels presented over the stream window are not the stream itself.
