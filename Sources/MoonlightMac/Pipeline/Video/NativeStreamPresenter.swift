@@ -10,6 +10,9 @@ public final class NativeStreamPresenter: @unchecked Sendable {
     private let lock = NSLock()
     public weak var displayLayer: AVSampleBufferDisplayLayer?
     private var cachedFormatDesc: CMVideoFormatDescription?
+    private let presentationQueue = DispatchQueue(label: "com.moonlight.native.present", qos: .userInteractive)
+    private var pendingPixelBuffer: CVPixelBuffer?
+    private var isDraining = false
 
     private init() {}
 
@@ -17,10 +20,40 @@ public final class NativeStreamPresenter: @unchecked Sendable {
         lock.lock()
         self.displayLayer = layer
         self.cachedFormatDesc = nil
+        self.pendingPixelBuffer = nil
         lock.unlock()
     }
 
     public func enqueue(pixelBuffer: CVPixelBuffer) {
+        lock.lock()
+        pendingPixelBuffer = pixelBuffer
+        guard !isDraining else {
+            lock.unlock()
+            return
+        }
+        isDraining = true
+        lock.unlock()
+
+        // Native enqueue/status/flush may wait on the renderer. Never do that
+        // on the decoder callback (or the CVDisplayLink callback when pacing).
+        presentationQueue.async { [weak self] in self?.drainFrames() }
+    }
+
+    private func drainFrames() {
+        while true {
+            lock.lock()
+            guard let frame = pendingPixelBuffer else {
+                isDraining = false
+                lock.unlock()
+                return
+            }
+            pendingPixelBuffer = nil
+            lock.unlock()
+            autoreleasepool { present(pixelBuffer: frame) }
+        }
+    }
+
+    private func present(pixelBuffer: CVPixelBuffer) {
         lock.lock()
         guard let displayLayer = self.displayLayer else {
             lock.unlock()
@@ -77,11 +110,13 @@ public final class NativeStreamPresenter: @unchecked Sendable {
             if displayLayer.sampleBufferRenderer.status == .failed {
                 displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: false)
             }
+            guard displayLayer.sampleBufferRenderer.isReadyForMoreMediaData else { return }
             displayLayer.sampleBufferRenderer.enqueue(sample)
         } else {
             if displayLayer.status == .failed {
                 displayLayer.flush()
             }
+            guard displayLayer.isReadyForMoreMediaData else { return }
             displayLayer.enqueue(sample)
         }
     }
@@ -90,13 +125,16 @@ public final class NativeStreamPresenter: @unchecked Sendable {
         lock.lock()
         let layer = self.displayLayer
         self.cachedFormatDesc = nil
+        self.pendingPixelBuffer = nil
         lock.unlock()
 
         guard let displayLayer = layer else { return }
-        if #available(macOS 14.0, *) {
-            displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: true)
-        } else {
-            displayLayer.flushAndRemoveImage()
+        presentationQueue.async {
+            if #available(macOS 14.0, *) {
+                displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: true)
+            } else {
+                displayLayer.flushAndRemoveImage()
+            }
         }
     }
 }
