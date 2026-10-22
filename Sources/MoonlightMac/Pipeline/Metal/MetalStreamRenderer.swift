@@ -31,7 +31,10 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     /// BT.2020 (PQ-encoded) values above 1.0, which CoreAnimation drives as EDR.
     /// Toggling this reconfigures the layer and rebuilds the on-demand pipelines.
     public var isHdrActive: Bool = false {
-        didSet { updateHDRSettings() }
+        didSet {
+            guard isHdrActive != oldValue else { return }
+            updateHDRSettings()
+        }
     }
 
     /// Pixel format of the layer drawable. EDR requires a 16-bit float target.
@@ -40,6 +43,7 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     }
     public var enableVsync: Bool = true {
         didSet {
+            guard enableVsync != oldValue else { return }
             updateVsyncSettings()
         }
     }
@@ -195,6 +199,11 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     }
 
     private func compileShadersFromSource(device: MTLDevice) {
+        if let source = ShaderResources.source(),
+           let library = try? device.makeLibrary(source: source, options: nil) {
+            buildPipelines(device: device, library: library)
+            return
+        }
         let metalSource = """
         #include <metal_stdlib>
         using namespace metal;
@@ -498,11 +507,17 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
 
             guard renderToMetalLayer(pixelBuffer: pixelBuffer) else {
                 // Drawable unavailable (occluded/minimized window). Stop draining so the loop is not
-                // busy-spinning; the next submitted frame restarts it and renders the newest buffer.
+                // busy-spinning; if a newer frame arrived while nextDrawable() waited, back off
+                // briefly before retrying so it is not left stranded.
                 lock.lock()
-                self.isRenderActive = false
+                if self.pendingPixelBuffer == nil {
+                    self.isRenderActive = false
+                    lock.unlock()
+                    return
+                }
                 lock.unlock()
-                return
+                Thread.sleep(forTimeInterval: 0.002)
+                continue
             }
         }
     }
