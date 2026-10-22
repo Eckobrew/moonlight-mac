@@ -10,41 +10,37 @@ public enum VideoCodec: String, Codable, CaseIterable, Sendable {
     case av1 = "AV1"
 
     public var limelightMask: Int32 {
+        limelightMask(enableHdr: false)
+    }
+
+    public func limelightMask(enableHdr: Bool) -> Int32 {
+        let hevcMask = enableHdr ? (VIDEO_FORMAT_H265 | VIDEO_FORMAT_H265_MAIN10) : VIDEO_FORMAT_H265
+        let av1Mask = Self.av1MaskIfSupported(enableHdr: enableHdr)
         switch self {
         case .auto:
-            return VIDEO_FORMAT_H264 | VIDEO_FORMAT_H265 | VIDEO_FORMAT_H265_MAIN10 | Self.av1MaskIfSupported
+            return VIDEO_FORMAT_H264 | hevcMask | av1Mask
         case .h264:
             return VIDEO_FORMAT_H264
         case .hevc:
-            return VIDEO_FORMAT_H265 | VIDEO_FORMAT_H265_MAIN10
+            return hevcMask
         case .av1:
-            return Self.av1MaskIfSupported
+            return av1Mask
         }
     }
 
-    /// Whether this Mac's VideoToolbox can decode AV1.
+    /// Whether this Mac's VideoToolbox hardware can decode AV1.
     ///
-    /// Advertising AV1 to a host on a Mac without an AV1 decoder (pre-M3) yields a black stream, so
-    /// both the codec picker and the advertised format mask are gated on this. The probe builds a
-    /// real format description from a synthetic Sequence Header OBU; if that fails no AV1 decoder
-    /// is registered. Cached for the process lifetime.
+    /// Advertising AV1 to a host on a Mac without an AV1 hardware decoder (pre-M3) yields a failing
+    /// decompression session, so both the codec picker and the advertised format mask are gated on
+    /// `VTIsHardwareDecodeSupported`. Cached for the process lifetime.
     public static let isAV1DecodingSupported: Bool = {
-        guard #available(macOS 14.0, *) else { return false }
-
-        // Minimal valid Sequence Header OBU: profile 0, reduced_still_picture_header = 1,
-        // level 0, 64x64, 8-bit 4:2:0. Only the header needs to parse.
-        let probeOBU: [UInt8] = [
-            0x0A, 0x0B,                   // OBU header (type 1, has_size_field) + size = 11
-            0x00,                         // seq_profile(0) still_picture(0) reduced_still(0)
-            0x00, 0x00, 0x00, 0x00,       // timing_info_present=0, iddp=0, op_cnt_minus_1=0
-            0x00, 0x00, 0x00, 0x00,       // operating point + width/height bits
-            0x00, 0x04, 0x04              // max dimensions and remaining flags
-        ]
-        return AV1OBUParser.makeFormatDescription(sequenceHeader: probeOBU) != nil
+        guard #available(macOS 13.0, *) else { return false }
+        return VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
     }()
 
-    private static var av1MaskIfSupported: Int32 {
-        isAV1DecodingSupported ? (VIDEO_FORMAT_AV1_MAIN8 | VIDEO_FORMAT_AV1_MAIN10) : 0
+    private static func av1MaskIfSupported(enableHdr: Bool) -> Int32 {
+        guard isAV1DecodingSupported else { return 0 }
+        return enableHdr ? (VIDEO_FORMAT_AV1_MAIN8 | VIDEO_FORMAT_AV1_MAIN10) : VIDEO_FORMAT_AV1_MAIN8
     }
 }
 
