@@ -32,6 +32,7 @@ public struct PerformanceHUDView: View {
                 metricRow(label: "FPS", value: String(format: "%.1f / %d", metrics.currentFps, metrics.targetFps))
                 metricRow(label: "Decode Time", value: String(format: "%.2f ms", metrics.decodeTimeMs))
                 metricRow(label: "RTT Latency", value: String(format: "%.1f ms", metrics.roundTripTimeMs))
+                metricRow(label: "RTT Variation", value: String(format: "%.1f ms", metrics.roundTripTimeVarianceMs))
                 metricRow(label: "Bitrate", value: String(format: "%.1f Mbps", metrics.bitrateMbps))
                 metricRow(
                     label: "Packet Loss",

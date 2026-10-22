@@ -5,6 +5,7 @@ public struct PerformanceMetrics: Sendable {
     public var targetFps: Int
     public var bitrateMbps: Double
     public var roundTripTimeMs: Double
+    public var roundTripTimeVarianceMs: Double
     public var decodeTimeMs: Double
     public var networkDroppedFrames: Int
     public var totalFramesReceived: UInt64
@@ -20,6 +21,7 @@ public struct PerformanceMetrics: Sendable {
         targetFps: Int = 60,
         bitrateMbps: Double = 0.0,
         roundTripTimeMs: Double = 0.0,
+        roundTripTimeVarianceMs: Double = 0.0,
         decodeTimeMs: Double = 0.0,
         networkDroppedFrames: Int = 0,
         totalFramesReceived: UInt64 = 0,
@@ -34,6 +36,7 @@ public struct PerformanceMetrics: Sendable {
         self.targetFps = targetFps
         self.bitrateMbps = bitrateMbps
         self.roundTripTimeMs = roundTripTimeMs
+        self.roundTripTimeVarianceMs = roundTripTimeVarianceMs
         self.decodeTimeMs = decodeTimeMs
         self.networkDroppedFrames = networkDroppedFrames
         self.totalFramesReceived = totalFramesReceived

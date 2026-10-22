@@ -57,6 +57,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     private var activeApp: StreamApp?
     public private(set) var activeSettings: StreamSettings?
     private var latencyActivityToken: NSObjectProtocol?
+    private let streamDiagnosticsEnabled = ProcessInfo.processInfo.environment["MOONLIGHT_STREAM_DIAGNOSTICS"] == "1"
 
     private init() {
         StreamSessionEngine.shared.videoDecoder.delegate = self
@@ -549,7 +550,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     /// separate `@Published` sends the previous per-field assignment produced.
     private func updateMetricsIfNeeded() {
         // With the HUD hidden nothing reads these numbers, so avoid invalidating the view tree.
-        guard showPerformanceOverlay else {
+        guard showPerformanceOverlay || streamDiagnosticsEnabled else {
             metricsAccumulator.resetFpsWindow()
             return
         }
@@ -558,11 +559,12 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
         var estimatedRtt: UInt32 = 0
         var estimatedRttVar: UInt32 = 0
+        var updated = metrics
         if LiGetEstimatedRttInfo(&estimatedRtt, &estimatedRttVar) {
-            metrics.roundTripTimeMs = Double(estimatedRtt)
+            updated.roundTripTimeMs = Double(estimatedRtt)
+            updated.roundTripTimeVarianceMs = Double(estimatedRttVar)
         }
 
-        var updated = metrics
         updated.currentFps = snap.fps
         updated.decodeTimeMs = snap.decodeTime
         updated.totalFramesRendered = snap.rendered
@@ -581,7 +583,14 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             updated.currentCodec = settings.codec.rawValue
         }
 
-        metrics = updated
+        if streamDiagnosticsEnabled {
+            let window = WindowManager.shared.currentWindow
+            let values = String(format: "decodeFPS=%.1f metalFPS=%.1f decodeMs=%.2f rttMs=%.1f rttVariationMs=%.1f",
+                                updated.currentFps, renderer.currentRenderFps, updated.decodeTimeMs,
+                                updated.roundTripTimeMs, updated.roundTripTimeVarianceMs)
+            AppLogger.shared.info("\(values) active=\(NSApp.isActive) key=\(window?.isKeyWindow == true) visible=\(window?.occlusionState.contains(.visible) == true) coalescing=\(NSEvent.isMouseCoalescingEnabled)", category: "STREAM-DIAGNOSTICS")
+        }
+        if showPerformanceOverlay { metrics = updated }
     }
 
     private func stopMetricsPolling() {
