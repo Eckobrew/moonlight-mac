@@ -13,9 +13,12 @@ resolution, frame rate, bitrate and renderer for each run. Run optimized builds.
 | Decode | H.264 and HEVC; AV1 on supported Macs; unsupported AV1 selection behavior | Correct picture, useful errors/capability gating and keyframe recovery |
 | HDR | SDR/HDR content, Metal/native renderers, fullscreen/windowed, display changes | No washed-out blacks, clipped highlights, unexpected tone mapping or blank stream |
 | Refresh | 60/120/high-refresh modes, pacing on/off, move between displays | No shutdown hang; sensible frame drops and latency; no stale frames after stop |
+| Native resolution | With laptop and external displays attached, launch repeatedly from the external display; repeat with settings sheets and fullscreen changes | Native resolution follows the content window; `Resolved Native display resolution` and HTTP `requested mode` log entries agree on every launch/resume |
 | Audio | Stereo/5.1/7.1 channel test; default/external/Bluetooth devices; route/focus changes | Correct channel order, no persistent underruns, recovery after route changes |
 | Keyboard | UK/German/AZERTY, dead keys, AltGr, ISO/JIS keys, keypad Enter, Caps Lock, host paste | Physical position mapping is consistent; exact text paste works; no stuck modifiers |
 | Mouse | High-polling mouse, fractional movement, focus loss, Spaces/fullscreen changes | Smooth relative input and reliable cursor release/recapture |
+| Startup capture | Start a desktop stream directly into each fullscreen mode, then compare before/after Cmd+Tab | Smooth input from the first capture; switching apps is not required to recover |
+| Wi-Fi latency | Compare against moonlight-qt with identical codec, resolution, FPS and bitrate; record RTT and RTT variation while idle and moving the mouse | Distinguish network spikes from decode and presentation delay; capture HUD readings before/after switching apps |
 | Controllers | 1–4 controllers, a fifth attached, unplug/reorder/reconnect | No crash/stuck buttons; correct player slots |
 | Controller extras | Xbox/PS rumble, DualSense touchpad/motion, host-requested sensor rates | Features actually work with the intended host/controller combination |
 | Clipboard | Copy while sends/pulls are delayed; unsupported host clipboard endpoint | New local text is not overwritten; one failed direction does not disable the other |
@@ -25,3 +28,41 @@ resolution, frame rate, bitrate and renderer for each run. Run optimized builds.
 Measure input-to-photon and audio delay with a real setup before making numerical
 latency or “lowest latency” claims. Unit tests and build success are not latency
 benchmarks.
+
+When comparing FPS, use continuous motion (a game, animation, or moving a window)
+as well as a static desktop. A host may send fewer frames when the desktop is idle.
+
+For startup/focus investigations, enable opt-in diagnostics when launching the
+release binary (substitute your saved host and app names):
+
+```sh
+MOONLIGHT_STREAM_DIAGNOSTICS=1 ./Products/Moonlight.app/Contents/MacOS/MoonlightMac stream 'PC name' 'Desktop'
+```
+
+The `STREAM-DIAGNOSTICS` log records decode FPS, Metal submission FPS (only relevant
+for the Metal renderer), decode time, network RTT/variation, window visibility/focus
+and mouse coalescing state twice per second, even with the HUD hidden. It is disabled
+by default. Compare continuous-motion readings before and after switching apps;
+these counters do not measure input-to-photon latency.
+
+## Desktop startup check — 2026-10-22
+
+Tested the packaged release against a real Sunshine desktop over Wi-Fi using
+HEVC, 1920×1080 at 60 FPS, 40 Mbps, the native AVSampleBuffer renderer, pacing off
+and native fullscreen. On a fresh connection, before the first focus switch:
+
+- Decode throughput reached 60 FPS; moving-desktop samples repeatedly reported
+  58–60 FPS. Idle desktop samples still fell to 16 FPS.
+- RTT was mostly 2–3 ms after startup, with occasional Wi-Fi spikes (up to 13 ms
+  in this run).
+- The user reported smooth mouse movement at startup without the previous
+  Cmd+Tab workaround.
+
+This verifies the desktop symptom improved on that setup. Games, sustained motion,
+other mice/displays and the Metal path still need separate real-host checks.
+
+Native-resolution startup was also checked with three consecutive fresh Desktop
+launches. Each detected the Portable Monitor at 1920×1080, sent
+`requested mode=1920x1080x60`, received video and exited cleanly. Only the portable
+monitor was exposed by the display probe during this run; the alternating
+internal/external-display case still needs confirmation with both displays active.
