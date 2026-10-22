@@ -13,7 +13,7 @@ public struct HostGridView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            if let selectedHost = appState.selectedHost, selectedHost.isPaired {
+            if let selectedHost = appState.selectedHost, selectedHost.isSecurelyPaired {
                 AppGridView(
                     host: selectedHost,
                     apps: appState.appsForSelectedHost,
@@ -106,7 +106,7 @@ public struct HostGridView: View {
                     error: appState.pairingError,
                     isPairing: appState.isPairingInProgress,
                     onCancel: {
-                        appState.isShowingPairing = false
+                        appState.cancelPairing()
                     }
                 )
             }
@@ -124,7 +124,7 @@ public struct HostGridView: View {
                 // Avoid competing with low-latency streaming UDP traffic when active
                 guard !StreamSessionController.shared.isStreaming else { continue }
 
-                if let selectedHost = appState.selectedHost, selectedHost.isPaired {
+                if let selectedHost = appState.selectedHost, selectedHost.isSecurelyPaired {
                     // On the apps screen: refresh apps and host status (running app, etc.)
                     await appState.loadApps(for: selectedHost)
                     if let (updatedHost, _) = try? await SunshineHTTPClient.shared.fetchServerInfo(host: selectedHost) {
@@ -202,7 +202,7 @@ public struct HostGridView: View {
 
     private func selectHost(_ host: Host) {
         appState.selectedHost = host
-        if host.isPaired {
+        if host.isSecurelyPaired {
             Task {
                 await appState.loadApps(for: host)
             }

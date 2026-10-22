@@ -150,25 +150,14 @@ public final class CertificateManager: @unchecked Sendable {
         return cachedDerCert ?? getClientCertificatePem()
     }
 
-    /// Returns the certificate signature bytes (last 256 bytes of DER)
+    /// The pairing protocol includes the certificate's ASN.1 signature bytes.
     public func getCertificateSignature() -> Data {
-        let der = getClientCertificateDer()
-        if der.count >= 256 {
-            return der.suffix(256)
-        }
-        return Data(repeating: 0, count: 256)
+        HostTrust.certificateSignature(der: getClientCertificateDer()) ?? Data()
     }
 
-    /// Extracts the RSA-2048 signature bytes (last 256 bytes of DER) from a PEM certificate string
     public func getCertificateSignature(fromPem pemString: String) -> Data? {
-        let clean = pemString
-            .replacingOccurrences(of: "-----BEGIN CERTIFICATE-----", with: "")
-            .replacingOccurrences(of: "-----END CERTIFICATE-----", with: "")
-            .replacingOccurrences(of: "\n", with: "")
-            .replacingOccurrences(of: "\r", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let der = Data(base64Encoded: clean), der.count >= 256 else { return nil }
-        return der.suffix(256)
+        guard let der = HostTrust.certificateDER(pem: pemString) else { return nil }
+        return HostTrust.certificateSignature(der: der)
     }
 
     /// Returns SecIdentity for mutual TLS authentication

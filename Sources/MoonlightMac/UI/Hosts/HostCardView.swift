@@ -80,9 +80,9 @@ public struct HostCardView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
-                } else if !host.isPaired {
+                } else if !host.isSecurelyPaired {
                     Button(action: onPair) {
-                        Label("Pair", systemImage: "link")
+                        Label(host.needsCertificatePairing ? "Pair Again" : "Pair", systemImage: "link")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.blue)
@@ -139,7 +139,7 @@ public struct HostCardView: View {
         .onTapGesture(count: 2) {
             if host.status == .offline {
                 onWakeOnLan()
-            } else if host.isPaired {
+            } else if host.isSecurelyPaired {
                 onSelect()
             } else {
                 onPair()
@@ -153,7 +153,7 @@ public struct HostCardView: View {
     private var statusColor: Color {
         switch host.status {
         case .online:
-            return host.isPaired ? .green : .orange
+            return host.isSecurelyPaired ? .green : .orange
         case .pairingRequired:
             return .orange
         case .streaming:
@@ -168,7 +168,7 @@ public struct HostCardView: View {
     private var statusText: String {
         switch host.status {
         case .online:
-            return host.isPaired ? "Online" : "Needs Pairing"
+            return host.isSecurelyPaired ? "Online" : "Needs Pairing"
         case .pairingRequired:
             return "Unpaired"
         case .streaming:

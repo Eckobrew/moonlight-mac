@@ -16,6 +16,7 @@ public final class AppState: @unchecked Sendable {
     public var pairingPin: String?
     public var pairingError: String?
     public var isPairingInProgress: Bool = false
+    private var pairingTask: Task<Host, any Error>?
 
     public var activeHost: Host?
     public var activeApp: StreamApp?
@@ -38,11 +39,9 @@ public final class AppState: @unchecked Sendable {
 
     public init() {
         StreamSessionController.shared.onSessionStopped = { [weak self] in
-            Task { @MainActor in
-                self?.isStreaming = false
-                self?.activeHost = nil
-                self?.activeApp = nil
-            }
+            self?.isStreaming = false
+            self?.activeHost = nil
+            self?.activeApp = nil
         }
 
         loadSettings()
@@ -142,6 +141,9 @@ public final class AppState: @unchecked Sendable {
 
     public func addOrUpdateHost(_ host: Host) {
         if let idx = hosts.firstIndex(where: { isSameHost($0, host) }) {
+            // Unauthenticated discovery cannot replace metadata or trust for a
+            // pinned PC. The regular refresh probes it using the saved pin.
+            if hosts[idx].isSecurelyPaired && host.serverCertificateDER == nil { return }
             var merged = host
             merged.id = hosts[idx].id
             if merged.serverId == nil || merged.serverId?.isEmpty == true {
@@ -165,9 +167,12 @@ public final class AppState: @unchecked Sendable {
 
             // CRITICAL: Pairing is cryptographically persistent.
             // Never allow a candidate probe, mDNS announcement, or unauthenticated HTTP probe to unpair a paired host.
+            if merged.serverCertificateDER == nil {
+                merged.serverCertificateDER = hosts[idx].serverCertificateDER
+            }
             if hosts[idx].isPaired {
                 merged.isPaired = true
-                if merged.status == .pairingRequired {
+                if merged.status == .pairingRequired && merged.isSecurelyPaired {
                     merged.status = hosts[idx].status == .offline ? .offline : .online
                 }
             }
@@ -196,6 +201,7 @@ public final class AppState: @unchecked Sendable {
         await SunshineHTTPClient.shared.unpair(host: host)
         if let idx = hosts.firstIndex(where: { $0.id == host.id || $0.address == host.address }) {
             hosts[idx].isPaired = false
+            hosts[idx].serverCertificateDER = nil
             hosts[idx].status = .pairingRequired
             if selectedHost?.id == host.id {
                 selectedHost = hosts[idx]
@@ -225,11 +231,14 @@ public final class AppState: @unchecked Sendable {
             for await (hostId, updatedHost, _) in group {
                 await MainActor.run {
                     guard let idx = self.hosts.firstIndex(where: { $0.id == hostId }) else { return }
+                    guard let original = currentHosts.first(where: { $0.id == hostId }),
+                          self.hosts[idx].isPaired == original.isPaired,
+                          self.hosts[idx].serverCertificateDER == original.serverCertificateDER else { return }
                     if let updated = updatedHost {
                         var merged = updated
                         if self.hosts[idx].isPaired {
                             merged.isPaired = true
-                            if merged.status == .pairingRequired {
+                            if merged.status == .pairingRequired && merged.isSecurelyPaired {
                                 merged.status = .online
                             }
                         }
@@ -268,6 +277,7 @@ public final class AppState: @unchecked Sendable {
         do {
             let apps = try await SunshineHTTPClient.shared.fetchAppList(host: host)
             await MainActor.run {
+                guard self.selectedHost?.id == host.id else { return }
                 self.appsForSelectedHost = apps
             }
         } catch {
@@ -279,50 +289,69 @@ public final class AppState: @unchecked Sendable {
                         self.hosts[idx].status = .pairingRequired
                         self.saveHosts()
                     }
-                    self.selectedHost = nil
+                    if self.selectedHost?.id == host.id {
+                        self.selectedHost = nil
+                        self.appsForSelectedHost.removeAll()
+                    }
                 }
             }
         }
     }
 
     public func startPairing(for host: Host) async {
+        guard !isPairingInProgress else { return }
         isPairingInProgress = true
         pairingPin = nil
         pairingError = nil
         isShowingPairing = true
 
-        do {
-            let success = try await PairingService.shared.pair(host: host) { [weak self] pin in
+        let task = Task {
+            try await PairingService.shared.pair(host: host) { [weak self] pin in
                 Task { @MainActor [weak self] in
-                    self?.pairingPin = pin
+                    guard let self, self.isShowingPairing else { return }
+                    self.pairingPin = pin
                 }
             }
-
+        }
+        pairingTask = task
+        defer { pairingTask = nil }
+        do {
+            let updated = try await task.value
+            guard !task.isCancelled else {
+                isPairingInProgress = false
+                return
+            }
             await MainActor.run {
                 self.isPairingInProgress = false
-                if success {
-                    self.isShowingPairing = false
-                    var updated = host
-                    updated.isPaired = true
-                    updated.status = .online
-                    self.addOrUpdateHost(updated)
-                    self.selectedHost = updated
-                    Task {
-                        await self.loadApps(for: updated)
-                    }
-                } else {
-                    self.pairingError = "Pairing failed or timed out."
+                self.isShowingPairing = false
+                self.addOrUpdateHost(updated)
+                self.selectedHost = self.hosts.first { $0.id == host.id } ?? updated
+                if let selectedHost = self.selectedHost {
+                    Task { await self.loadApps(for: selectedHost) }
                 }
             }
         } catch {
             await MainActor.run {
                 self.isPairingInProgress = false
-                self.pairingError = error.localizedDescription
+                if !task.isCancelled { self.pairingError = error.localizedDescription }
             }
         }
     }
 
+    public func cancelPairing() {
+        pairingTask?.cancel()
+        isShowingPairing = false
+        pairingPin = nil
+        // Keep the attempt in progress until its host cleanup finishes, so a
+        // retry cannot race an old /unpair request.
+    }
+
     public func launchStream(host: Host, app: StreamApp) {
+        guard !isStreaming else { return }
+        guard host.isSecurelyPaired else {
+            Task { await self.startPairing(for: host) }
+            return
+        }
         self.activeHost = host
         self.activeApp = app
         self.isStreaming = true

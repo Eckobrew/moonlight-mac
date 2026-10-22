@@ -33,6 +33,13 @@ public struct PairingSheet: View {
                 .font(.title2)
                 .fontWeight(.bold)
 
+            if host.needsCertificatePairing {
+                Text("Pair this PC again to save and verify its certificate. Your saved PC settings will be kept.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
             if let pin = pin {
                 VStack(spacing: 12) {
                     Text("Enter this PIN on your host PC:")
@@ -52,7 +59,7 @@ public struct PairingSheet: View {
                         }
                     }
 
-                    Text("Sunshine / Apollo Web UI: https://\(host.address):47990/pin")
+                    Text("Sunshine / Apollo Web UI: https://\(host.urlAddress):47990/pin")
                         .font(.caption)
                         .foregroundStyle(.blue)
                         .textSelection(.enabled)

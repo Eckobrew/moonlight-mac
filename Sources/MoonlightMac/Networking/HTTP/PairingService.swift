@@ -15,9 +15,26 @@ public final class PairingService: @unchecked Sendable {
     public func pair(
         host: Host,
         onPinGenerated: @escaping @Sendable (String) -> Void
-    ) async throws -> Bool {
-        // Regenerate uniqueId so that Sunshine's map_id_sess table never collides with any stale pending session
-        let uniqueId = CertificateManager.shared.regenerateUniqueId()
+    ) async throws -> Host {
+        do {
+            return try await performHandshake(host: host, onPinGenerated: onPinGenerated)
+        } catch {
+            // Complete cleanup before allowing a retry. A detached, unawaited
+            // cleanup could otherwise unpair the next successful attempt.
+            await Task.detached {
+                await self.httpClient.unpair(host: host)
+            }.value
+            throw error
+        }
+    }
+
+    private func performHandshake(host: Host, onPinGenerated: @escaping @Sendable (String) -> Void) async throws -> Host {
+        try Task.checkCancellation()
+        // Pairing one PC must not change the identity already registered on other PCs.
+        let uniqueId = CertificateManager.shared.uniqueId
+        if host.needsCertificatePairing {
+            await httpClient.unpair(host: host)
+        }
         let clientCertPem = CertificateManager.shared.getClientCertificatePem()
         let clientCertHex = CryptoUtils.hexString(clientCertPem)
 
@@ -25,30 +42,19 @@ public final class PairingService: @unchecked Sendable {
         let clientSalt = CryptoUtils.randomBytes(count: 16)
         let clientSaltHex = CryptoUtils.hexString(clientSalt)
 
-        AppLogger.shared.info("Starting pairing with host \(host.name) (\(host.address)). Generated PIN: \(pin), uniqueId: \(uniqueId)", category: "PAIRING")
+        AppLogger.shared.info("Starting pairing with host \(host.name) (\(host.address))", category: "PAIRING")
 
         // Display PIN on UI for user to enter in Sunshine/Apollo web UI
         onPinGenerated(pin)
 
         // Derive AES key matching Moonlight-Qt: SHA256(salt + pin.utf8)[0..<16]
         let aesKey = CryptoUtils.deriveKey(salt: clientSalt, pin: pin)
-        AppLogger.shared.debug("Derived AES-128 key for PIN \(pin): \(CryptoUtils.hexString(aesKey))", category: "PAIRING")
-
-        var pairingSuccessful = false
-        defer {
-            if !pairingSuccessful {
-                AppLogger.shared.warning("Pairing was not completed; cleaning up host session via unpair...", category: "PAIRING")
-                Task {
-                    await self.httpClient.unpair(host: host)
-                }
-            }
-        }
 
         // ==========================================
         // Stage 1: phrase=getservercert
         // ==========================================
         AppLogger.shared.info("[Stage 1/5] Waiting for user to enter PIN on host (phrase=getservercert)...", category: "PAIRING")
-        let getCertUrl = "http://\(host.address):\(host.httpPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&phrase=getservercert&salt=\(clientSaltHex)&clientcert=\(clientCertHex)"
+        let getCertUrl = "http://\(host.urlAddress):\(host.httpPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&phrase=getservercert&salt=\(clientSaltHex)&clientcert=\(clientCertHex)"
         
         let (_, certDict) = try await httpClient.fetchRaw(urlString: getCertUrl, timeout: 180.0, usePairingSession: true)
 
@@ -66,7 +72,8 @@ public final class PairingService: @unchecked Sendable {
             throw NSError(domain: "PairingService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Stage 1 failed: \(msg)"])
         }
 
-        guard let serverCertSig = CertificateManager.shared.getCertificateSignature(fromPem: serverCertPem) else {
+        guard let serverCertificateDER = HostTrust.certificateDER(pem: serverCertPem),
+              let serverCertSig = HostTrust.certificateSignature(der: serverCertificateDER) else {
             AppLogger.shared.error("Failed to extract 256-byte signature from host server certificate", category: "PAIRING")
             throw NSError(domain: "PairingService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to parse host certificate signature"])
         }
@@ -82,7 +89,7 @@ public final class PairingService: @unchecked Sendable {
         }
         let challengeHex = CryptoUtils.hexString(encryptedChallenge)
 
-        let clientChallengeUrl = "http://\(host.address):\(host.httpPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&clientchallenge=\(challengeHex)"
+        let clientChallengeUrl = "http://\(host.urlAddress):\(host.httpPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&clientchallenge=\(challengeHex)"
         let (_, challengeDict) = try await httpClient.fetchRaw(urlString: clientChallengeUrl, timeout: 10.0)
 
         guard challengeDict["paired"] == "1" else {
@@ -120,7 +127,7 @@ public final class PairingService: @unchecked Sendable {
         }
         let serverChallengeRespHex = CryptoUtils.hexString(encryptedChallengeResponseHash)
 
-        let serverChallengeRespUrl = "http://\(host.address):\(host.httpPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&serverchallengeresp=\(serverChallengeRespHex)"
+        let serverChallengeRespUrl = "http://\(host.urlAddress):\(host.httpPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&serverchallengeresp=\(serverChallengeRespHex)"
         let (_, serverRespDict) = try await httpClient.fetchRaw(urlString: serverChallengeRespUrl, timeout: 10.0)
 
         guard serverRespDict["paired"] == "1" else {
@@ -135,7 +142,11 @@ public final class PairingService: @unchecked Sendable {
             throw NSError(domain: "PairingService", code: 3, userInfo: [NSLocalizedDescriptionKey: "Stage 3 failed: Host did not return pairing secret"])
         }
 
-        let serverSecret = pairingSecretData[0..<16]
+        let serverSecret = Data(pairingSecretData.prefix(16))
+        guard HostTrust.verify(secret: serverSecret, signature: Data(pairingSecretData.dropFirst(16)),
+                               certificateDER: serverCertificateDER) else {
+            throw HostTrustError.invalidSignature
+        }
 
         // Verify PIN correctness
         var expectedResponseData = Data()
@@ -161,7 +172,7 @@ public final class PairingService: @unchecked Sendable {
         clientPairingSecret.append(clientSignature)
         let clientPairingSecretHex = CryptoUtils.hexString(clientPairingSecret)
 
-        let clientSecretUrl = "http://\(host.address):\(host.httpPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&clientpairingsecret=\(clientPairingSecretHex)"
+        let clientSecretUrl = "http://\(host.urlAddress):\(host.httpPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&clientpairingsecret=\(clientPairingSecretHex)"
         let (_, clientSecretDict) = try await httpClient.fetchRaw(urlString: clientSecretUrl, timeout: 10.0)
 
         guard clientSecretDict["paired"] == "1" else {
@@ -174,19 +185,26 @@ public final class PairingService: @unchecked Sendable {
         // Stage 5: phrase=pairchallenge over HTTPS
         // ==========================================
         AppLogger.shared.info("[Stage 5/5] Establishing mTLS encrypted verification (phrase=pairchallenge)...", category: "PAIRING")
-        let pairChallengeUrl = "https://\(host.address):\(host.httpsPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&phrase=pairchallenge"
-        let (_, pairChallengeDict) = try await httpClient.fetchRaw(urlString: pairChallengeUrl, timeout: 15.0)
+        let pairChallengeUrl = "https://\(host.urlAddress):\(host.httpsPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&phrase=pairchallenge"
+        let (_, pairChallengeDict) = try await httpClient.fetchRaw(urlString: pairChallengeUrl, timeout: 15.0, certificateDER: serverCertificateDER)
 
         guard pairChallengeDict["paired"] == "1" else {
             let msg = pairChallengeDict["status_message"] ?? "Stage 5 rejected over HTTPS"
             throw NSError(domain: "PairingService", code: 5, userInfo: [NSLocalizedDescriptionKey: "Stage 5 failed: \(msg)"])
         }
 
-        pairingSuccessful = true
-        AppLogger.shared.info("🎉 Pairing completed successfully with host \(host.name)!", category: "PAIRING")
-
-        // Verify pairing via HTTPS serverinfo
-        let (verifiedHost, _) = try await httpClient.fetchServerInfo(host: host)
-        return verifiedHost.isPaired
+        // Only persist the pin after PIN, signature and pinned mTLS verification succeed.
+        var candidate = host
+        candidate.isPaired = false
+        candidate.serverId = nil
+        candidate.serverCertificateDER = serverCertificateDER
+        let (verifiedHost, _) = try await httpClient.fetchServerInfo(host: candidate)
+        guard verifiedHost.isSecurelyPaired else {
+            throw NSError(domain: "PairingService", code: 5,
+                          userInfo: [NSLocalizedDescriptionKey: "Host did not confirm pairing over verified HTTPS."])
+        }
+        try Task.checkCancellation()
+        AppLogger.shared.info("Pairing completed securely with host \(host.name)", category: "PAIRING")
+        return verifiedHost
     }
 }

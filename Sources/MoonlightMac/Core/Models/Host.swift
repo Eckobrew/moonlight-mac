@@ -23,6 +23,7 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
     public var macAddress: String?
     public var serverId: String?
     public var serverCodecModeSupport: Int32
+    public var serverCertificateDER: Data?
     public var isPaired: Bool
     public var currentAppId: Int?
     public var lastSeen: Date
@@ -43,6 +44,7 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
         serverId: String? = nil,
         serverCodecModeSupport: Int32 = 0,
         isPaired: Bool = false,
+        serverCertificateDER: Data? = nil,
         currentAppId: Int? = nil,
         lastSeen: Date = Date()
     ) {
@@ -61,20 +63,32 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
         self.serverId = serverId
         self.serverCodecModeSupport = serverCodecModeSupport
         self.isPaired = isPaired
+        self.serverCertificateDER = serverCertificateDER
         self.currentAppId = currentAppId
         self.lastSeen = lastSeen
     }
+
+    public var isSecurelyPaired: Bool { isPaired && serverCertificateDER != nil }
+    public var needsCertificatePairing: Bool { isPaired && serverCertificateDER == nil }
 
     public var effectiveAddress: String {
         activeAddress ?? address
     }
 
+    /// IPv6 literals need brackets in URL authorities, but not in socket addresses.
+    static func urlHost(_ address: String) -> String {
+        guard address.contains(":"), !address.hasPrefix("[") else { return address }
+        return "[\(address)]"
+    }
+
+    var urlAddress: String { Self.urlHost(effectiveAddress) }
+
     public var baseUrlHttps: URL? {
-        URL(string: "https://\(effectiveAddress):\(httpsPort)")
+        URL(string: "https://\(urlAddress):\(httpsPort)")
     }
 
     public var baseUrlHttp: URL? {
-        URL(string: "http://\(effectiveAddress):\(httpPort)")
+        URL(string: "http://\(urlAddress):\(httpPort)")
     }
 
     public var isOnline: Bool {

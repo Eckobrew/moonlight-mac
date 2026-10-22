@@ -92,7 +92,7 @@ struct HostDetailsSheet: View {
 
     private var pairingSection: some View {
         detailGroup("Pairing & Versions") {
-            row("Paired", host.isPaired ? "Yes" : "No")
+            row("Paired", host.isSecurelyPaired ? "Yes" : "No")
             row("Application version", host.appVersion.isEmpty ? "Unknown" : host.appVersion)
             row("GFE version", host.gfeVersion.isEmpty ? "Not reported" : host.gfeVersion)
             row("Server version", host.serverVersion.isEmpty ? "Unknown" : host.serverVersion)
@@ -170,7 +170,7 @@ struct HostDetailsSheet: View {
         Server ID: \(host.serverId ?? "none")
         MAC: \(host.macAddress ?? "none")
         HTTPS: \(host.httpsPort)  HTTP: \(host.httpPort)
-        Paired: \(host.isPaired)
+        Paired: \(host.isSecurelyPaired)
         App version: \(host.appVersion)
         GFE version: \(host.gfeVersion)
         Codec mask: 0x\(String(format: "%08X", host.serverCodecModeSupport))

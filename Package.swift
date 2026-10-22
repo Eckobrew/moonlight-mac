@@ -161,7 +161,8 @@ let package = Package(
                 "MoonlightCommonC",
                 "Copus"
             ],
-            path: "Tests/MoonlightMacTests"
+            path: "Tests/MoonlightMacTests",
+            resources: [.copy("Fixtures")]
         )
     ]
 )
