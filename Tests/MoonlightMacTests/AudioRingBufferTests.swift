@@ -36,8 +36,10 @@ private func read(_ ring: AudioRingBuffer, frames: Int) -> [[Float]]? {
     let ring = AudioRingBuffer(channels: 2, capacity: 2048)
     writeRamp(to: ring, frames: 2048)
     let samples = try #require(read(ring, frames: 512))
-    #expect(samples[0] == (0..<512).map { Float($0 * 2) })
-    #expect(samples[1] == (0..<512).map { Float($0 * 2 + 1) })
+    let expectedLeft: [Float] = (0..<512).map { frame in Float(frame) * 2 }
+    let expectedRight: [Float] = (0..<512).map { frame in Float(frame) * 2 + 1 }
+    #expect(samples[0] == expectedLeft)
+    #expect(samples[1] == expectedRight)
 }
 
 @Test func audioWrapPreservesUnreadSamples() throws {
@@ -46,14 +48,16 @@ private func read(_ ring: AudioRingBuffer, frames: Int) -> [[Float]]? {
     _ = try #require(read(ring, frames: 1024))
     writeRamp(to: ring, start: 1536, frames: 1536)
     let samples = try #require(read(ring, frames: 1024))
-    #expect(samples[0] == (1024..<2048).map { Float($0) })
+    let expected: [Float] = (1024..<2048).map { frame in Float(frame) }
+    #expect(samples[0] == expected)
 }
 
 @Test func audioOverflowRetainsNewestCushion() throws {
     let ring = AudioRingBuffer(channels: 1)
     writeRamp(to: ring, frames: 48000)
     let samples = try #require(read(ring, frames: 512))
-    #expect(samples[0] == (46560..<47072).map { Float($0) })
+    let expected: [Float] = (46560..<47072).map { frame in Float(frame) }
+    #expect(samples[0] == expected)
 }
 
 @Test func audioUnderrunFadesAndRebuffers() throws {
