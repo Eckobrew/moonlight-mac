@@ -66,7 +66,8 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     // FPS calculation
     private var frameCount: UInt64 = 0
     private var lastFpsTimestamp: TimeInterval = CACurrentMediaTime()
-    public private(set) var currentRenderFps: Double = 0.0
+    private var storedRenderFps: Double = 0.0
+    public var currentRenderFps: Double { lock.withLock { storedRenderFps } }
 
     // Cached pixel buffer for manual draw calls
     private var currentPixelBuffer: CVPixelBuffer?
@@ -525,6 +526,7 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     /// Returns `false` when presentation was not possible (e.g. no drawable), so the caller can stop draining.
     @discardableResult
     private func renderToMetalLayer(pixelBuffer: CVPixelBuffer) -> Bool {
+        var pixelBuffer = pixelBuffer
         lock.lock()
         guard let layer = self.metalLayer,
               let queue = self.commandQueue,
@@ -541,9 +543,20 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             return false
         }
 
+        // Obtaining a drawable can wait for the compositor. Use the newest frame
+        // that arrived during that wait instead of showing a stale cursor position
+        // and immediately trying to catch up with another presentation.
+        lock.lock()
+        if let newest = pendingPixelBuffer {
+            pixelBuffer = newest
+            pendingPixelBuffer = nil
+        }
+        let transitioning = isHDRTransitioning
+        lock.unlock()
+
         // While the EDR layer/pipelines are being reconfigured, skip presentation rather than
         // rendering with a pipeline whose pixel format no longer matches the drawable.
-        guard !isHDRTransitioning else {
+        guard !transitioning else {
             return true
         }
 
@@ -636,11 +649,13 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     }
 
     private func recordFps() {
+        lock.lock()
+        defer { lock.unlock() }
         frameCount += 1
         let now = CACurrentMediaTime()
         let elapsed = now - lastFpsTimestamp
         if elapsed >= 1.0 {
-            currentRenderFps = Double(frameCount) / elapsed
+            storedRenderFps = Double(frameCount) / elapsed
             frameCount = 0
             lastFpsTimestamp = now
         }
@@ -652,7 +667,7 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         self.currentPixelBuffer = nil
         self.isRenderActive = false
         self.frameCount = 0
-        self.currentRenderFps = 0.0
+        self.storedRenderFps = 0.0
         self.lastFrameWidth = -1
         self.lastFrameHeight = -1
         self.lastDrawableWidth = -1
