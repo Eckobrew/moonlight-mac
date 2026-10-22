@@ -157,6 +157,7 @@ let package = Package(
         .testTarget(
             name: "MoonlightMacTests",
             dependencies: [
+                "MoonlightMac",
                 "MoonlightCommonC",
                 "Copus"
             ],
