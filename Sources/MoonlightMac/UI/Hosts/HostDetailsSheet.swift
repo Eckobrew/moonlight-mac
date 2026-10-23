@@ -12,6 +12,8 @@ struct HostDetailsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var isRefreshing = false
     @State private var refreshError: String?
+    @State private var testingPorts = false
+    @State private var portResult: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,6 +23,20 @@ struct HostDetailsSheet: View {
                 VStack(alignment: .leading, spacing: 16) {
                     identitySection
                     connectionSection
+                    GroupBox("Network port test") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Checks this network against Moonlight’s public test server; it does not test the host’s firewall.").font(.caption).foregroundStyle(.secondary)
+                            Button(testingPorts ? "Testing…" : "Test client connectivity") {
+                                testingPorts = true
+                                Task {
+                                    let result = await Task.detached { LiTestClientConnectivity("qt.conntest.moonlight-stream.org", 443, UInt32.max) }.value
+                                    portResult = result == UInt32.max ? "Test inconclusive: the test server could not be reached." : result == 0 ? "All tested ports are reachable from this network." : "This network blocks: \(ConnectionDiagnostics.ports(result))."
+                                    testingPorts = false
+                                }
+                            }.disabled(testingPorts)
+                            if let portResult { Text(portResult).font(.caption).textSelection(.enabled) }
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
+                    }
                     pairingSection
                     capabilitiesSection
                     if let refreshError = refreshError {
@@ -114,15 +130,15 @@ struct HostDetailsSheet: View {
         HStack {
             if isRefreshing {
                 ProgressView().controlSize(.small)
-                Text("Refreshing…")
+                Text(AppLocalization.text("Refreshing…"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Refresh") { refresh() }
+            Button(AppLocalization.text("Refresh")) { refresh() }
                 .disabled(isRefreshing)
-            Button("Copy Details") { copyToPasteboard() }
-            Button("Done") { dismiss() }
+            Button(AppLocalization.text("Copy Details")) { copyToPasteboard() }
+            Button(AppLocalization.text("Done")) { dismiss() }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
         }

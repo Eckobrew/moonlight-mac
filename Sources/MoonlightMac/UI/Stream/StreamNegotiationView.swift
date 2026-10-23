@@ -72,7 +72,7 @@ public struct StreamNegotiationView: View {
                 Spacer()
 
                 // Cancel Button
-                Button("Cancel") {
+                Button(AppLocalization.text("Cancel")) {
                     appState.cancelShortcutLaunch()
                 }
                 .keyboardShortcut(.cancelAction)
@@ -82,11 +82,11 @@ public struct StreamNegotiationView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 440, minHeight: 380)
-        .alert("Unable to Start Stream", isPresented: Binding(
+        .alert(AppLocalization.text("Unable to Start Stream"), isPresented: Binding(
             get: { appState.cliStreamError != nil },
             set: { if !$0 { appState.cliStreamError = nil } }
         )) {
-            Button("Quit", role: .cancel) {
+            Button(AppLocalization.text("Quit"), role: .cancel) {
                 exit(0)
             }
         } message: {

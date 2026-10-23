@@ -34,7 +34,7 @@ public struct PairingSheet: View {
                 .fontWeight(.bold)
 
             if host.needsCertificatePairing {
-                Text("Pair this PC again to save and verify its certificate. Your saved PC settings will be kept.")
+                Text(AppLocalization.text("Pair this PC again to save and verify its certificate. Your saved PC settings will be kept."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -42,7 +42,7 @@ public struct PairingSheet: View {
 
             if let pin = pin {
                 VStack(spacing: 12) {
-                    Text("Enter this PIN on your host PC:")
+                    Text(AppLocalization.text("Enter this PIN on your host PC:"))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
@@ -76,7 +76,7 @@ public struct PairingSheet: View {
                     .multilineTextAlignment(.center)
             }
 
-            Button("Cancel") {
+            Button(AppLocalization.text("Cancel")) {
                 onCancel()
                 dismiss()
             }

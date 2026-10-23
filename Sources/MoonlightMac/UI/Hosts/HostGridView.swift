@@ -17,6 +17,7 @@ public struct HostGridView: View {
                 AppGridView(
                     host: selectedHost,
                     apps: appState.appsForSelectedHost,
+                    focusedAppID: appState.controllerAppFocus,
                     globalSettings: appState.settings,
                     onLaunchApp: { app in
                         appState.launchStream(host: selectedHost, app: app)
@@ -50,7 +51,7 @@ public struct HostGridView: View {
                 Button {
                     appState.isShowingAddHost = true
                 } label: {
-                    Label("Add Host", systemImage: "plus")
+                    Label(AppLocalization.text("Add Host"), systemImage: "plus")
                 }
             }
 
@@ -60,7 +61,7 @@ public struct HostGridView: View {
                         await appState.refreshHosts()
                     }
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label(AppLocalization.text("Refresh"), systemImage: "arrow.clockwise")
                 }
             }
 
@@ -69,9 +70,9 @@ public struct HostGridView: View {
                 Button {
                     appState.isShowingLogs = true
                 } label: {
-                    Label("Logs", systemImage: "terminal")
+                    Label(AppLocalization.text("Logs"), systemImage: "terminal")
                 }
-                .help("View live logs and diagnostics")
+                .help(AppLocalization.text("View live logs and diagnostics"))
             }
             #endif
 
@@ -79,7 +80,7 @@ public struct HostGridView: View {
                 Button {
                     appState.isShowingSettings = true
                 } label: {
-                    Label("Settings", systemImage: "gear")
+                    Label(AppLocalization.text("Settings"), systemImage: "gear")
                 }
             }
         }
@@ -113,7 +114,7 @@ public struct HostGridView: View {
         }
         .task {
             // Start mDNS discovery on launch
-            BonjourDiscoveryService.shared.startDiscovery()
+            if appState.settings.features.enableMdns { BonjourDiscoveryService.shared.startDiscovery() }
             await appState.refreshHosts()
 
             // Periodic auto-refresh every 4 seconds for hosts and apps
@@ -151,53 +152,59 @@ public struct HostGridView: View {
     }
 
     private var hostGridContent: some View {
-        ScrollView {
-            if displayedHosts.isEmpty {
-                VStack(spacing: 16) {
-                    Spacer(minLength: 80)
-                    Image(systemName: appState.hosts.isEmpty ? "desktopcomputer.trianglebadge.exclamationmark" : "eye.slash")
-                        .font(.system(size: 54))
-                        .foregroundStyle(.secondary)
-                    Text(appState.hosts.isEmpty ? "No Sunshine or Apollo Hosts Found" : "All Discovered PCs Are Unpaired")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                    Text(appState.hosts.isEmpty
-                         ? "Moonlight is searching your local network via Bonjour/mDNS.\nYou can also add a host manually by IP."
-                         : "Unpaired PCs are currently hidden by your streaming preferences.\nYou can disable 'Hide unpaired PCs' in Settings.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+        ScrollViewReader { proxy in
+            ScrollView {
+                if displayedHosts.isEmpty {
+                    VStack(spacing: 16) {
+                        Spacer(minLength: 80)
+                        Image(systemName: appState.hosts.isEmpty ? "desktopcomputer.trianglebadge.exclamationmark" : "eye.slash")
+                            .font(.system(size: 54))
+                            .foregroundStyle(.secondary)
+                        Text(appState.hosts.isEmpty ? "No Sunshine or Apollo Hosts Found" : "All Discovered PCs Are Unpaired")
+                            .font(.title2)
+                            .fontWeight(.semibold)
+                        Text(appState.hosts.isEmpty
+                             ? "Moonlight is searching your local network via Bonjour/mDNS.\nYou can also add a host manually by IP."
+                             : "Unpaired PCs are currently hidden by your streaming preferences.\nYou can disable 'Hide unpaired PCs' in Settings.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
 
-                    Button(appState.hosts.isEmpty ? "Add Host Manually" : "Change Setting") {
-                        if appState.hosts.isEmpty {
-                            appState.isShowingAddHost = true
-                        } else {
-                            appState.isShowingSettings = true
+                        Button(appState.hosts.isEmpty ? "Add Host Manually" : "Change Setting") {
+                            if appState.hosts.isEmpty {
+                                appState.isShowingAddHost = true
+                            } else {
+                                appState.isShowingSettings = true
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .padding(.top, 8)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(40)
+                } else {
+                    LazyVGrid(columns: columns, spacing: 20) {
+                        ForEach(displayedHosts) { host in
+                            HostCardView(
+                                host: host,
+                                isSelected: appState.selectedHost?.id == host.id || appState.controllerHostFocus == host.id,
+                                appState: appState,
+                                onSelect: { selectHost(host) },
+                                onPair: { pairHost(host) },
+                                onWakeOnLan: { wakeHost(host) },
+                                onDelete: { appState.removeHost(host) },
+                                onUnpair: { unpairHost(host) }
+                            ).id(host.id)
                         }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .padding(.top, 8)
+                    .padding(24)
                 }
-                .frame(maxWidth: .infinity)
-                .padding(40)
-            } else {
-                LazyVGrid(columns: columns, spacing: 20) {
-                    ForEach(displayedHosts) { host in
-                        HostCardView(
-                            host: host,
-                            isSelected: appState.selectedHost?.id == host.id,
-                            appState: appState,
-                            onSelect: { selectHost(host) },
-                            onPair: { pairHost(host) },
-                            onWakeOnLan: { wakeHost(host) },
-                            onDelete: { appState.removeHost(host) },
-                            onUnpair: { unpairHost(host) }
-                        )
-                    }
-                }
-                .padding(24)
+            }
+            .onChange(of: appState.controllerHostFocus) { _, id in
+                if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
             }
         }
+
     }
 
     private func selectHost(_ host: Host) {

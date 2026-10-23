@@ -19,8 +19,8 @@ resolution, frame rate, bitrate and renderer for each run. Run optimized builds.
 | Mouse | High-polling mouse, fractional movement, focus loss, Spaces/fullscreen changes | Smooth relative input and reliable cursor release/recapture |
 | Startup capture | Start a desktop stream directly into each fullscreen mode, then compare before/after Cmd+Tab | Smooth input from the first capture; switching apps is not required to recover |
 | Wi-Fi latency | Compare against moonlight-qt with identical codec, resolution, FPS and bitrate; record RTT and RTT variation while idle and moving the mouse | Distinguish network spikes from decode and presentation delay; capture HUD readings before/after switching apps |
-| Controllers | 1–4 controllers, a fifth attached, unplug/reorder/reconnect | No crash/stuck buttons; correct player slots |
-| Controller extras | Xbox/PS rumble, DualSense touchpad/motion, host-requested sensor rates | Features actually work with the intended host/controller combination |
+| Controllers | 1–16 controllers with Sunshine; four-slot GFE limit; unplug/reorder/reconnect | No crash/stuck buttons; correct player slots |
+| Controller extras | Xbox/PS rumble, trigger rumble, native contact/motion, sensor rates, battery/LED, DualSense adaptive feedback/weapon/vibration | Features actually work with the intended host/controller combination |
 | Clipboard | Copy while sends/pulls are delayed; unsupported host clipboard endpoint | New local text is not overwritten; one failed direction does not disable the other |
 | Release | Launch the packaged .app on another supported Mac | Native frameworks/resources load; signing/permissions work; no dependency on build paths |
 | Public release | Developer ID sign, notarize, staple, assess on a separate Mac | Gatekeeper accepts the distributed app; corresponding source revision is available |
@@ -66,3 +66,13 @@ launches. Each detected the Portable Monitor at 1920×1080, sent
 `requested mode=1920x1080x60`, received video and exited cleanly. Only the portable
 monitor was exposed by the display probe during this run; the alternating
 internal/external-display case still needs confirmation with both displays active.
+
+## New feature pass — device checks still required
+
+- Compare SDR, requested-HDR/SDR fallback, live host HDR toggles and mastering metadata on both presenters.
+- Test 4:2:0 and opt-in 4:4:4 H.264/HEVC at 8/10 bits using automatic, hardware-only and software decoders; check readable text, colour and unsupported-profile errors.
+- In desktop pointer mode, test letterbox bars, display scaling, capture release and switching back to a relative game.
+- Test controller UI focus, scrolling through long libraries, launch/back/settings, and sheet navigation. During streaming, check background policy and merged player-one mode before and after unplugging.
+- Verify hardware-reported contact down/up and cancellation; do not infer two-finger support from axis values. Verify each advertised haptic/LED/motion capability on a real device.
+- Enable Discord presence, verify activity/cleanup, quit/reopen Discord and check reconnect. Confirm disabled presence opens no connection.
+- Disable discovery while a host probe is pending, reopen the app, and confirm manual hosts still work. Reopen under each language and check layout/fallback text.

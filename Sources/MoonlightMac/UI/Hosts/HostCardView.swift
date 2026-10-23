@@ -76,7 +76,7 @@ public struct HostCardView: View {
             HStack {
                 if host.status == .offline {
                     Button(action: onWakeOnLan) {
-                        Label("Wake Up", systemImage: "bolt.fill")
+                        Label(AppLocalization.text("Wake Up"), systemImage: "bolt.fill")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
@@ -88,7 +88,7 @@ public struct HostCardView: View {
                     .tint(.blue)
                 } else {
                     Button(action: onSelect) {
-                        Label("Apps", systemImage: "square.grid.2x2")
+                        Label(AppLocalization.text("Apps"), systemImage: "square.grid.2x2")
                     }
                     .buttonStyle(.bordered)
                 }
@@ -99,20 +99,20 @@ public struct HostCardView: View {
                     Button {
                         showingDetails = true
                     } label: {
-                        Label("Host Details...", systemImage: "info.circle")
+                        Label(AppLocalization.text("Host Details..."), systemImage: "info.circle")
                     }
                     if host.macAddress != nil {
                         Button(action: onWakeOnLan) {
-                            Label("Wake on LAN", systemImage: "bolt.fill")
+                            Label(AppLocalization.text("Wake on LAN"), systemImage: "bolt.fill")
                         }
                     }
                     if let onUnpair = onUnpair {
                         Button(action: onUnpair) {
-                            Label("Unpair Host", systemImage: "link.badge.plus")
+                            Label(AppLocalization.text("Unpair Host"), systemImage: "link.badge.plus")
                         }
                     }
                     Button(role: .destructive, action: onDelete) {
-                        Label("Remove Host", systemImage: "trash")
+                        Label(AppLocalization.text("Remove Host"), systemImage: "trash")
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")

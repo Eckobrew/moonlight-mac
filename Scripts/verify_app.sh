@@ -12,8 +12,13 @@ RESOURCE_BUNDLE="$APP_DIR/Contents/Resources/MoonlightMac_MoonlightMac.bundle"
 [[ -f "$RESOURCE_BUNDLE/Shaders.metal" || -f "$RESOURCE_BUNDLE/default.metallib" ]] || {
     echo "Metal shader resource is missing" >&2; exit 1;
 }
+for language in en de fr es; do
+    STRINGS="$RESOURCE_BUNDLE/$language.lproj/Localizable.strings"
+    [[ -s "$STRINGS" ]] || { echo "Missing language resources: $language" >&2; exit 1; }
+    plutil -lint "$STRINGS"
+done
 for license in LICENSE THIRD_PARTY_NOTICES.md moonlight-common-c.txt enet.txt nanors.txt opus.txt; do
     [[ -s "$APP_DIR/Contents/Resources/Licenses/$license" ]] || { echo "Missing license: $license" >&2; exit 1; }
 done
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
-echo "Verified executable, Metal resources, licenses, plist and signature."
+echo "Verified executable, Metal and language resources, licenses, plist and signature."

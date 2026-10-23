@@ -29,28 +29,28 @@ public struct LogViewerSheet: View {
         VStack(spacing: 0) {
             // Header bar
             HStack {
-                Label("Moonlight Diagnostics & Logs", systemImage: "terminal.fill")
+                Label(AppLocalization.text("Moonlight Diagnostics & Logs"), systemImage: "terminal.fill")
                     .font(.headline)
 
                 Spacer()
 
                 Button(action: revealLogInFinder) {
-                    Label("Reveal Log File", systemImage: "folder")
+                    Label(AppLocalization.text("Reveal Log File"), systemImage: "folder")
                 }
                 .buttonStyle(.bordered)
-                .help("Open moonlight.log in Finder")
+                .help(AppLocalization.text("Open moonlight.log in Finder"))
 
                 Button(action: copyAllLogs) {
-                    Label("Copy All", systemImage: "doc.on.doc")
+                    Label(AppLocalization.text("Copy All"), systemImage: "doc.on.doc")
                 }
                 .buttonStyle(.bordered)
 
                 Button(action: clearLogs) {
-                    Label("Clear", systemImage: "trash")
+                    Label(AppLocalization.text("Clear"), systemImage: "trash")
                 }
                 .buttonStyle(.bordered)
 
-                Button("Done") {
+                Button(AppLocalization.text("Done")) {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -65,7 +65,7 @@ public struct LogViewerSheet: View {
                 HStack {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(.secondary)
-                    TextField("Filter logs...", text: $filterText)
+                    TextField(AppLocalization.text("Filter logs..."), text: $filterText)
                         .textFieldStyle(.plain)
                     if !filterText.isEmpty {
                         Button(action: { filterText = "" }) {
@@ -79,8 +79,8 @@ public struct LogViewerSheet: View {
                 .padding(.vertical, 4)
                 .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
 
-                Picker("Level", selection: $selectedLevel) {
-                    Text("All Levels").tag(LogLevel?.none)
+                Picker(AppLocalization.text("Level"), selection: $selectedLevel) {
+                    Text(AppLocalization.text("All Levels")).tag(LogLevel?.none)
                     ForEach(LogLevel.allCases, id: \.self) { level in
                         Text(level.rawValue).tag(LogLevel?.some(level))
                     }
@@ -88,7 +88,7 @@ public struct LogViewerSheet: View {
                 .pickerStyle(.segmented)
                 .frame(width: 280)
 
-                Toggle("Auto-scroll", isOn: $autoScroll)
+                Toggle(AppLocalization.text("Auto-scroll"), isOn: $autoScroll)
                     .toggleStyle(.checkbox)
             }
             .padding(.horizontal)

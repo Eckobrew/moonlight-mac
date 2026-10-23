@@ -3,6 +3,7 @@ import SwiftUI
 public struct AppGridView: View {
     public let host: Host
     public let apps: [StreamApp]
+    public var focusedAppID: Int?
     /// Global settings, forwarded to each card for per-app overrides.
     public var globalSettings: StreamSettings = StreamSettings()
     public let onLaunchApp: (StreamApp) -> Void
@@ -17,6 +18,7 @@ public struct AppGridView: View {
     public init(
         host: Host,
         apps: [StreamApp],
+        focusedAppID: Int? = nil,
         globalSettings: StreamSettings = StreamSettings(),
         onLaunchApp: @escaping (StreamApp) -> Void,
         onQuitCurrentApp: @escaping () -> Void,
@@ -25,6 +27,7 @@ public struct AppGridView: View {
     ) {
         self.host = host
         self.apps = apps
+        self.focusedAppID = focusedAppID
         self.globalSettings = globalSettings
         self.onLaunchApp = onLaunchApp
         self.onQuitCurrentApp = onQuitCurrentApp
@@ -37,7 +40,7 @@ public struct AppGridView: View {
             // Header bar
             HStack {
                 Button(action: onBack) {
-                    Label("Hosts", systemImage: "chevron.left")
+                    Label(AppLocalization.text("Hosts"), systemImage: "chevron.left")
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.blue)
@@ -54,14 +57,14 @@ public struct AppGridView: View {
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
-                        .help("Refresh applications")
+                        .help(AppLocalization.text("Refresh applications"))
                     }
                 }
 
                 Spacer()
 
                 // Balancing element to keep center title symmetrically centered
-                Label("Hosts", systemImage: "chevron.left")
+                Label(AppLocalization.text("Hosts"), systemImage: "chevron.left")
                     .opacity(0)
             }
             .padding(.horizontal, 20)
@@ -76,23 +79,30 @@ public struct AppGridView: View {
                     Image(systemName: "app.dashed")
                         .font(.system(size: 48))
                         .foregroundStyle(.secondary)
-                    Text("No applications found on host")
+                    Text(AppLocalization.text("No applications found on host"))
                         .font(.headline)
                         .foregroundStyle(.secondary)
-                    Text("Check your Sunshine or Apollo Applications configuration.")
+                    Text(AppLocalization.text("Check your Sunshine or Apollo Applications configuration."))
                         .font(.subheadline)
                         .foregroundStyle(.tertiary)
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 24) {
-                        ForEach(apps) { app in
-                            appCard(for: app)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: 24) {
+                            ForEach(apps) { app in
+                                appCard(for: app)
+                                    .id(app.id)
+                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(focusedAppID == app.id ? Color.accentColor : .clear, lineWidth: 3))
+                            }
                         }
+                        .padding(24)
                     }
-                    .padding(24)
+                    .onChange(of: focusedAppID) { _, id in
+                        if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
+                    }
                 }
             }
         }

@@ -10,14 +10,6 @@ struct PerAppSettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var overrides: AppStreamOverrides
 
-    private let resolutions: [(name: String, width: Int, height: Int)] = [
-        ("720p", 1280, 720),
-        ("1080p", 1920, 1080),
-        ("1440p", 2560, 1440),
-        ("4K", 3840, 2160)
-    ]
-    private let framerates = [30, 60, 90, 120, 144, 240]
-
     init(host: Host, app: StreamApp, globalSettings: StreamSettings) {
         self.host = host
         self.app = app
@@ -48,6 +40,9 @@ struct PerAppSettingsSheet: View {
                         optionalResolutionRow
                         optionalFPSRow
                         optionalWindowModeRow
+                        if let message = globalSettings.applying(overrides).validationMessage {
+                            Text(message).font(.caption).foregroundStyle(.red)
+                        }
                     }
 
                     overrideGroup("Quality") {
@@ -56,19 +51,36 @@ struct PerAppSettingsSheet: View {
                     }
 
                     overrideGroup("Rendering") {
-                        optionalToggle("Enable HDR", value: $overrides.enableHdr, inherited: globalSettings.enableHdr)
-                        optionalToggle("Enable V-Sync", value: $overrides.enableVsync, inherited: globalSettings.enableVsync)
-                        optionalToggle("Enable Frame Pacing", value: $overrides.enableFramePacing, inherited: globalSettings.enableFramePacing)
+                        optionalToggle(
+                            "Enable HDR", value: $overrides.enableHdr, inherited: globalSettings.enableHdr)
+                        if globalSettings.videoRenderer == .metal {
+                            optionalToggle(
+                                "Enable V-Sync", value: $overrides.enableVsync,
+                                inherited: globalSettings.enableVsync)
+                        }
+                        optionalToggle(
+                            "Enable Frame Pacing", value: $overrides.enableFramePacing,
+                            inherited: globalSettings.enableFramePacing)
                     }
 
                     overrideGroup("Audio & Input") {
                         optionalAudioModeRow
-                        optionalToggle("Capture mouse pointer", value: $overrides.mouseCaptureMode, inherited: globalSettings.mouseCaptureMode)
+                        if !globalSettings.features.desktopMouse {
+                            optionalToggle(
+                                "Capture mouse pointer", value: $overrides.mouseCaptureMode,
+                                inherited: globalSettings.mouseCaptureMode)
+                        }
                     }
 
                     overrideGroup("Host") {
-                        optionalToggle("Optimize game settings", value: $overrides.optimizeGameSettings, inherited: globalSettings.optimizeGameSettings)
-                        optionalToggle("Quit game on disconnect", value: $overrides.quitAppOnStop, inherited: globalSettings.quitAppOnStop)
+                        if !host.supportsExtendedControllers {
+                            optionalToggle(
+                                "Optimize game settings", value: $overrides.optimizeGameSettings,
+                                inherited: globalSettings.optimizeGameSettings)
+                        }
+                        optionalToggle(
+                            "Quit game on disconnect", value: $overrides.quitAppOnStop,
+                            inherited: globalSettings.quitAppOnStop)
                     }
                 }
                 .padding(20)
@@ -77,20 +89,21 @@ struct PerAppSettingsSheet: View {
             Divider()
 
             HStack {
-                Button("Reset to Global") {
+                Button(AppLocalization.text("Reset to Global")) {
                     overrides = AppStreamOverrides()
                 }
                 .disabled(overrides.isEmpty)
 
                 Spacer()
 
-                Button("Cancel") { dismiss() }
+                Button(AppLocalization.text("Cancel")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
 
-                Button("Save") {
+                Button(AppLocalization.text("Save")) {
                     PerAppSettingsStore.shared.setOverrides(overrides, for: host, appId: app.id)
                     dismiss()
                 }
+                .disabled(globalSettings.applying(overrides).validationMessage != nil)
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
             }
@@ -102,65 +115,67 @@ struct PerAppSettingsSheet: View {
     // MARK: - Rows
 
     private var optionalResolutionRow: some View {
-        overrideRow("Resolution", isOverridden: Binding(
-            get: { overrides.width != nil },
-            set: { enabled in
-                if enabled {
-                    overrides.width = globalSettings.width == 0 ? 1920 : globalSettings.width
-                    overrides.height = globalSettings.height == 0 ? 1080 : globalSettings.height
-                } else {
-                    overrides.width = nil
-                    overrides.height = nil
+        overrideRow(
+            "Resolution",
+            isOverridden: Binding(
+                get: { overrides.width != nil },
+                set: { enabled in
+                    if enabled {
+                        overrides.width = globalSettings.width
+                        overrides.height = globalSettings.height
+                    } else {
+                        overrides.width = nil
+                        overrides.height = nil
+                    }
                 }
-            }
-        ), inheritedText: inheritanceLabelForResolution) {
-            Picker("", selection: Binding(
-                get: { "\(overrides.width ?? 0)x\(overrides.height ?? 0)" },
-                set: { value in
-                    let parts = value.split(separator: "x").compactMap { Int($0) }
-                    guard parts.count == 2 else { return }
-                    overrides.width = parts[0]
-                    overrides.height = parts[1]
-                }
-            )) {
-                ForEach(resolutions, id: \.name) { res in
-                    Text(res.name).tag("\(res.width)x\(res.height)")
-                }
-            }
-            .labelsHidden()
-            .frame(width: 160)
+            ), inheritedText: inheritanceLabelForResolution
+        ) {
+            ResolutionPicker(
+                width: Binding(
+                    get: { overrides.width ?? globalSettings.width }, set: { overrides.width = $0 }),
+                height: Binding(
+                    get: { overrides.height ?? globalSettings.height }, set: { overrides.height = $0 }),
+                title: ""
+            )
+            .frame(maxWidth: .infinity)
+
         }
     }
 
     private var optionalFPSRow: some View {
-        overrideRow("Frame Rate", isOverridden: Binding(
-            get: { overrides.fps != nil },
-            set: { enabled in overrides.fps = enabled ? globalSettings.fps : nil }
-        ), inheritedText: "\(globalSettings.fps) FPS") {
-            Picker("", selection: Binding(
-                get: { overrides.fps ?? globalSettings.fps },
-                set: { overrides.fps = $0 }
-            )) {
-                ForEach(framerates, id: \.self) { fps in
-                    Text("\(fps) FPS").tag(fps)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 140)
+        overrideRow(
+            "Frame Rate",
+            isOverridden: Binding(
+                get: { overrides.fps != nil },
+                set: { enabled in overrides.fps = enabled ? globalSettings.fps : nil }
+            ), inheritedText: "\(globalSettings.fps) FPS"
+        ) {
+            FrameRatePicker(
+                value: Binding(get: { overrides.fps ?? globalSettings.fps }, set: { overrides.fps = $0 }),
+                title: ""
+            )
+            .frame(maxWidth: .infinity)
+
         }
     }
 
     private var optionalWindowModeRow: some View {
-        overrideRow("Display Mode", isOverridden: Binding(
-            get: { overrides.windowMode != nil },
-            set: { enabled in overrides.windowMode = enabled ? globalSettings.windowMode : nil }
-        ), inheritedText: globalSettings.windowMode.rawValue) {
-            Picker("", selection: Binding(
-                get: { overrides.windowMode ?? globalSettings.windowMode },
-                set: { overrides.windowMode = $0 }
-            )) {
+        overrideRow(
+            "Display Mode",
+            isOverridden: Binding(
+                get: { overrides.windowMode != nil },
+                set: { enabled in overrides.windowMode = enabled ? globalSettings.windowMode : nil }
+            ), inheritedText: globalSettings.windowMode.rawValue
+        ) {
+            Picker(
+                AppLocalization.text(""),
+                selection: Binding(
+                    get: { overrides.windowMode ?? globalSettings.windowMode },
+                    set: { overrides.windowMode = $0 }
+                )
+            ) {
                 ForEach(WindowMode.allCases, id: \.self) { mode in
-                    Text(mode.rawValue).tag(mode)
+                    Text(AppLocalization.text(mode.rawValue)).tag(mode)
                 }
             }
             .labelsHidden()
@@ -169,15 +184,20 @@ struct PerAppSettingsSheet: View {
     }
 
     private var optionalBitrateRow: some View {
-        overrideRow("Bitrate", isOverridden: Binding(
-            get: { overrides.bitrateMbps != nil },
-            set: { enabled in overrides.bitrateMbps = enabled ? globalSettings.bitrateMbps : nil }
-        ), inheritedText: "\(globalSettings.bitrateMbps) Mbps") {
+        overrideRow(
+            "Bitrate",
+            isOverridden: Binding(
+                get: { overrides.bitrateMbps != nil },
+                set: { enabled in overrides.bitrateMbps = enabled ? globalSettings.bitrateMbps : nil }
+            ), inheritedText: "\(globalSettings.bitrateMbps) Mbps"
+        ) {
             HStack(spacing: 6) {
-                Slider(value: Binding(
-                    get: { Double(overrides.bitrateMbps ?? globalSettings.bitrateMbps) },
-                    set: { overrides.bitrateMbps = Int($0) }
-                ), in: 5...150, step: 1)
+                Slider(
+                    value: Binding(
+                        get: { Double(overrides.bitrateMbps ?? globalSettings.bitrateMbps) },
+                        set: { overrides.bitrateMbps = Int($0) }
+                    ), in: 5...150, step: 1
+                )
                 .frame(width: 120)
                 Text("\(overrides.bitrateMbps ?? globalSettings.bitrateMbps) Mbps")
                     .monospacedDigit()
@@ -188,17 +208,23 @@ struct PerAppSettingsSheet: View {
     }
 
     private var optionalCodecRow: some View {
-        overrideRow("Codec", isOverridden: Binding(
-            get: { overrides.codec != nil },
-            set: { enabled in overrides.codec = enabled ? globalSettings.codec : nil }
-        ), inheritedText: globalSettings.codec.rawValue) {
-            Picker("", selection: Binding(
-                get: { overrides.codec ?? globalSettings.codec },
-                set: { overrides.codec = $0 }
-            )) {
+        overrideRow(
+            "Codec",
+            isOverridden: Binding(
+                get: { overrides.codec != nil },
+                set: { enabled in overrides.codec = enabled ? globalSettings.codec : nil }
+            ), inheritedText: globalSettings.codec.rawValue
+        ) {
+            Picker(
+                AppLocalization.text(""),
+                selection: Binding(
+                    get: { overrides.codec ?? globalSettings.codec },
+                    set: { overrides.codec = $0 }
+                )
+            ) {
                 ForEach(VideoCodec.allCases, id: \.self) { codec in
                     if codec != .av1 || VideoCodec.isAV1DecodingSupported {
-                        Text(codec.rawValue).tag(codec)
+                        Text(AppLocalization.text(codec.rawValue)).tag(codec)
                     }
                 }
             }
@@ -208,16 +234,22 @@ struct PerAppSettingsSheet: View {
     }
 
     private var optionalAudioModeRow: some View {
-        overrideRow("Audio Layout", isOverridden: Binding(
-            get: { overrides.audioMode != nil },
-            set: { enabled in overrides.audioMode = enabled ? globalSettings.audioMode : nil }
-        ), inheritedText: globalSettings.audioMode.rawValue) {
-            Picker("", selection: Binding(
-                get: { overrides.audioMode ?? globalSettings.audioMode },
-                set: { overrides.audioMode = $0 }
-            )) {
+        overrideRow(
+            "Audio Layout",
+            isOverridden: Binding(
+                get: { overrides.audioMode != nil },
+                set: { enabled in overrides.audioMode = enabled ? globalSettings.audioMode : nil }
+            ), inheritedText: globalSettings.audioMode.rawValue
+        ) {
+            Picker(
+                AppLocalization.text(""),
+                selection: Binding(
+                    get: { overrides.audioMode ?? globalSettings.audioMode },
+                    set: { overrides.audioMode = $0 }
+                )
+            ) {
                 ForEach(AudioConfigurationMode.allCases, id: \.self) { mode in
-                    Text(mode.rawValue).tag(mode)
+                    Text(AppLocalization.text(mode.rawValue)).tag(mode)
                 }
             }
             .labelsHidden()
@@ -228,8 +260,10 @@ struct PerAppSettingsSheet: View {
     // MARK: - Building blocks
 
     @ViewBuilder
-    private func overrideGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        GroupBox(title) {
+    private func overrideGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content)
+        -> some View
+    {
+        GroupBox(AppLocalization.text(title)) {
             VStack(alignment: .leading, spacing: 10) {
                 content()
             }
@@ -240,16 +274,20 @@ struct PerAppSettingsSheet: View {
 
     private func optionalToggle(_ title: String, value: Binding<Bool?>, inherited: Bool) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Toggle(title, isOn: Binding(
-                get: { value.wrappedValue ?? inherited },
-                set: { value.wrappedValue = $0 }
-            ))
+            Toggle(
+                AppLocalization.text(title),
+                isOn: Binding(
+                    get: { value.wrappedValue ?? inherited },
+                    set: { value.wrappedValue = $0 }
+                ))
             HStack(spacing: 6) {
-                Text("Using global: \(inherited ? "On" : "Off")")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                if value.wrappedValue == nil {
+                    Text("Using global: \(inherited ? "On" : "Off")")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 if value.wrappedValue != nil {
-                    Button("Inherit") { value.wrappedValue = nil }
+                    Button(AppLocalization.text("Inherit")) { value.wrappedValue = nil }
                         .buttonStyle(.link)
                         .font(.caption2)
                 }
@@ -265,7 +303,7 @@ struct PerAppSettingsSheet: View {
     ) -> some View {
         HStack {
             Toggle(isOn: isOverridden) {
-                Text(title)
+                Text(AppLocalization.text(title))
             }
             .toggleStyle(.checkbox)
             .frame(width: 150, alignment: .leading)

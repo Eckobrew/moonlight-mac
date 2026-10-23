@@ -61,7 +61,7 @@ public struct AppCardView: View {
                             Circle()
                                 .fill(Color.green)
                                 .frame(width: 8, height: 8)
-                            Text("RUNNING")
+                            Text(AppLocalization.text("RUNNING"))
                                 .font(.system(size: 10, weight: .bold))
                                 .foregroundStyle(.white)
                         }
@@ -84,7 +84,7 @@ public struct AppCardView: View {
                                     .shadow(radius: 4)
                             }
                             .buttonStyle(.plain)
-                            .help("Resume stream")
+                            .help(AppLocalization.text("Resume stream"))
 
                             if let onStop = onStop {
                                 Button {
@@ -98,7 +98,7 @@ public struct AppCardView: View {
                                         .shadow(radius: 4)
                                 }
                                 .buttonStyle(.plain)
-                                .help("Stop running application")
+                                .help(AppLocalization.text("Stop running application"))
                             }
                         }
 
@@ -131,7 +131,7 @@ public struct AppCardView: View {
                 Button(role: .destructive) {
                     onStop()
                 } label: {
-                    Label("Stop Game", systemImage: "stop.fill")
+                    Label(AppLocalization.text("Stop Game"), systemImage: "stop.fill")
                 }
             }
 
@@ -140,7 +140,7 @@ public struct AppCardView: View {
             Button {
                 showingShortcutSheet = true
             } label: {
-                Label("Create Desktop Shortcut...", systemImage: "arrow.up.forward.app")
+                Label(AppLocalization.text("Create Desktop Shortcut..."), systemImage: "arrow.up.forward.app")
             }
 
             Divider()
@@ -148,7 +148,7 @@ public struct AppCardView: View {
             Button {
                 showingPerAppSettings = true
             } label: {
-                Label("Game Settings...", systemImage: "slider.horizontal.3")
+                Label(AppLocalization.text("Game Settings..."), systemImage: "slider.horizontal.3")
             }
         }
         .sheet(isPresented: $showingShortcutSheet) {

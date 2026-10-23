@@ -2,6 +2,8 @@ import SwiftUI
 
 public struct StreamingSessionView: View {
     @ObservedObject public var sessionController: StreamSessionController
+    @ObservedObject private var clipboard = ClipboardSyncManager.shared
+    @ObservedObject private var services = RuntimeServiceStatus.shared
     public let onDisconnect: () -> Void
 
     public init(sessionController: StreamSessionController, onDisconnect: @escaping () -> Void) {
@@ -52,6 +54,18 @@ public struct StreamingSessionView: View {
                 }
                 .padding(24)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+            }
+
+            if let message = sessionController.connectionWarning ?? services.audio ?? clipboard.statusMessage ?? services.discord {
+                VStack {
+                    Spacer()
+                    Text(message)
+                        .font(.caption)
+                        .padding(8)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .padding()
+                }
+                .allowsHitTesting(false)
             }
 
             // Floating Performance HUD (toggle with Ctrl + Option + Shift + S)

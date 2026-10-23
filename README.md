@@ -20,11 +20,13 @@ It does not use Qt for its interface.
 
 - H.264 and HEVC decoding, with AV1 offered when VideoToolbox reports hardware support.
 - Metal and native sample-buffer presentation, configurable V-Sync and frame pacing.
-- Native-display and preset resolutions, configurable frame rates and bitrates,
+- Native-display, preset and custom resolutions, custom frame rates and bitrates,
   HDR options, and per-game overrides.
 - Stereo, 5.1 and 7.1 audio options, output-device selection and background muting.
-- Keyboard and relative mouse capture, sensitivity controls and game-controller input.
-- Bonjour discovery, manual host entry, Wake-on-LAN and remote-address fallback.
+- Keyboard, relative and desktop mouse modes, sensitivity/button controls and native game-controller input.
+- Optional Bonjour discovery, manual host entry, Wake-on-LAN and remote-address fallback.
+- Controller UI navigation, mouse emulation, background-input policy and persistent player-one mode.
+- Decoder selection, opt-in H.264/HEVC 4:4:4, language selection and optional Discord Rich Presence.
 - PIN pairing with server-signature verification and certificate pinning.
 - Host/game shortcuts, optional clipboard synchronization and a performance HUD.
 
@@ -86,14 +88,16 @@ Hold **Control + Option + Shift** (`⌃ ⌥ ⇧`) and press:
 | Key | Action |
 | --- | --- |
 | `Q` | Disconnect |
-| `Z` or `M` | Release or recapture the mouse |
+| `Z` | Release or recapture the mouse |
+| `M` | Switch relative/desktop mouse mode |
 | `X` | Toggle fullscreen/windowed mode |
 | `S` | Toggle the performance HUD |
 | `D` | Minimize the stream window |
 | `V` | Paste text from the Mac clipboard to the PC |
 
-`M` currently performs the same capture action as `Z`; it does not select a
-separate absolute-mouse mode. Whether disconnecting also quits the host game
+Desktop mode uses the native visible pointer and absolute host coordinates inside the video area.
+Hold Start on a controller for ¾ second to toggle controller mouse control.
+Whether disconnecting also quits the host game
 is controlled by the session settings; desktop-shortcut sessions quit it on exit.
 
 ## Settings
@@ -122,6 +126,16 @@ modifiers carry their extended-key flags. Use clipboard paste when exact text
 characters matter. The previous host-layout selector was removed; its saved
 values remain readable.
 
+Controller options have their own section. Advanced decoder/chroma preferences are under
+Display & Video; discovery, language and Discord Rich Presence are under Application.
+Custom resolution and FPS editors appear only after choosing **Custom…** in their dropdown. Presence is off by default; enabling it shares the
+streamed game and host name with the local Discord desktop app. The public application ID
+is configurable. English, German, French and Spanish resources are bundled; untranslated
+technical messages fall back to English. Restart the app after changing language.
+
+Host Details includes a client connectivity test against Moonlight’s public test server.
+It tests this network’s outbound ports, rather than the streaming host’s firewall.
+
 ## Tests and validation
 
 ```sh
@@ -136,8 +150,7 @@ server checks correct, incorrect and missing certificate pins. Tests use
 `/usr/bin/openssl` and Python 3 and require permission to open localhost sockets.
 
 The [macOS CI workflow](.github/workflows/macos.yml) runs tests and release
-packaging. The latest local validation passed **25 tests** and built and verified
-an optimized, ad-hoc-signed app. Current workflow results are available in
+packaging. Local validation includes the regression suite and an optimized, ad-hoc-signed app. Current workflow results are available in
 [GitHub Actions](https://github.com/Eckobrew/moonlight-mac/actions/workflows/macos.yml).
 
 See the [project review](Docs/PROJECT_REVIEW.md) for implementation details and the

@@ -14,13 +14,13 @@ public struct PerformanceHUDView: View {
                     .fill(statusIndicatorColor)
                     .frame(width: 8, height: 8)
 
-                Text("PERFORMANCE HUD")
+                Text(AppLocalization.text("PERFORMANCE HUD"))
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(.secondary)
 
                 Spacer()
 
-                Text("⌘⇧H to hide")
+                Text(AppLocalization.text("⌘⇧H to hide"))
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(.tertiary)
             }

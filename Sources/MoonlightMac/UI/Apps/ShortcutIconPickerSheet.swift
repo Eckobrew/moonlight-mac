@@ -68,7 +68,7 @@ public struct ShortcutIconPickerSheet: View {
 
                 // Right Pane: Live Desktop icon preview & options
                 VStack(spacing: 18) {
-                    Text("Desktop Preview")
+                    Text(AppLocalization.text("Desktop Preview"))
                         .font(.headline)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -80,11 +80,11 @@ public struct ShortcutIconPickerSheet: View {
                     // Style options
                     VStack(alignment: .leading, spacing: 14) {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Icon Shape")
+                            Text(AppLocalization.text("Icon Shape"))
                                 .font(.subheadline)
                                 .fontWeight(.medium)
 
-                            Picker("", selection: $iconStyle) {
+                            Picker(AppLocalization.text(""), selection: $iconStyle) {
                                 ForEach(ShortcutIconStyle.allCases) { style in
                                     Text(style.rawValue).tag(style)
                                 }
@@ -94,13 +94,13 @@ public struct ShortcutIconPickerSheet: View {
 
                         if iconStyle == .squircle || iconStyle == .circle {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("Artwork Scaling")
+                                Text(AppLocalization.text("Artwork Scaling"))
                                     .font(.subheadline)
                                     .fontWeight(.medium)
 
-                                Picker("", selection: $fillMode) {
+                                Picker(AppLocalization.text(""), selection: $fillMode) {
                                     ForEach(ShortcutFillMode.allCases) { mode in
-                                        Text(mode.rawValue).tag(mode)
+                                        Text(AppLocalization.text(mode.rawValue)).tag(mode)
                                     }
                                 }
                                 .pickerStyle(.segmented)
@@ -108,11 +108,11 @@ public struct ShortcutIconPickerSheet: View {
 
                             if fillMode == .aspectFit {
                                 VStack(alignment: .leading, spacing: 6) {
-                                    Text("Backdrop")
+                                    Text(AppLocalization.text("Backdrop"))
                                         .font(.subheadline)
                                         .fontWeight(.medium)
 
-                                    Picker("", selection: $backdrop) {
+                                    Picker(AppLocalization.text(""), selection: $backdrop) {
                                         ForEach(ShortcutBackdrop.allCases) { b in
                                             Text(b.rawValue).tag(b)
                                         }
@@ -134,7 +134,7 @@ public struct ShortcutIconPickerSheet: View {
 
                     // Action buttons
                     HStack(spacing: 12) {
-                        Button("Cancel") {
+                        Button(AppLocalization.text("Cancel")) {
                             dismiss()
                         }
                         .keyboardShortcut(.cancelAction)
@@ -147,7 +147,7 @@ public struct ShortcutIconPickerSheet: View {
                                     .scaleEffect(0.7)
                                     .frame(width: 80)
                             } else {
-                                Label("Create Shortcut", systemImage: "arrow.up.forward.app")
+                                Label(AppLocalization.text("Create Shortcut"), systemImage: "arrow.up.forward.app")
                                     .frame(minWidth: 120)
                             }
                         }
@@ -169,8 +169,8 @@ public struct ShortcutIconPickerSheet: View {
             searchQuery = app.title
             searchService.search(query: app.title, hostBoxArt: boxArtImage, hostAppName: app.title)
         }
-        .alert("Shortcut Created", isPresented: $showSuccessAlert) {
-            Button("OK") {
+        .alert(AppLocalization.text("Shortcut Created"), isPresented: $showSuccessAlert) {
+            Button(AppLocalization.text("OK")) {
                 dismiss()
             }
         } message: {
@@ -182,7 +182,7 @@ public struct ShortcutIconPickerSheet: View {
     private var headerView: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Create Desktop Shortcut")
+                Text(AppLocalization.text("Create Desktop Shortcut"))
                     .font(.title2)
                     .fontWeight(.bold)
 
@@ -232,7 +232,7 @@ public struct ShortcutIconPickerSheet: View {
                     .frame(width: 16, height: 16)
             }
 
-            Button("Search") {
+            Button(AppLocalization.text("Search")) {
                 searchService.search(query: searchQuery, hostBoxArt: boxArtImage, hostAppName: app.title)
             }
             .buttonStyle(.bordered)
@@ -333,13 +333,13 @@ public struct ShortcutIconPickerSheet: View {
                         Image(systemName: "photo.badge.plus")
                             .font(.system(size: 26))
                             .foregroundStyle(Color.accentColor)
-                        Text("Browse File...")
+                        Text(AppLocalization.text("Browse File..."))
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(.primary)
                     }
                 }
 
-                Text("Custom Image")
+                Text(AppLocalization.text("Custom Image"))
                     .font(.caption2)
                     .lineLimit(1)
                     .foregroundStyle(.secondary)
@@ -390,7 +390,7 @@ public struct ShortcutIconPickerSheet: View {
                 }
 
                 VStack(spacing: 2) {
-                    Text(title)
+                    Text(AppLocalization.text(title))
                         .font(.caption)
                         .fontWeight(.medium)
                         .lineLimit(1)
@@ -415,7 +415,7 @@ public struct ShortcutIconPickerSheet: View {
                 HStack(spacing: 4) {
                     Image(systemName: showSGDBField ? "chevron.down" : "chevron.right")
                         .font(.caption2)
-                    Text("SteamGridDB API Key (Optional)")
+                    Text(AppLocalization.text("SteamGridDB API Key (Optional)"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -427,13 +427,13 @@ public struct ShortcutIconPickerSheet: View {
                     SecureField("Paste SteamGridDB key...", text: $steamGridDBKey)
                         .textFieldStyle(.roundedBorder)
 
-                    Button("Save & Search") {
+                    Button(AppLocalization.text("Save & Search")) {
                         searchService.search(query: searchQuery, hostBoxArt: boxArtImage, hostAppName: app.title)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
-                Text("Get a free key at steamgriddb.com/profile/preferences/api to unlock community artwork.")
+                Text(AppLocalization.text("Get a free key at steamgriddb.com/profile/preferences/api to unlock community artwork."))
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             }
@@ -481,7 +481,7 @@ public struct ShortcutIconPickerSheet: View {
                 }
             }
 
-            Text("Exact Apple HIG Grid: 824x824 continuous superellipse")
+            Text(AppLocalization.text("Exact Apple HIG Grid: 824x824 continuous superellipse"))
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
         }

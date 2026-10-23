@@ -17,19 +17,19 @@ public struct AddHostSheet: View {
 
     public var body: some View {
         VStack(spacing: 20) {
-            Text("Add Sunshine / Apollo Host")
+            Text(AppLocalization.text("Add Sunshine / Apollo Host"))
                 .font(.title2)
                 .fontWeight(.bold)
 
-            Text("Enter the IP address or hostname of your PC running Sunshine or Apollo.")
+            Text(AppLocalization.text("Enter the IP address or hostname of your PC running Sunshine or Apollo."))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
 
             Form {
-                TextField("Host Name (optional):", text: $hostName, prompt: Text("e.g. Gaming PC"))
-                TextField("IP Address / Hostname:", text: $hostAddress, prompt: Text("192.168.1.100"))
-                TextField("Port (optional):", text: $httpPort, prompt: Text("47989"))
+                TextField(AppLocalization.text("Host Name (optional):"), text: $hostName, prompt: Text(AppLocalization.text("e.g. Gaming PC")))
+                TextField(AppLocalization.text("IP Address / Hostname:"), text: $hostAddress, prompt: Text(AppLocalization.text("192.168.1.100")))
+                TextField(AppLocalization.text("Port (optional):"), text: $httpPort, prompt: Text(AppLocalization.text("47989")))
             }
             .formStyle(.grouped)
 
@@ -40,14 +40,14 @@ public struct AddHostSheet: View {
             }
 
             HStack {
-                Button("Cancel") {
+                Button(AppLocalization.text("Cancel")) {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
 
                 Spacer()
 
-                Button("Add Host") {
+                Button(AppLocalization.text("Add Host")) {
                     submitHost()
                 }
                 .buttonStyle(.borderedProminent)
