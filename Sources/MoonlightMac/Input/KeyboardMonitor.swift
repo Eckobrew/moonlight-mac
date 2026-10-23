@@ -43,7 +43,7 @@ public final class KeyboardMonitor: @unchecked Sendable {
         appResignObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification,
             object: nil,
-            queue: .main
+            queue: OperationQueue.main
         ) { [weak self] _ in
             self?.raiseModifierKeys()
         }

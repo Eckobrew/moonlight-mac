@@ -42,7 +42,7 @@ public final class WindowManager: ObservableObject {
             self.previousFrame = window.frame
         }
 
-        AppLogger.shared.info("applyStartupWindowMode: targetMode=\(mode.rawValue), window=\(window.description), isFullScreen=\(window.styleMask.contains(.fullScreen))", category: "Window")
+        AppLogger.shared.info("applyStartupWindowMode: targetMode=\(mode.rawValue), window=\(String(describing: window)), isFullScreen=\(window.styleMask.contains(.fullScreen))", category: "Window")
 
         let item = DispatchWorkItem { [weak self, weak window] in
             guard let self = self, let window = window else { return }
@@ -189,7 +189,7 @@ public final class WindowManager: ObservableObject {
 
     /// "Fullscreen (Windowed)": Moves the app to its own macOS Space via native fullscreen spaces
     private func applyFullscreenSpace(to window: NSWindow) {
-        AppLogger.shared.info("applyFullscreenSpace: window=\(window.description), isFullScreen=\(window.styleMask.contains(.fullScreen))", category: "Window")
+        AppLogger.shared.info("applyFullscreenSpace: window=\(String(describing: window)), isFullScreen=\(window.styleMask.contains(.fullScreen))", category: "Window")
         restorePresentationOptions()
 
         if previousFrame == nil && !window.styleMask.contains(.fullScreen) && window.styleMask != .borderless {

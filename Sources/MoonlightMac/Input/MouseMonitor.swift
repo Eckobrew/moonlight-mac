@@ -85,7 +85,7 @@ public final class MouseMonitor: @unchecked Sendable {
         appResignObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification,
             object: nil,
-            queue: .main
+            queue: OperationQueue.main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self = self, self.isCaptured else { return }
@@ -99,7 +99,7 @@ public final class MouseMonitor: @unchecked Sendable {
         appBecomeActiveObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
-            queue: .main
+            queue: OperationQueue.main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self = self, self.isCaptured else { return }
@@ -111,7 +111,7 @@ public final class MouseMonitor: @unchecked Sendable {
         spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil,
-            queue: .main
+            queue: OperationQueue.main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self = self, self.isCaptured else { return }
@@ -131,7 +131,7 @@ public final class MouseMonitor: @unchecked Sendable {
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
                      NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification,
                      NSWindow.didEndSheetNotification] {
-            let observer = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+            let observer = NotificationCenter.default.addObserver(forName: name, object: nil, queue: OperationQueue.main) { [weak self] notification in
                 guard let window = notification.object as? NSWindow else { return }
                 MainActor.assumeIsolated {
                     guard let self, window === self.streamWindow else { return }

@@ -48,7 +48,7 @@ public final class ClipboardSyncManager {
         let activeObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
-            queue: .main
+            queue: OperationQueue.main
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.syncClipboardToHost()
@@ -59,7 +59,7 @@ public final class ClipboardSyncManager {
         let resignObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification,
             object: nil,
-            queue: .main
+            queue: OperationQueue.main
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.syncClipboardFromHost()

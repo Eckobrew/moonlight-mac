@@ -109,7 +109,7 @@ public final class DisplaySleepManager {
             let obs = NotificationCenter.default.addObserver(
                 forName: name,
                 object: nil,
-                queue: .main
+                queue: OperationQueue.main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.handleNotification(name: name)

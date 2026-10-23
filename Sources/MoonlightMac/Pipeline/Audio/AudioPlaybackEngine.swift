@@ -319,7 +319,7 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
-            queue: .main
+            queue: OperationQueue.main
         ) { [weak self] _ in
             self?.handleConfigurationChange()
         }
@@ -411,7 +411,7 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
             let observer = NotificationCenter.default.addObserver(
                 forName: name,
                 object: nil,
-                queue: .main
+                queue: OperationQueue.main
             ) { [weak self] _ in
                 self?.updateFocusMuteState()
             }

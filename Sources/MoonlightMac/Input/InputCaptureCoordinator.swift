@@ -136,7 +136,7 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
             // window's style mask and frame, so evaluating synchronously would read stale state.
             let isFullscreenTransition = (name == NSWindow.didEnterFullScreenNotification ||
                                           name == NSWindow.didExitFullScreenNotification)
-            let obs = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            let obs = NotificationCenter.default.addObserver(forName: name, object: nil, queue: OperationQueue.main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self = self else { return }
                     if isResign {
