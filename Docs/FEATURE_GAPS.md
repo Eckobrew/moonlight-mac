@@ -52,3 +52,5 @@ Controls that cannot affect the selected mode are hidden or disabled: manual VSy
 Idle work was reduced without changing the focus/fullscreen recovery state machines: controller UI polling stops without a controller, during streaming and while inactive; unchanged focus selections no longer invalidate the UI. Native controller button/touch layouts are cached, touchpad aliases are deduplicated, and touch packets are skipped for hosts without that extension. Metal uses scheduled, generation-checked drawable retries rather than sleeping the render queue. Repeated identical service-status messages no longer publish redundant UI changes.
 
 The complete regression suite still passes 64 tests. These changes reduce redundant work; they are not a new latency benchmark or a substitute for controller/HDR/device testing.
+
+Release metadata cleanup also removes the global `NSSupportsAppNap`, `NSAppSleepDisabled` and `NSApplicationUpdateCycleEnabled` overrides. The existing stream-scoped process activity and focused display-sleep assertions remain responsible for streaming power behaviour. App metadata identifies v0.2 as version 0.2.0, build 2.

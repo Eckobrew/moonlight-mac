@@ -16,6 +16,23 @@ It does not use Qt for its interface.
 > have not been established. HDR, surround audio and controller extras still need
 > validation across real hardware. See the [validation checklist](Docs/HARDWARE_VALIDATION.md).
 
+## v0.2
+
+This release improves stream startup/focus recovery, fullscreen transitions and
+native mouse behaviour. It also fixes audio route recovery, common-c connection
+lifetimes, HDR state/metadata and controller capability reporting.
+
+Settings now use one resolution/FPS dropdown each. Choose **Custom…** to enter a
+custom value; otherwise there is no second numeric field. Controller options have
+their own section, advanced options stay out of the way, and controls that do not
+apply to the chosen renderer or mouse mode are hidden or disabled.
+
+The release also adds desktop pointer mode, native controller extras and UI
+navigation, optional 4:4:4/decoder preferences, language selection and opt-in
+Discord presence. Idle controller polling, repeated profile lookups and sleeping
+render retries were removed or reduced. See the [feature report](Docs/FEATURE_GAPS.md)
+for implementation details and hardware limits.
+
 ## Features
 
 - H.264 and HEVC decoding, with AV1 offered when VideoToolbox reports hardware support.
@@ -45,13 +62,13 @@ the paste shortcut sends text through the streaming protocol.
 ## Build and install
 
 ```sh
-git clone https://github.com/Eckobrew/moonlight-mac.git
+git clone --branch v0.2 https://github.com/Eckobrew/moonlight-mac.git
 cd moonlight-mac
 ./Scripts/package_app.sh release
 ```
 
 The script creates **`Products/Moonlight.app`** and checks its executable, plist,
-Metal resources, bundled licenses and signature. Drag the app into `/Applications`,
+Metal/language resources, bundled licenses and signature. Drag the app into `/Applications`,
 or install it from the terminal:
 
 ```sh
@@ -95,21 +112,22 @@ Hold **Control + Option + Shift** (`⌃ ⌥ ⇧`) and press:
 | `D` | Minimize the stream window |
 | `V` | Paste text from the Mac clipboard to the PC |
 
-Desktop mode uses the native visible pointer and absolute host coordinates inside the video area.
-Hold Start on a controller for ¾ second to toggle controller mouse control.
-Whether disconnecting also quits the host game
-is controlled by the session settings; desktop-shortcut sessions quit it on exit.
+Desktop mode uses the native visible pointer and absolute host coordinates inside
+the video area. Hold Start on a controller for ¾ second to toggle controller mouse
+control. Whether disconnecting also quits the host game is controlled by session
+settings; desktop-shortcut sessions quit the game they launched on exit.
 
 ## Settings
 
 - **Resolution and frame rate:** choose the stream size and requested FPS. `Native`
   resolves the physical resolution of the Mac's current display at session start.
+  Select **Custom…** in either dropdown to reveal its labelled editor.
 - **Bitrate:** set the target stream bitrate. Enabling a custom remote bitrate
   uses that value for connections classified as remote, including Tailscale; it
   does not measure bandwidth or automatically tune the value.
 - **Renderer, V-Sync and frame pacing:** select the presentation path and whether
-  to synchronize/pace frames against display refresh. The latency/smoothness
-  tradeoff depends on the setup.
+  to pace frames against display refresh. Manual V-Sync control applies to Metal;
+  the native renderer manages synchronization automatically.
 - **Audio:** select stereo/surround and a Mac output device. Host-speaker muting
   and muting the Mac stream when another app is focused are separate options.
 - **Mouse capture:** locks the cursor for continuous relative input. Use the
@@ -126,12 +144,17 @@ modifiers carry their extended-key flags. Use clipboard paste when exact text
 characters matter. The previous host-layout selector was removed; its saved
 values remain readable.
 
-Controller options have their own section. Advanced decoder/chroma preferences are under
-Display & Video; discovery, language and Discord Rich Presence are under Application.
-Custom resolution and FPS editors appear only after choosing **Custom…** in their dropdown. Presence is off by default; enabling it shares the
-streamed game and host name with the local Discord desktop app. The public application ID
-is configurable. English, German, French and Spanish resources are bundled; untranslated
-technical messages fall back to English. Restart the app after changing language.
+The **Controllers** section contains face-button layout, mouse emulation,
+background input and persistent player-one preferences. **Display & Video** has
+advanced decoder/chroma options; **Keyboard & Mouse** contains desktop mode and
+advanced sensitivity scaling.
+
+**Application** contains discovery, language and Discord settings. Presence is
+off by default; enabling it shares the streamed game and host name with the local
+Discord desktop app. A default application ID is included; changing it is an
+advanced option. English, German, French and Spanish resources are bundled;
+untranslated technical messages fall back to English. Restart after changing
+language.
 
 Host Details includes a client connectivity test against Moonlight’s public test server.
 It tests this network’s outbound ports, rather than the streaming host’s firewall.
@@ -143,15 +166,19 @@ swift test --jobs 4
 ./Scripts/verify_app.sh Products/Moonlight.app
 ```
 
-The regression suite covers audio buffering, frame-pacer lifecycle, codec masks,
-TCP fallback, IPv6 URLs, keyboard mapping, certificate/signature checks, legacy
-host migration, redirect rejection and relocated shader resources. Its local TLS
-server checks correct, incorrect and missing certificate pins. Tests use
-`/usr/bin/openssl` and Python 3 and require permission to open localhost sockets.
+The v0.2 code passes **64 regression tests** locally, plus optimized app packaging
+and verification of the executable, shader/language resources, licenses, plist and
+ad-hoc signature. GitHub's [macOS validation run](https://github.com/Eckobrew/moonlight-mac/actions/runs/40039701717)
+also passed tests and release packaging for the final code cleanup.
+
+Coverage includes audio buffering/recovery, input and window state, malformed
+video recovery, HDR metadata, RTT lifetime, controller requests, custom settings,
+Discord frame parsing, localized/relocated resources, TLS pins and pairing.
+Local TLS tests use `/usr/bin/openssl` and Python 3 and need localhost sockets.
 
 The [macOS CI workflow](.github/workflows/macos.yml) runs tests and release
-packaging. Local validation includes the regression suite and an optimized, ad-hoc-signed app. Current workflow results are available in
-[GitHub Actions](https://github.com/Eckobrew/moonlight-mac/actions/workflows/macos.yml).
+packaging. See [GitHub Actions](https://github.com/Eckobrew/moonlight-mac/actions/workflows/macos.yml)
+for current branch/tag results.
 
 See the [project review](Docs/PROJECT_REVIEW.md) for implementation details and the
 [hardware checklist](Docs/HARDWARE_VALIDATION.md) for outstanding live-host checks.
