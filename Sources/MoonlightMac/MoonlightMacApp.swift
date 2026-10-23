@@ -14,22 +14,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        DispatchQueue.main.async {
-            NSApplication.shared.activate(ignoringOtherApps: true)
-            for window in NSApplication.shared.windows {
-                window.makeKeyAndOrderFront(nil)
-                window.orderFrontRegardless()
-            }
-        }
+
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag {
-            for window in sender.windows {
-                window.makeKeyAndOrderFront(nil)
-                window.orderFrontRegardless()
-            }
-        }
+        if !flag { WindowManager.shared.showCurrentWindow() }
         return true
     }
 
@@ -93,21 +82,13 @@ struct RootContentView: View {
             minHeight: appState.isShortcutLaunch && !appState.hasStartedStreaming ? 380 : 550
         )
         .background(ContentWindowReader())
-        .onAppear {
-            NSApplication.shared.setActivationPolicy(.regular)
-            NSApplication.shared.activate(ignoringOtherApps: true)
-            for window in NSApplication.shared.windows {
-                window.makeKeyAndOrderFront(nil)
-                window.orderFrontRegardless()
-            }
-        }
         .alert("Stream Error", isPresented: Binding(
             get: { sessionController.sessionError != nil },
             set: { if !$0 { sessionController.clearError() } }
         )) {
             Button("OK", role: .cancel) {
                 if sessionController.isShortcutMode || appState.isShortcutLaunch {
-                    // A shortcut launch hid the windows; restore one so the app is reachable.
+                    // Return to the shortcut launch UI after dismissing the error.
                     appState.failShortcutLaunch()
                 } else {
                     appState.stopActiveStream()

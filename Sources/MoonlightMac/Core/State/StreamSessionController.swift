@@ -76,9 +76,6 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     public func markConnected() {
         guard isStreaming else { return }
         self.currentStageName = "Connected"
-        if let settings = activeSettings {
-            WindowManager.shared.applyStartupWindowMode(settings.windowMode)
-        }
     }
 
     public func handleStageFailed(stage: Int, code: Int) {
@@ -452,15 +449,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         let shouldQuitHostApp = isShortcut || (activeSettings?.quitAppOnStop == true)
 
         if isShortcut {
-            for window in NSApp.windows {
-                window.alphaValue = 0
-                if window.styleMask.contains(.fullScreen) {
-                    window.toggleFullScreen(nil)
-                }
-                window.orderOut(nil)
-                window.setIsVisible(false)
-            }
-            NSApp.hide(nil)
+            WindowManager.shared.hideStreamWindow()
         } else {
             WindowManager.shared.restoreWindowAfterStream()
         }

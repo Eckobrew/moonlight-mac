@@ -5,258 +5,245 @@ import SwiftUI
 public final class WindowManager: ObservableObject {
     public static let shared = WindowManager()
 
-    private var previousStyleMask: NSWindow.StyleMask?
-    private var previousFrame: NSRect?
-    private var previousLevel: NSWindow.Level?
-    private var previousPresentationOptions: NSApplication.PresentationOptions?
-    private var startupWorkItem: DispatchWorkItem?
+    private struct SavedWindow {
+        let frame: NSRect
+        let style: NSWindow.StyleMask
+        let level: NSWindow.Level
+        let collectionBehavior: NSWindow.CollectionBehavior
+        let presentationOptions: NSApplication.PresentationOptions
+    }
+
+    /// Preserve SwiftUI's window delegate while receiving AppKit's failure-only
+    /// delegate callbacks (there are no corresponding failure notifications).
+    private final class TransitionDelegate: NSObject, NSWindowDelegate {
+        weak var original: (any NSWindowDelegate)?
+        var onFailure: (() -> Void)?
+
+        init(original: (any NSWindowDelegate)?) { self.original = original }
+
+        override func responds(to selector: Selector!) -> Bool {
+            super.responds(to: selector) || original?.responds(to: selector) == true
+        }
+
+        override func forwardingTarget(for selector: Selector!) -> Any? {
+            if original?.responds(to: selector) == true { return original }
+            return super.forwardingTarget(for: selector)
+        }
+
+        func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+            original?.windowDidFailToEnterFullScreen?(window)
+            onFailure?()
+        }
+
+        func windowDidFailToExitFullScreen(_ window: NSWindow) {
+            original?.windowDidFailToExitFullScreen?(window)
+            onFailure?()
+        }
+    }
+
+    private var transitionDelegate: TransitionDelegate?
     private weak var contentWindow: NSWindow?
+    private weak var streamWindow: NSWindow?
+    private var savedWindow: SavedWindow?
+    private var transition: WindowModeTransition?
+    private var observers: [NSObjectProtocol] = []
+    private var changedPresentationOptions = false
     public private(set) var currentMode: WindowMode?
 
     private init() {}
 
-    public var currentWindow: NSWindow? {
-        targetWindow()
-    }
+    public var currentWindow: NSWindow? { targetWindow() }
 
-    public func setContentWindow(_ window: NSWindow) {
-        contentWindow = window
-    }
+    public func setContentWindow(_ window: NSWindow) { contentWindow = window }
 
     private func targetWindow(provided: NSWindow? = nil) -> NSWindow? {
-        return provided ?? contentWindow ?? NSApp.keyWindow?.sheetParent ?? NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) })
+        provided ?? streamWindow ?? contentWindow ?? NSApp.keyWindow?.sheetParent ?? NSApp.mainWindow ?? NSApp.keyWindow
     }
 
-    /// Applies the window mode with a slight delay (0.12s) to allow view transition layout to complete
+    /// Called once when the stream view attaches. Layout, connection callbacks
+    /// and HUD updates must not issue another fullscreen request.
     public func applyStartupWindowMode(_ mode: WindowMode, for window: NSWindow? = nil) {
-        startupWorkItem?.cancel()
-        startupWorkItem = nil
-
-        guard let window = targetWindow(provided: window) else {
-            AppLogger.shared.warning("applyStartupWindowMode: No visible window found!", category: "Window")
-            return
-        }
-
-        // Save pre-stream frame if currently a standard window
-        if self.previousFrame == nil && !window.styleMask.contains(.fullScreen) && window.styleMask != .borderless {
-            self.previousFrame = window.frame
-        }
-
-        AppLogger.shared.info("applyStartupWindowMode: targetMode=\(mode.rawValue), window=\(String(describing: window)), isFullScreen=\(window.styleMask.contains(.fullScreen))", category: "Window")
-
-        let item = DispatchWorkItem { [weak self, weak window] in
-            guard let self = self, let window = window else { return }
-            self.applyWindowMode(mode, for: window)
-        }
-        self.startupWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: item)
+        guard savedWindow == nil else { return }
+        applyWindowMode(mode, for: window)
     }
 
     public func applyWindowMode(_ mode: WindowMode, for window: NSWindow? = nil) {
-        guard let window = targetWindow(provided: window) else {
-            AppLogger.shared.warning("applyWindowMode: No visible window found!", category: "Window")
-            return
+        guard let window = targetWindow(provided: window) else { return }
+        if savedWindow == nil {
+            streamWindow = window
+            savedWindow = SavedWindow(frame: window.frame, style: window.styleMask,
+                                      level: window.level, collectionBehavior: window.collectionBehavior,
+                                      presentationOptions: NSApp.presentationOptions)
+            transition = WindowModeTransition(requested: mode,
+                                              originalWasNativeFullscreen: window.styleMask.contains(.fullScreen))
+            observeTransitions(of: window)
+        } else {
+            guard window === streamWindow else { return }
+            transition?.requested = mode
         }
-
-        AppLogger.shared.info("applyWindowMode: applying \(mode.rawValue)", category: "Window")
-        self.currentMode = mode
-
-        switch mode {
-        case .windowed:
-            applyWindowed(to: window)
-        case .fullscreen:
-            applyFullscreenCurrentSpace(to: window)
-        case .fullscreenDesktop:
-            applyFullscreenSpace(to: window)
-        }
-
-        // Borderless transitions may leave the same window key and produce no
-        // activation notification. Re-arm capture against the completed geometry;
-        // native fullscreen is also re-armed after didEnter/ExitFullScreen.
-        InputCaptureCoordinator.shared.mouseMonitor.refreshCapture()
+        currentMode = mode
+        processTransition()
     }
 
     public func toggleFullscreen(for window: NSWindow? = nil) {
         guard let window = targetWindow(provided: window) else { return }
-        if window.styleMask.contains(.fullScreen) || window.styleMask == .borderless {
-            applyWindowMode(.windowed, for: window)
-        } else {
-            let target = StreamSessionController.shared.activeSettings?.windowMode ?? .fullscreenDesktop
-            applyWindowMode(target == .windowed ? .fullscreenDesktop : target, for: window)
-        }
+        let fullscreenRequested = currentMode == .fullscreen || currentMode == .fullscreenDesktop
+        let preferred = StreamSessionController.shared.activeSettings?.windowMode ?? .fullscreenDesktop
+        applyWindowMode(fullscreenRequested ? .windowed : (preferred == .windowed ? .fullscreenDesktop : preferred),
+                        for: window)
     }
 
     public func cycleWindowMode(for window: NSWindow? = nil) {
-        guard let current = currentMode else {
-            applyWindowMode(.fullscreenDesktop, for: window)
-            return
-        }
         let next: WindowMode
-        switch current {
-        case .fullscreenDesktop:
-            next = .fullscreen
-        case .fullscreen:
-            next = .windowed
-        case .windowed:
-            next = .fullscreenDesktop
+        switch currentMode {
+        case .fullscreenDesktop: next = .fullscreen
+        case .fullscreen: next = .windowed
+        default: next = .fullscreenDesktop
         }
         applyWindowMode(next, for: window)
     }
 
     public func restoreWindowAfterStream(for window: NSWindow? = nil) {
-        startupWorkItem?.cancel()
-        startupWorkItem = nil
-
-        guard let window = targetWindow(provided: window) else { return }
-
-        AppLogger.shared.info("restoreWindowAfterStream: restoring standard window, isFullScreen=\(window.styleMask.contains(.fullScreen))", category: "Window")
-        restorePresentationOptions()
-
-        if window.styleMask.contains(.fullScreen) {
-            window.toggleFullScreen(nil)
-            // macOS Space exit transition takes ~0.5s; verify and enforce normal window after transition
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self, weak window] in
-                guard let self = self, let window = window else { return }
-                self.restoreStandardWindowFrame(for: window)
-            }
-        } else {
-            restoreStandardWindowFrame(for: window)
-        }
-
+        guard savedWindow != nil else { return }
+        transition?.requested = nil
         currentMode = nil
+        processTransition()
     }
 
-    private func restoreStandardWindowFrame(for window: NSWindow) {
-        if window.styleMask.contains(.fullScreen) {
-            // Still in transition, try once more
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self, weak window] in
-                guard let window = window else { return }
-                if window.styleMask.contains(.fullScreen) {
-                    window.toggleFullScreen(nil)
+    public func hideStreamWindow() {
+        // A shortcut process is about to exit. Hiding its one window is enough;
+        // AppKit removes its fullscreen Space when the process terminates.
+        targetWindow()?.orderOut(nil)
+        restorePresentationOptions()
+    }
+
+    public func showCurrentWindow() {
+        guard let window = targetWindow() else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func observeTransitions(of window: NSWindow) {
+        let names: [Notification.Name] = [
+            NSWindow.willEnterFullScreenNotification, NSWindow.willExitFullScreenNotification,
+            NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification
+        ]
+        let delegate = TransitionDelegate(original: window.delegate)
+        delegate.onFailure = { [weak self] in self?.handleTransitionFailure() }
+        transitionDelegate = delegate
+        window.delegate = delegate
+        for name in names {
+            let observer = NotificationCenter.default.addObserver(forName: name, object: window,
+                                                                 queue: OperationQueue.main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.handleTransitionNotification(name)
                 }
-                self?.restoreStandardWindowFrame(for: window)
             }
+            observers.append(observer)
+        }
+    }
+
+    private func handleTransitionNotification(_ name: Notification.Name) {
+        guard streamWindow != nil, transition != nil else { return }
+        if name == NSWindow.willEnterFullScreenNotification || name == NSWindow.willExitFullScreenNotification {
+            if transition?.inFlight == false {
+                // A green-window-button action is a user request too.
+                let mode: WindowMode = name == NSWindow.willEnterFullScreenNotification ? .fullscreenDesktop : .windowed
+                transition?.requested = mode
+                currentMode = mode
+            }
+            transition?.inFlight = true
             return
         }
+        transition?.inFlight = false
+        processTransition()
+    }
 
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.level = .normal
-
-        if let prevFrame = previousFrame {
-            window.setFrame(prevFrame, display: true, animate: true)
-            previousFrame = nil
+    private func handleTransitionFailure() {
+        guard let window = streamWindow else { return }
+        transition?.inFlight = false
+        AppLogger.shared.error("Native fullscreen transition failed; keeping the window usable", category: "Window")
+        restorePresentationOptions()
+        if transition?.requested == nil {
+            finishRestoration()
         } else {
-            let screen = window.screen ?? NSScreen.main ?? NSScreen.screens[0]
-            let visible = screen.visibleFrame
-            let targetW = min(1100.0, visible.width * 0.8)
-            let targetH = min(700.0, visible.height * 0.8)
-            let targetFrame = NSRect(
-                x: visible.midX - targetW / 2.0,
-                y: visible.midY - targetH / 2.0,
-                width: targetW,
-                height: targetH
-            )
-            window.setFrame(targetFrame, display: true, animate: true)
+            let mode: WindowMode = window.styleMask.contains(.fullScreen) ? .fullscreenDesktop : .windowed
+            transition?.requested = mode
+            currentMode = mode
         }
-
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        InputCaptureCoordinator.shared.mouseMonitor.refreshCapture()
     }
 
-    /// "Windowed": Extends to fill all available space (excluding dock and menu bar)
-    private func applyWindowed(to window: NSWindow) {
-        AppLogger.shared.info("applyWindowed: entering windowed mode extending to fill available space", category: "Window")
-        restorePresentationOptions()
-
-        if window.styleMask.contains(.fullScreen) {
-            window.toggleFullScreen(nil)
-        }
-
-        if previousFrame == nil && !window.styleMask.contains(.fullScreen) && window.styleMask != .borderless {
-            previousFrame = window.frame
-        }
-
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.level = .normal
-
-        // Windowed mode extends to fill all available space (not the dock or menu bar)
-        let screen = window.screen ?? NSScreen.main ?? NSScreen.screens[0]
-        window.setFrame(screen.visibleFrame, display: true, animate: true)
-
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-    }
-
-    /// "Fullscreen (Windowed)": Moves the app to its own macOS Space via native fullscreen spaces
-    private func applyFullscreenSpace(to window: NSWindow) {
-        AppLogger.shared.info("applyFullscreenSpace: window=\(String(describing: window)), isFullScreen=\(window.styleMask.contains(.fullScreen))", category: "Window")
-        restorePresentationOptions()
-
-        if previousFrame == nil && !window.styleMask.contains(.fullScreen) && window.styleMask != .borderless {
-            previousFrame = window.frame
-        }
-
-        // If currently in borderless mode on current space, restore resizable titled style first
-        if window.styleMask == .borderless || !window.styleMask.contains(.titled) {
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+    private func processTransition() {
+        guard let window = streamWindow, let saved = savedWindow, let transition else { return }
+        switch transition.action(isNativeFullscreen: window.styleMask.contains(.fullScreen)) {
+        case .wait:
+            return
+        case .enterNative:
+            restorePresentationOptions()
+            window.styleMask.formUnion([.titled, .closable, .miniaturizable, .resizable])
             window.level = .normal
-        }
-
-        // Ensure window has resizable style mask so macOS allows native fullscreen space
-        if !window.styleMask.contains(.resizable) {
-            window.styleMask.insert(.resizable)
-        }
-
-        // Ensure window collection behavior supports native fullscreen Space
-        window.collectionBehavior.remove(.fullScreenNone)
-        window.collectionBehavior.remove(.fullScreenAuxiliary)
-        window.collectionBehavior.insert([.fullScreenPrimary, .managed])
-
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-
-        if !window.styleMask.contains(.fullScreen) {
-            AppLogger.shared.info("applyFullscreenSpace: invoking window.toggleFullScreen(nil)", category: "Window")
+            window.collectionBehavior.subtract([.fullScreenNone, .fullScreenAuxiliary])
+            window.collectionBehavior.insert([.fullScreenPrimary, .managed])
+            self.transition?.inFlight = true
             window.toggleFullScreen(nil)
-        } else {
-            AppLogger.shared.info("applyFullscreenSpace: window is already in fullscreen Space", category: "Window")
-        }
-    }
-
-    /// "Fullscreen": Covers the entire display on the current Space (borderless window)
-    private func applyFullscreenCurrentSpace(to window: NSWindow) {
-        AppLogger.shared.info("applyFullscreenCurrentSpace: entering borderless on current Space", category: "Window")
-
-        // Exit native macOS Spaces fullscreen first if active
-        if window.styleMask.contains(.fullScreen) {
+            return
+        case .exitNative:
+            self.transition?.inFlight = true
             window.toggleFullScreen(nil)
+            return
+        case .nativeReady:
+            break
+        case .windowed:
+            restorePresentationOptions()
+            window.styleMask = saved.style.subtracting(.fullScreen).union([.titled, .closable, .miniaturizable, .resizable])
+            window.level = .normal
+            window.collectionBehavior = saved.collectionBehavior
+            if !transition.originalWasNativeFullscreen { window.setFrame(saved.frame, display: true) }
+        case .borderless:
+            // Resizable borderless windows remain eligible to become key. Keep
+            // normal level so banners, Notification Center and Cmd+Tab work.
+            let screen = window.screen ?? NSScreen.main
+            window.styleMask = [.borderless, .resizable]
+            window.level = .normal
+            window.collectionBehavior = saved.collectionBehavior
+            if let screen { window.setFrame(screen.frame, display: true) }
+            NSApp.presentationOptions = saved.presentationOptions.subtracting([.hideDock, .hideMenuBar])
+                .union([.autoHideDock, .autoHideMenuBar])
+            changedPresentationOptions = true
+        case .restore:
+            restorePresentationOptions()
+            if !window.styleMask.contains(.fullScreen) {
+                window.styleMask = saved.style.subtracting(.fullScreen)
+                if !transition.originalWasNativeFullscreen { window.setFrame(saved.frame, display: true) }
+            }
+            window.level = saved.level
+            window.collectionBehavior = saved.collectionBehavior
+            finishRestoration()
+            return
         }
-
-        if previousPresentationOptions == nil {
-            previousPresentationOptions = NSApp.presentationOptions
-        }
-        NSApp.presentationOptions = [.hideDock, .hideMenuBar]
-
-        if previousFrame == nil {
-            previousFrame = window.frame
-        }
-
-        window.styleMask = [.borderless]
-        window.level = NSWindow.Level(Int(CGWindowLevelForKey(.mainMenuWindow)) + 1)
-
-        let screen = window.screen ?? NSScreen.main ?? NSScreen.screens[0]
-        window.setFrame(screen.frame, display: true)
-
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        // Focus is recovered by the input coordinator only while this app and
+        // this Space are active. Never activate/raise the app during transitions.
+        InputCaptureCoordinator.shared.mouseMonitor.refreshCapture()
+        FramePacer.shared.updateWindow(window)
     }
 
     private func restorePresentationOptions() {
-        if let prev = previousPresentationOptions {
-            NSApp.presentationOptions = prev
-            previousPresentationOptions = nil
-        } else {
-            NSApp.presentationOptions = []
+        guard changedPresentationOptions, let saved = savedWindow else { return }
+        NSApp.presentationOptions = saved.presentationOptions
+        changedPresentationOptions = false
+    }
+
+    private func finishRestoration() {
+        if let delegate = transitionDelegate, streamWindow?.delegate === delegate {
+            streamWindow?.delegate = delegate.original
         }
+        transitionDelegate = nil
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
+        savedWindow = nil
+        transition = nil
+        streamWindow = nil
+        currentMode = nil
     }
 }

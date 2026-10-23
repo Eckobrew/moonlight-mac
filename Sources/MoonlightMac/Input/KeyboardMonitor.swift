@@ -75,10 +75,7 @@ public final class KeyboardMonitor: @unchecked Sendable {
                     raiseModifierKeys()
                     DispatchQueue.main.async { [weak self] in
                         if StreamSessionController.shared.isShortcutMode {
-                            for window in NSApp.windows {
-                                window.orderOut(nil)
-                                window.setIsVisible(false)
-                            }
+                            WindowManager.shared.hideStreamWindow()
                         }
                         self?.onQuitRequested?()
                     }

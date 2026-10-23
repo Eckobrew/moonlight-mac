@@ -113,7 +113,7 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         }
 
         // Borderless "Fullscreen" mode covers the display without using a fullscreen Space.
-        if window.styleMask == .borderless, let screen = window.screen {
+        if !window.styleMask.contains(.titled), let screen = window.screen {
             return window.frame.equalTo(screen.frame)
         }
 

@@ -82,14 +82,6 @@ public struct StreamNegotiationView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 440, minHeight: 380)
-        .onAppear {
-            NSApplication.shared.setActivationPolicy(.regular)
-            NSApplication.shared.activate(ignoringOtherApps: true)
-            for window in NSApplication.shared.windows {
-                window.makeKeyAndOrderFront(nil)
-                window.orderFrontRegardless()
-            }
-        }
         .alert("Unable to Start Stream", isPresented: Binding(
             get: { appState.cliStreamError != nil },
             set: { if !$0 { appState.cliStreamError = nil } }

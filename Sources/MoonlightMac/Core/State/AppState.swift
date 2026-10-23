@@ -376,31 +376,21 @@ public final class AppState: @unchecked Sendable {
 
     /// Called when a stream fails to start while launched from a desktop shortcut (CLI mode).
     ///
-    /// Shortcut launches begin with every window hidden (alpha 0), so simply calling
-    /// stopActiveStream() left the user with an invisible, unreachable app. This restores a normal
-    /// window so the error is visible, and only exits when the launch really was a CLI invocation.
+    /// Restore the launch UI so a failed shortcut remains reachable and can show
+    /// its error without activating the app over another application.
     public func failShortcutLaunch() {
         self.isStreaming = false
         self.activeHost = nil
         self.activeApp = nil
 
-        // Shortcut launches hide every window at startup; restore a visible one so the error can be
-        // read instead of leaving an invisible, unreachable app behind.
         WindowManager.shared.restoreWindowAfterStream()
+        if NSApp.isActive { WindowManager.shared.showCurrentWindow() }
         hasStartedStreaming = false
     }
 
     public func cancelShortcutLaunch() {
         self.isStreaming = false
-        for window in NSApp.windows {
-            window.alphaValue = 0
-            if window.styleMask.contains(.fullScreen) {
-                window.toggleFullScreen(nil)
-            }
-            window.orderOut(nil)
-            window.setIsVisible(false)
-        }
-        NSApp.hide(nil)
+        WindowManager.shared.hideStreamWindow()
 
         let host = activeHost ?? hosts.first(where: { $0.name.localizedCaseInsensitiveCompare(cliHostName) == .orderedSame })
         Task {
