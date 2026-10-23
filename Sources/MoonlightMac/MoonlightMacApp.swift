@@ -28,24 +28,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let controller = StreamSessionController.shared
-        if (controller.isShortcutMode || controller.activeSettings?.quitAppOnStop == true),
+        if controller.isStreaming, controller.shouldQuitHostAppOnStop,
            let host = controller.activeHost {
-            for window in sender.windows {
-                window.orderOut(nil)
-                window.setIsVisible(false)
-            }
-            Task.detached(priority: .userInitiated) {
-                AppLogger.shared.info("Application terminating: requesting host to quit app...", category: "SESSION")
-                await withTaskGroup(of: Void.self) { group in
-                    group.addTask {
-                        try? await SunshineHTTPClient.shared.quitApp(host: host)
-                    }
-                    group.addTask {
-                        try? await Task.sleep(for: .seconds(2))
-                    }
-                    _ = await group.next()
-                }
-                exit(0)
+            let expectedAppID = controller.hostAppIDForShutdown
+            Task {
+                await HostAppShutdown.quit(host: host, expectedAppID: expectedAppID)
+                sender.reply(toApplicationShouldTerminate: true)
             }
             return .terminateLater
         }
@@ -73,7 +61,7 @@ struct RootContentView: View {
             } else {
                 NavigationStack {
                     HostGridView(appState: appState)
-                        .navigationTitle("Moonlight")
+                        .navigationTitle(AppLocalization.text("Moonlight"))
                 }
             }
         }
@@ -82,11 +70,13 @@ struct RootContentView: View {
             minHeight: appState.isShortcutLaunch && !appState.hasStartedStreaming ? 380 : 550
         )
         .background(ContentWindowReader())
-        .alert("Stream Error", isPresented: Binding(
+        .onAppear { ControllerUINavigation.shared.start(state: appState) }
+        .onChange(of: appState.isStreaming) { _, _ in ControllerUINavigation.shared.refresh() }
+        .alert(AppLocalization.text("Stream Error"), isPresented: Binding(
             get: { sessionController.sessionError != nil },
             set: { if !$0 { sessionController.clearError() } }
         )) {
-            Button("OK", role: .cancel) {
+            Button(AppLocalization.text("OK"), role: .cancel) {
                 if sessionController.isShortcutMode || appState.isShortcutLaunch {
                     // Return to the shortcut launch UI after dismissing the error.
                     appState.failShortcutLaunch()
@@ -131,12 +121,12 @@ struct MoonlightMacApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("Add Host...") {
+                Button(AppLocalization.text("Add Host...")) {
                     appState.isShowingAddHost = true
                 }
                 .keyboardShortcut("n", modifiers: .command)
 
-                Button("Refresh Hosts") {
+                Button(AppLocalization.text("Refresh Hosts")) {
                     Task {
                         await appState.refreshHosts()
                     }
@@ -145,7 +135,7 @@ struct MoonlightMacApp: App {
             }
 
             CommandGroup(after: .appSettings) {
-                Button("Preferences...") {
+                Button(AppLocalization.text("Preferences...")) {
                     appState.isShowingSettings = true
                 }
                 .keyboardShortcut(",", modifiers: .command)
@@ -162,8 +152,6 @@ struct MoonlightMacApp: App {
         let hostQuery = args[streamIdx + 1]
         let appQuery = args[streamIdx + 2]
 
-        Task {
-            await appState.handleCLIStream(hostQuery: hostQuery, appQuery: appQuery)
-        }
+        appState.beginCLIStream(hostQuery: hostQuery, appQuery: appQuery)
     }
 }

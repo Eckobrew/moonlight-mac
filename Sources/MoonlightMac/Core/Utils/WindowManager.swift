@@ -93,16 +93,6 @@ public final class WindowManager: ObservableObject {
                         for: window)
     }
 
-    public func cycleWindowMode(for window: NSWindow? = nil) {
-        let next: WindowMode
-        switch currentMode {
-        case .fullscreenDesktop: next = .fullscreen
-        case .fullscreen: next = .windowed
-        default: next = .fullscreenDesktop
-        }
-        applyWindowMode(next, for: window)
-    }
-
     public func restoreWindowAfterStream(for window: NSWindow? = nil) {
         guard savedWindow != nil else { return }
         transition?.requested = nil

@@ -4,15 +4,12 @@ import AudioToolbox
 import AppKit
 import Copus
 import MoonlightCommonC
-import QuartzCore
 
 /// Planar float ring buffer shared between the network/Opus decode thread (writer) and the
 /// CoreAudio render thread (reader).
 ///
-/// All channel planes live in a single allocation so a wrapped write/read is at most two
-/// `memcpy`s per channel instead of a per-element modulo + bounds-checked loop. This keeps the
-/// lock hold time low enough that the real-time audio callback never blocks long enough to
-/// underrun.
+/// Channel planes share one allocation. Reads use at most two contiguous copies
+/// per channel; writes deinterleave the decoded samples under the same short lock.
 final class AudioRingBuffer: @unchecked Sendable {
     let channels: Int
     let capacity: Int
@@ -27,11 +24,14 @@ final class AudioRingBuffer: @unchecked Sendable {
     /// every callback tail with zeros.
     private var isBuffering: Bool = true
     private let lock = NSLock()
+    private let sampleRate: Double
+    private var renderQuantumFrames = 0
 
-    init(channels: Int, capacity: Int = 48000) {
-        precondition(channels > 0 && capacity > 0)
+    init(channels: Int, capacity: Int = 48000, sampleRate: Double = 48000) {
+        precondition(channels > 0 && capacity > 0 && sampleRate.isFinite && sampleRate > 0)
         self.channels = channels
         self.capacity = capacity
+        self.sampleRate = sampleRate
         self.storage = UnsafeMutablePointer<Float>.allocate(capacity: channels * capacity)
         self.storage.initialize(repeating: 0, count: channels * capacity)
     }
@@ -97,16 +97,20 @@ final class AudioRingBuffer: @unchecked Sendable {
         writeHead += framesToWrite
         if writeHead >= capacity { writeHead -= capacity }
 
-        // Hysteresis buffer clamp: if accumulated buffer exceeds 80ms (3840 frames at 48kHz),
-        // reset to a 30ms target cushion (1440 frames) rather than clamping to the ceiling itself
-        // (which would trap `available` at `maxAllowed` and chop every subsequent packet burst).
+        // Retain enough for the observed render quantum plus a packet cushion.
+        // The prebuffer threshold must remain reachable even for 4096+ frames.
         bufferedFrames = min(capacity, bufferedFrames + framesToWrite)
-        let maxAllowed = min(3840, capacity)
-        let targetCushion = min(1440, capacity)
+        let prebuffer = prebufferFrames
+        let maxAllowed = min(capacity, max(Int(sampleRate * 0.080), prebuffer + Int(sampleRate * 0.010)))
+        let targetCushion = min(capacity, max(Int(sampleRate * 0.030), prebuffer))
         if bufferedFrames > maxAllowed {
             bufferedFrames = targetCushion
         }
         readHead = (writeHead - bufferedFrames + capacity) % capacity
+    }
+
+    private var prebufferFrames: Int {
+        min(capacity, max(renderQuantumFrames + Int(sampleRate * 0.010), Int(sampleRate * 0.020)))
     }
 
     func read(into bufferList: UnsafeMutablePointer<AudioBufferList>, frames: Int) -> Bool {
@@ -114,12 +118,13 @@ final class AudioRingBuffer: @unchecked Sendable {
         defer { lock.unlock() }
 
         guard frames > 0 else { return false }
+        renderQuantumFrames = min(frames, capacity)
         let available = bufferedFrames
         if isBuffering {
             // Wait for at least ~20ms (or one full callback + two 5ms Opus frames) before starting
             // playback so normal 5ms packet intervals vs 10.67ms (512-frame) CoreAudio callbacks
             // never cause partial-buffer underruns.
-            let minPrebuffer = min(capacity, max(frames + 480, 960))
+            let minPrebuffer = prebufferFrames
             if available < minPrebuffer {
                 return false
             }
@@ -168,342 +173,95 @@ final class AudioRingBuffer: @unchecked Sendable {
 public final class AudioPlaybackEngine: @unchecked Sendable {
     public static let shared = AudioPlaybackEngine()
 
+    // Protect only decoder resources. Control operations never acquire this lock.
     private let lock = NSLock()
-    private var audioEngine: AVAudioEngine?
-    private var sourceNode: AVAudioSourceNode?
-    private var audioFormat: AVAudioFormat?
+    private let output = AudioPlaybackControl()
     private var ringBuffer: AudioRingBuffer?
-
     private var opusDecoder: OpaquePointer?
-    private var sampleRate: Double = 48000.0
-    private var channelCount: Int = 2
-    private var samplesPerFrame: Int = 240
-    private var isPlaying = false
+    private var channelCount = 2
+    private var samplesPerFrame = 240
     private var didElevateDecodeThreadPriority = false
     private var scratchInterleavedBuffer: [Float] = []
-    private var configurationObserver: NSObjectProtocol?
-    private var focusObservers: [NSObjectProtocol] = []
-
-    /// CoreAudio UID of the requested output device (nil = system default).
-    private var preferredOutputDeviceUID: String?
-    /// Silence output while another app is focused (user preference).
-    private var muteOnFocusLoss = false
-    /// Whether playback is currently muted because Moonlight is not frontmost.
-    private var isMutedForFocus = false
+    @MainActor private var focusObservers: [NSObjectProtocol] = []
 
     private init() {}
 
-    public func setup(
-        sampleRate: Double = 48000.0,
-        channelCount: UInt32 = 2,
-        streams: Int = 1,
-        coupledStreams: Int = 1,
-        samplesPerFrame: Int = 240,
-        mapping: [UInt8] = [0, 1]
-    ) -> Int32 {
+    public func setup(sampleRate: Double = 48000, channelCount: UInt32 = 2,
+                      streams: Int = 1, coupledStreams: Int = 1,
+                      samplesPerFrame: Int = 240, mapping: [UInt8] = [0, 1]) -> Int32 {
         lock.lock()
         defer { lock.unlock() }
-
         cleanupInternal()
-
-        self.sampleRate = sampleRate
+        guard StreamAudioLayout.tag(channels: channelCount) != nil,
+              sampleRate.isFinite, (8000...48000).contains(sampleRate),
+              samplesPerFrame > 0, samplesPerFrame <= 5760,
+              mapping.count >= Int(channelCount) else { return -1 }
         self.channelCount = Int(channelCount)
         self.samplesPerFrame = samplesPerFrame
-        self.didElevateDecodeThreadPriority = false
-
-        AppLogger.shared.info("AudioPlaybackEngine: Initializing original low-latency AVAudioEngine (\(sampleRate) Hz, \(channelCount) ch, \(streams) streams, \(coupledStreams) coupled, \(samplesPerFrame) samples/frame)")
+        didElevateDecodeThreadPriority = false
 
         var error: Int32 = 0
-        var mappingArray = mapping
-        if mappingArray.count < Int(channelCount) {
-            mappingArray = (0..<UInt8(channelCount)).map { $0 }
-        }
-
-        // Do NOT reorder the mapping here. moonlight-common-c already rewrites GFE's
-        // `FL FR C RL RR SL SR LFE` order into `FL FR C LFE RL RR SL SR` for 5.1 and 7.1
-        // (RtspConnection.c, right after parseOpusConfigFromParamString), and that remapped order
-        // is exactly the interleaved order opus_multistream_decode_float produces. Swapping
-        // mapping[4..7] here applied the GFE reorder a second time and scrambled surround channels.
-
-        let decoder = opus_multistream_decoder_create(
-            Int32(sampleRate),
-            Int32(channelCount),
-            Int32(streams),
-            Int32(coupledStreams),
-            &mappingArray,
-            &error
-        )
-
-        guard let decoder = decoder, error == OPUS_OK else {
-            AppLogger.shared.error("AudioPlaybackEngine: opus_multistream_decoder_create failed with error: \(error)")
-            return -1
-        }
-
-        self.opusDecoder = decoder
-
-        // Pre-allocate the scratch buffer for the largest legal Opus packet: 120ms at 48kHz =
-        // 5760 frames. The library advertises CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION, so the
-        // host may legitimately send more than samplesPerFrame*2 and previously the decode would
-        // silently truncate to a smaller buffer.
-        let maxFrames = max(samplesPerFrame * 2, 5760)
-        self.scratchInterleavedBuffer = [Float](repeating: 0, count: maxFrames * Int(channelCount))
-
-        // Create AudioRingBuffer (48000 frames capacity = 1.0 second buffer)
-        let ring = AudioRingBuffer(channels: Int(channelCount), capacity: 48000)
-        self.ringBuffer = ring
-
-        // Select CoreAudio Channel Layout.
-        //
-        // The decoder emits the library's canonical order FL FR C LFE RL RR SL SR. CoreAudio's
-        // AudioUnit_7_1 is L R C LFE Rls Rrs Ls Rs, which is that same 6.1-ordered layout, so it
-        // matches directly. MPEG_5_1_A is L R C LFE Ls Rs, also matching FL FR C LFE RL RR.
-        let layoutTag: AudioChannelLayoutTag
-        switch channelCount {
-        case 6:
-            layoutTag = kAudioChannelLayoutTag_MPEG_5_1_A
-        case 8:
-            layoutTag = kAudioChannelLayoutTag_AudioUnit_7_1
-        default:
-            layoutTag = kAudioChannelLayoutTag_Stereo
-        }
-
-        guard let channelLayout = AVAudioChannelLayout(layoutTag: layoutTag) else {
-            AppLogger.shared.error("AudioPlaybackEngine: Failed to create AVAudioChannelLayout for tag \(layoutTag)")
-            return -1
-        }
-
-        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channelLayout: channelLayout)
-        self.audioFormat = format
-
-        // Create the engine and pick up the requested output device lazily on start, because
-        // kAudioOutputUnitProperty_CurrentDevice can only be set once the output unit exists.
-        let engine = AVAudioEngine()
-
-        let source = AVAudioSourceNode(format: format) { [weak ring] isSilence, _, frameCount, outputData -> OSStatus in
-            guard let ring = ring else {
-                isSilence.pointee = ObjCBool(true)
-                let abl = UnsafeMutableAudioBufferListPointer(outputData)
-                for buf in abl {
-                    if let ptr = buf.mData {
-                        memset(ptr, 0, Int(buf.mDataByteSize))
-                    }
-                }
-                return noErr
+        var mapping = mapping
+        // Use the negotiated mapping directly: common-c already normalizes GFE.
+        guard let decoder = opus_multistream_decoder_create(Int32(sampleRate), Int32(channelCount),
+                Int32(clamping: streams), Int32(clamping: coupledStreams), &mapping, &error),
+              error == OPUS_OK else { return -1 }
+        opusDecoder = decoder
+        let maxFrames = max(samplesPerFrame * 2, Int(sampleRate * 0.120))
+        scratchInterleavedBuffer = [Float](repeating: 0, count: maxFrames * Int(channelCount))
+        let ring = AudioRingBuffer(channels: Int(channelCount), capacity: Int(sampleRate), sampleRate: sampleRate)
+        ringBuffer = ring
+        let installed = output.install { onChange in
+            guard let tag = StreamAudioLayout.tag(channels: channelCount),
+                  let layout = AVAudioChannelLayout(layoutTag: tag) else {
+                throw NSError(domain: "AudioPlaybackEngine", code: -1,
+                              userInfo: [NSLocalizedDescriptionKey: "Unsupported audio channel layout."])
             }
-            let hasData = ring.read(into: outputData, frames: Int(frameCount))
-            if hasData {
-                isSilence.pointee = ObjCBool(false)
-            } else {
-                isSilence.pointee = ObjCBool(true)
-                let abl = UnsafeMutableAudioBufferListPointer(outputData)
-                for buf in abl {
-                    if let ptr = buf.mData {
-                        memset(ptr, 0, Int(buf.mDataByteSize))
-                    }
-                }
-            }
-            return noErr
+            let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channelLayout: layout)
+            return NativeAudioOutput(ring: ring, format: format, onChange: onChange)
         }
-
-        self.audioEngine = engine
-        self.sourceNode = source
-
-        engine.attach(source)
-        engine.connect(source, to: engine.mainMixerNode, format: format)
-
-        // Output device selection and focus-loss muting are applied per start; register the focus
-        // observers here so they live as long as the engine.
-        installFocusObservers()
-
-        // Observe route and configuration changes to resume playback seamlessly
-        configurationObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange,
-            object: engine,
-            queue: OperationQueue.main
-        ) { [weak self] _ in
-            self?.handleConfigurationChange()
-        }
-
-        AppLogger.shared.info("AudioPlaybackEngine: Successfully initialized original low-latency AVAudioEngine (\(channelCount) channels)")
+        if !installed { cleanupInternal(); return -1 }
         return 0
     }
 
     public func start() {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard let engine = audioEngine, !isPlaying else { return }
-
-        ringBuffer?.reset()
-        do {
-            if let uid = preferredOutputDeviceUID, !uid.isEmpty {
-                AudioOutputDevices.apply(deviceUID: uid, to: engine)
-            }
-            try engine.start()
-            isPlaying = true
-
-            // Re-apply a pending mute (e.g. session started while another app had focus).
-            engine.mainMixerNode.outputVolume = isMutedForFocus ? 0.0 : 1.0
-
-            AppLogger.shared.info("AudioPlaybackEngine: AVAudioEngine started successfully")
-        } catch {
-            AppLogger.shared.error("AudioPlaybackEngine: Failed to start AVAudioEngine: \(error.localizedDescription)")
-        }
+        lock.withLock { ringBuffer?.reset() }
+        output.start()
     }
 
     public func stop() {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard isPlaying else { return }
-        audioEngine?.stop()
-        isPlaying = false
-        ringBuffer?.reset()
-        AppLogger.shared.info("AudioPlaybackEngine: AVAudioEngine stopped")
+        output.stop()
+        lock.withLock { ringBuffer?.reset() }
     }
 
-    public func cleanup() {
-        lock.lock()
-        defer { lock.unlock() }
-        cleanupInternal()
-    }
-
-    /// Configures audio output routing and focus-loss muting for the next/current session.
-    public func configureOutput(deviceUID: String?, muteOnFocusLoss: Bool) {
-        lock.lock()
-        self.preferredOutputDeviceUID = deviceUID
-        self.muteOnFocusLoss = muteOnFocusLoss
-        lock.unlock()
-
-        if muteOnFocusLoss {
-            updateFocusMuteState()
-        } else {
-            lock.lock()
-            isMutedForFocus = false
-            let engine = audioEngine
-            lock.unlock()
-            engine?.mainMixerNode.outputVolume = 1.0
-        }
-    }
-
-    /// Applies the selected output device while a session is running.
-    public func applyOutputDevice() {
-        lock.lock()
-        guard let engine = audioEngine, isPlaying else {
-            lock.unlock()
-            return
-        }
-        let uid = preferredOutputDeviceUID
-        lock.unlock()
-
-        AudioOutputDevices.apply(deviceUID: uid, to: engine)
-    }
-
-    private func installFocusObservers() {
-        removeFocusObservers()
-        let names: [Notification.Name] = [
-            NSApplication.didBecomeActiveNotification,
-            NSApplication.didResignActiveNotification,
-            NSApplication.didHideNotification,
-            NSApplication.didUnhideNotification,
-        ]
-        for name in names {
-            let observer = NotificationCenter.default.addObserver(
-                forName: name,
-                object: nil,
-                queue: OperationQueue.main
-            ) { [weak self] _ in
-                self?.updateFocusMuteState()
-            }
-            focusObservers.append(observer)
-        }
-    }
-
-    private func removeFocusObservers() {
-        for observer in focusObservers {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        focusObservers.removeAll()
-    }
-
-    private func updateFocusMuteState() {
-        // NSApplication is MainActor-isolated; observers are registered on the main queue, but the
-        // compiler cannot prove it, so hop explicitly.
-        if Thread.isMainThread {
-            MainActor.assumeIsolated { applyFocusMuteState() }
-        } else {
-            DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated { self?.applyFocusMuteState() }
-            }
-        }
-    }
+    public func cleanup() { lock.withLock { cleanupInternal() } }
 
     @MainActor
-    private func applyFocusMuteState() {
-        let app = NSApplication.shared
-        let isActive = app.isActive && !app.isHidden
-
-        lock.lock()
-        let engine = audioEngine
-        let shouldMute = muteOnFocusLoss && !isActive
-        isMutedForFocus = shouldMute
-        lock.unlock()
-
-        engine?.mainMixerNode.outputVolume = shouldMute ? 0.0 : 1.0
+    public func configureOutput(deviceUID: String?, muteOnFocusLoss: Bool) {
+        if focusObservers.isEmpty {
+            for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification,
+                         NSApplication.didHideNotification, NSApplication.didUnhideNotification] {
+                let observer = NotificationCenter.default.addObserver(forName: name, object: nil, queue: OperationQueue.main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.output.updateFocus(NSApp.isActive && !NSApp.isHidden)
+                    }
+                }
+                focusObservers.append(observer)
+            }
+        }
+        output.configure(deviceUID: deviceUID, muteOnFocusLoss: muteOnFocusLoss,
+                         appFocused: NSApp.isActive && !NSApp.isHidden)
     }
+
+    public func applyOutputDevice() { output.applyOutputDevice() }
 
     private func cleanupInternal() {
-        if isPlaying {
-            audioEngine?.stop()
-            isPlaying = false
-        }
-
-        if let observer = configurationObserver {
-            NotificationCenter.default.removeObserver(observer)
-            configurationObserver = nil
-        }
-
-        if let decoder = opusDecoder {
-            opus_multistream_decoder_destroy(decoder)
-            opusDecoder = nil
-        }
-
-        if let source = sourceNode, let engine = audioEngine {
-            engine.disconnectNodeOutput(source)
-            engine.detach(source)
-        }
-
-        sourceNode = nil
-        audioEngine = nil
-        audioFormat = nil
+        output.cleanup()
+        if let decoder = opusDecoder { opus_multistream_decoder_destroy(decoder) }
+        opusDecoder = nil
         ringBuffer = nil
         scratchInterleavedBuffer.removeAll(keepingCapacity: false)
-        isMutedForFocus = false
-        removeFocusObservers()
-    }
-
-    private func handleConfigurationChange() {
-        lock.lock()
-        guard let engine = audioEngine, isPlaying else {
-            lock.unlock()
-            return
-        }
-        // Re-assert the chosen device: a configuration change (default device changed, display
-        // plugged) otherwise silently falls back to the system default.
-        let uid = preferredOutputDeviceUID
-        lock.unlock()
-
-        AppLogger.shared.info("AudioPlaybackEngine: Output route changed, restarting audio engine...")
-        do {
-            if let uid = uid, !uid.isEmpty {
-                AudioOutputDevices.apply(deviceUID: uid, to: engine)
-            }
-            if !engine.isRunning {
-                try engine.start()
-            }
-        } catch {
-            AppLogger.shared.error("AudioPlaybackEngine: Restart after route change failed: \(error.localizedDescription)")
-        }
+        // Output preferences and current focus survive engine replacement.
     }
 
     public func decodeAndPlaySample(sampleData: UnsafePointer<CChar>?, sampleLength: Int) {
@@ -520,21 +278,6 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
         if !didElevateDecodeThreadPriority {
             didElevateDecodeThreadPriority = true
             pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
-        }
-
-        if !isPlaying {
-            do {
-                ring.reset()
-                if let engine = audioEngine, let uid = preferredOutputDeviceUID, !uid.isEmpty {
-                    AudioOutputDevices.apply(deviceUID: uid, to: engine)
-                }
-                try audioEngine?.start()
-                isPlaying = true
-            } catch {
-                AppLogger.shared.error("AudioPlaybackEngine: Auto-start failed: \(error.localizedDescription)")
-                lock.unlock()
-                return
-            }
         }
 
         let chCount = channelCount
@@ -578,7 +321,5 @@ public final class AudioPlaybackEngine: @unchecked Sendable {
         }
 
         lock.unlock()
-
-        AVPacingClock.shared.registerAudioTimestamp(hostTimeUs: UInt64(CACurrentMediaTime() * 1_000_000))
     }
 }

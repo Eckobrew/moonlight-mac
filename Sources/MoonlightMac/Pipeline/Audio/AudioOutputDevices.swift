@@ -15,11 +15,8 @@ public struct AudioOutputDevice: Identifiable, Hashable, Sendable {
     }
 }
 
-/// Enumerates and selects CoreAudio output devices for `AVAudioEngine`.
-///
-/// macOS has no "set the default output device" API, so switching output is done by asking the
-/// engine's audio unit to use a specific device (`kAudioOutputUnitProperty_CurrentDevice`). That
-/// only works after the engine is running, which is why the engine applies the selection on start.
+/// Enumerates CoreAudio outputs and configures the engine's output unit.
+/// Call selection only from the audio control queue; the owner restarts playback.
 public enum AudioOutputDevices {
     /// All devices that can be used for output, ordered with the system default first.
     public static func available() -> [AudioOutputDevice] {
@@ -91,18 +88,22 @@ public enum AudioOutputDevices {
         return deviceID
     }
 
-    /// Applies a device selection to an engine's output audio unit.
-    /// Returns false if the output audio unit is unavailable or the device could not be resolved.
-    @discardableResult
-    public static func apply(deviceUID uid: String?, to engine: AVAudioEngine) -> Bool {
-        guard let outputUnit = engine.outputNode.audioUnit else { return false }
+    /// Select a route without hiding restart errors or starting an old engine.
+    /// The serialized playback controller owns all start/stop/recovery decisions.
+    static func select(deviceUID uid: String?, on engine: AVAudioEngine) throws {
+        guard let outputUnit = engine.outputNode.audioUnit else {
+            throw NSError(domain: "AudioOutputDevices", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Audio output unit is unavailable."])
+        }
 
         var targetDeviceID: AudioDeviceID
         if let uid = uid, !uid.isEmpty, let resolved = deviceID(forUID: uid) {
             targetDeviceID = resolved
         } else {
             // Explicitly follow the system default when no override is configured.
-            guard let systemDefault = systemDefaultOutputDeviceID() else { return false }
+            guard let systemDefault = systemDefaultOutputDeviceID() else {
+                throw NSError(domain: "AudioOutputDevices", code: -2, userInfo: [NSLocalizedDescriptionKey: "No audio output device is available."])
+            }
             targetDeviceID = systemDefault
         }
 
@@ -117,11 +118,10 @@ public enum AudioOutputDevices {
             &currentSize
         )
         if getStatus == noErr && currentDeviceID == targetDeviceID {
-            return true
+            return
         }
 
-        let wasRunning = engine.isRunning
-        if wasRunning {
+        if engine.isRunning {
             engine.stop()
         }
 
@@ -134,15 +134,10 @@ public enum AudioOutputDevices {
             UInt32(MemoryLayout<AudioDeviceID>.size)
         )
 
-        if wasRunning {
-            try? engine.start()
+        guard status == noErr else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status),
+                          userInfo: [NSLocalizedDescriptionKey: "Failed to select audio output device (\(status))."])
         }
-
-        if status != noErr {
-            AppLogger.shared.warning("[Audio] Failed to select output device (status \(status))", category: "AUDIO")
-            return false
-        }
-        return true
     }
 
     // MARK: - Helpers

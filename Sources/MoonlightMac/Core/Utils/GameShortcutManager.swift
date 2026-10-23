@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 import SwiftUI
-import UniformTypeIdentifiers
+import CoreServices
 
 public enum ShortcutIconStyle: String, CaseIterable, Identifiable {
     case squircle = "Squircle"
@@ -79,59 +79,18 @@ public final class GameShortcutManager {
         return image
     }
 
-    /// Legacy file picker prompt (falls back to box art if cancelled).
-    public func createShortcut(for app: StreamApp, host: Host, iconImage: NSImage?) {
-        let openPanel = NSOpenPanel()
-        openPanel.title = "Select Game Icon"
-        openPanel.message = "Choose an icon for '\(app.title)' (.icns, .png, .ico, .jpg) or click Cancel to use the game's box art."
-        openPanel.prompt = "Choose Icon"
-        openPanel.canChooseFiles = true
-        openPanel.canChooseDirectories = false
-        openPanel.allowsMultipleSelection = false
-
-        var allowedTypes: [UTType] = [.png, .jpeg]
-        if let icnsType = UTType(filenameExtension: "icns") { allowedTypes.append(icnsType) }
-        if let icoType = UTType(filenameExtension: "ico") { allowedTypes.append(icoType) }
-        openPanel.allowedContentTypes = allowedTypes
-
-        var chosenImage: NSImage?
-        let response = openPanel.runModal()
-        if response == .OK, let selectedUrl = openPanel.url {
-            chosenImage = NSImage(contentsOf: selectedUrl)
-        }
-
-        let finalImage = chosenImage ?? iconImage ?? NSApp.applicationIconImage ?? NSImage(systemSymbolName: "gamecontroller.fill", accessibilityDescription: nil)!
-
-        do {
-            try createShortcut(for: app, host: host, image: finalImage, style: .squircle, fillMode: .aspectFill, backdrop: .blurred)
-
-            let alert = NSAlert()
-            alert.alertStyle = .informational
-            alert.messageText = "Shortcut Created"
-            alert.informativeText = "Shortcut for '\(app.title)' was created successfully on your Desktop."
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-        } catch {
-            let alert = NSAlert()
-            alert.alertStyle = .critical
-            alert.messageText = "Failed to Create Shortcut"
-            alert.informativeText = error.localizedDescription
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-        }
-    }
-
     private func writeAppBundle(app: StreamApp, host: Host, image: NSImage) throws {
         guard let desktopUrl = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first else {
             throw NSError(domain: "GameShortcutManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not access Desktop folder."])
         }
 
-        let safeName = app.title.replacingOccurrences(of: "[:/\\\\?*\"<>|]", with: "_", options: .regularExpression)
-        let bundleUrl = desktopUrl.appendingPathComponent("\(safeName).app")
-
-        if FileManager.default.fileExists(atPath: bundleUrl.path) {
-            try? FileManager.default.removeItem(at: bundleUrl)
-        }
+        let identifier = ShortcutBundleStore.identifier(host: host, appID: app.id)
+        let destination = desktopUrl.appendingPathComponent(
+            ShortcutBundleStore.filename(title: app.title, hostName: host.name, identifier: identifier))
+        let staging = desktopUrl.appendingPathComponent(".moonlight-shortcut-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let bundleUrl = staging.appendingPathComponent(destination.lastPathComponent)
 
         let macOsDir = bundleUrl.appendingPathComponent("Contents/MacOS")
         let resourcesDir = bundleUrl.appendingPathComponent("Contents/Resources")
@@ -139,7 +98,6 @@ public final class GameShortcutManager {
         try FileManager.default.createDirectory(at: macOsDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: resourcesDir, withIntermediateDirectories: true)
 
-        let slug = safeName.lowercased().replacingOccurrences(of: "[^a-z0-9]", with: "-", options: .regularExpression)
         let xmlEscapedApp = app.title
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
@@ -158,7 +116,7 @@ public final class GameShortcutManager {
             <key>CFBundleIconFile</key>
             <string>app.icns</string>
             <key>CFBundleIdentifier</key>
-            <string>com.moonlight-stream.shortcut.\(slug)</string>
+            <string>\(identifier)</string>
             <key>CFBundleInfoDictionaryVersion</key>
             <string>6.0</string>
             <key>CFBundleName</key>
@@ -170,7 +128,7 @@ public final class GameShortcutManager {
             <key>CFBundleShortVersionString</key>
             <string>1.0</string>
             <key>LSMinimumSystemVersion</key>
-            <string>12.0</string>
+            <string>14.0</string>
             <key>NSHighResolutionCapable</key>
             <true/>
         </dict>
@@ -240,7 +198,7 @@ public final class GameShortcutManager {
             exec "$DIR/MoonlightMac" stream "\(escapedHost)" "\(escapedApp)" --icon "$ICON"
         fi
 
-        MOONLIGHT_BIN="\(moonlightBin)"
+        MOONLIGHT_BIN="\(moonlightBin.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "$", with: "\\$").replacingOccurrences(of: "`", with: "\\`"))"
         if [ ! -x "$MOONLIGHT_BIN" ]; then
             MOONLIGHT_BIN="/Applications/Moonlight.app/Contents/MacOS/MoonlightMac"
         fi
@@ -259,49 +217,10 @@ public final class GameShortcutManager {
 
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launchUrl.path)
 
-        // Register application bundle with LaunchServices and notify Finder
-        registerBundleWithLaunchServices(bundleUrl: bundleUrl)
-    }
-
-    private func registerBundleWithLaunchServices(bundleUrl: URL) {
-        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: bundleUrl.path)
-
-        let lsregisterPath = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-        if FileManager.default.fileExists(atPath: lsregisterPath) {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: lsregisterPath)
-            proc.arguments = ["-f", "-r", bundleUrl.path]
-            try? proc.run()
-            proc.waitUntilExit()
-        }
-
-        NSWorkspace.shared.noteFileSystemChanged(bundleUrl.path)
-
-        // If shortcuts are pinned in Dock, restart Dock so the icon reloads immediately
-        restartDockIfPinned()
-    }
-
-    private func restartDockIfPinned() {
-        let tmp = NSTemporaryDirectory()
-        let cDir = URL(fileURLWithPath: tmp).deletingLastPathComponent().appendingPathComponent("C")
-        try? FileManager.default.removeItem(at: cDir.appendingPathComponent("com.apple.dock.iconcache"))
-        try? FileManager.default.removeItem(at: cDir.appendingPathComponent("com.apple.iconservices"))
-
-        let checkProcess = Process()
-        checkProcess.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
-        checkProcess.arguments = ["read", "com.apple.dock", "persistent-apps"]
-        let pipe = Pipe()
-        checkProcess.standardOutput = pipe
-        try? checkProcess.run()
-        checkProcess.waitUntilExit()
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        if let output = String(data: data, encoding: .utf8), output.contains("com.moonlight-stream.shortcut") {
-            let killProc = Process()
-            killProc.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-            killProc.arguments = ["Dock"]
-            try? killProc.run()
-        }
+        try ShortcutBundleStore.install(staged: bundleUrl, destination: destination, identifier: identifier)
+        NSWorkspace.shared.setIcon(image, forFile: destination.path, options: [])
+        LSRegisterURL(destination as CFURL, true)
+        NSWorkspace.shared.noteFileSystemChanged(destination.path)
     }
 
     private func renderPNG(from image: NSImage, size: Int) -> Data? {
@@ -330,49 +249,7 @@ public final class GameShortcutManager {
     }
 
     private func writeIcns(from image: NSImage, to outputUrl: URL) throws {
-        // Try Apple official iconutil compiler first
-        let tempIconset = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".iconset")
-        try FileManager.default.createDirectory(at: tempIconset, withIntermediateDirectories: true)
-        defer {
-            try? FileManager.default.removeItem(at: tempIconset)
-        }
-
-        let standardSizes: [(name: String, size: Int)] = [
-            ("icon_16x16.png", 16),
-            ("icon_16x16@2x.png", 32),
-            ("icon_32x32.png", 32),
-            ("icon_32x32@2x.png", 64),
-            ("icon_128x128.png", 128),
-            ("icon_128x128@2x.png", 256),
-            ("icon_256x256.png", 256),
-            ("icon_256x256@2x.png", 512),
-            ("icon_512x512.png", 512),
-            ("icon_512x512@2x.png", 1024)
-        ]
-
-        var allRendered = true
-        for item in standardSizes {
-            if let data = renderPNG(from: image, size: item.size) {
-                try data.write(to: tempIconset.appendingPathComponent(item.name))
-            } else {
-                allRendered = false
-                break
-            }
-        }
-
-        if allRendered && FileManager.default.fileExists(atPath: "/usr/bin/iconutil") {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
-            process.arguments = ["-c", "icns", tempIconset.path, "-o", outputUrl.path]
-            try? process.run()
-            process.waitUntilExit()
-
-            if process.terminationStatus == 0 && FileManager.default.fileExists(atPath: outputUrl.path) {
-                return
-            }
-        }
-
-        // Fallback to manual chunk writing
+        // PNG-backed ICNS chunks avoid blocking the main actor on iconutil.
         try writeIcnsManual(from: image, to: outputUrl)
     }
 

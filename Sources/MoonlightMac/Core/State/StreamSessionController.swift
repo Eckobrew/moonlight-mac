@@ -9,12 +9,34 @@ public final class StreamSessionEngine: @unchecked Sendable {
 
     public let videoDecoder = VideoToolboxDecoder()
     public let audioEngine = AudioPlaybackEngine.shared
+    let hdr = StreamHDRState()
 
     private let callbackLock = NSLock()
     private var callbackGenerationStorage: UInt64 = 0
     fileprivate var callbackGeneration: UInt64 {
         get { callbackLock.withLock { callbackGenerationStorage } }
         set { callbackLock.withLock { callbackGenerationStorage = newValue } }
+    }
+
+    private let lifetimeLock = NSLock()
+    private var acceptsInput = false
+    private var connectionReady = false
+    func prepareConnection() { lifetimeLock.withLock { acceptsInput = true; connectionReady = false } }
+    func connectionDidStart() { lifetimeLock.withLock { if acceptsInput { connectionReady = true } } }
+    func connectionWillStop() { lifetimeLock.withLock { acceptsInput = false; connectionReady = false }; hdr.update(enabled: false) }
+    func updateHDR(_ enabled: Bool) {
+        lifetimeLock.withLock {
+            guard acceptsInput else { return }
+            var metadata = SS_HDR_METADATA()
+            let available = enabled && LiGetHdrMetadata(&metadata)
+            hdr.update(enabled: enabled, metadata: available ? metadata : nil)
+        }
+    }
+    func sampleRtt(read: () -> (Double, Double)? = {
+        var rtt: UInt32 = 0, variance: UInt32 = 0
+        return LiGetEstimatedRttInfo(&rtt, &variance) ? (Double(rtt), Double(variance)) : nil
+    }) -> (Double, Double)? {
+        lifetimeLock.withLock { connectionReady ? read() : nil }
     }
 
     private init() {}
@@ -25,6 +47,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     public static let shared = StreamSessionController()
 
     @Published public private(set) var isStreaming: Bool = false
+    @Published public private(set) var connectionWarning: String?
     @Published public private(set) var currentStageName: String = ""
     @Published public private(set) var currentStage: Int = 0
     @Published public private(set) var metrics = PerformanceMetrics()
@@ -55,6 +78,8 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     public var isShortcutMode: Bool = false
     public var onSessionStopped: (@MainActor () -> Void)?
     private var activeApp: StreamApp?
+    private var negotiatedVideoSize: CGSize?
+    private var negotiatedCodec: String?
     public private(set) var activeSettings: StreamSettings?
     private var latencyActivityToken: NSObjectProtocol?
     private let streamDiagnosticsEnabled = ProcessInfo.processInfo.environment["MOONLIGHT_STREAM_DIAGNOSTICS"] == "1"
@@ -74,19 +99,36 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     }
 
     public func markConnected() {
-        guard isStreaming else { return }
+        guard isStreaming, currentStageName != "Connected" else { return }
         self.currentStageName = "Connected"
+        startConnectedServices()
+    }
+
+    fileprivate func videoWasConfigured(format: Int32, width: Int32, height: Int32) {
+        negotiatedVideoSize = CGSize(width: Int(width), height: Int(height))
+        negotiatedCodec = format & VIDEO_FORMAT_MASK_AV1 != 0 ? "AV1" : format & VIDEO_FORMAT_MASK_H265 != 0 ? "HEVC" : "H.264"
+        if format & VIDEO_FORMAT_MASK_YUV444 != 0 { negotiatedCodec? += " 4:4:4" }
+        inputCoordinator.mouseMonitor.videoSize = negotiatedVideoSize!
+    }
+
+    func updateHDR(_ enabled: Bool) {
+        guard isStreaming else { return }
+        MetalStreamRenderer.shared.isHdrActive = enabled && activeSettings?.enableHdr == true
+    }
+    func updateConnectionStatus(_ status: Int32) {
+        guard isStreaming else { return }
+        connectionWarning = status == CONN_STATUS_POOR ? "Network quality is poor. Try lowering the bitrate." : nil
     }
 
     public func handleStageFailed(stage: Int, code: Int) {
         guard isStreaming else { return }
-        self.sessionError = "Stage \(stage) failed (code \(code))"
+        self.sessionError = ConnectionDiagnostics.stageFailure(stage: Int32(stage), code: Int32(code))
         self.stopSession()
     }
 
     public func handleTerminated(code: Int) {
         guard isStreaming else { return }
-        self.sessionError = code == 0 ? nil : "Connection terminated (Error \(code))"
+        self.sessionError = ConnectionDiagnostics.termination(Int32(code))
         self.stopSession()
     }
 
@@ -94,11 +136,23 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         self.sessionError = nil
     }
 
+    private var didLaunchHostApp = false
+    var hostAppIDForShutdown: Int? { isShortcutMode ? activeApp?.id : nil }
+    public var shouldQuitHostAppOnStop: Bool {
+        isShortcutMode ? didLaunchHostApp : activeSettings?.quitAppOnStop == true
+    }
+
     public func startSession(host: Host, app: StreamApp, settings: StreamSettings) async {
         guard !isStreaming else { return }
+        if let error = settings.validationMessage { sessionError = error; onSessionStopped?(); return }
         // Snapshot the launching window/display before awaiting teardown or
         // replacing views. AppKit's key window can change during those operations.
+        let screen = WindowManager.shared.currentWindow?.screen ?? NSScreen.main
+        let displayID = (screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        let actualRefresh = displayID.flatMap { CGDisplayCopyDisplayMode($0)?.refreshRate } ?? 0
+        displayRefreshRateX100 = Int32((actualRefresh > 0 ? actualRefresh : Double(screen?.maximumFramesPerSecond ?? 60)) * 100)
         var effectiveSettings = settings
+        effectiveSettings.controllerMask = GameControllerManager.launchMask(persistent: settings.features.persistentGamepad, extendedSlots: host.supportsExtendedControllers)
         if effectiveSettings.width == 0 || effectiveSettings.height == 0 {
             let window = WindowManager.shared.currentWindow
             let (nativeW, nativeH) = DisplayManager.getNativeResolution(for: window)
@@ -120,11 +174,15 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             reason: "Moonlight Low-Latency Game Streaming"
         )
 
+        self.didLaunchHostApp = false
         self.activeHost = host
         self.activeApp = app
         self.activeSettings = effectiveSettings
         self.isStreaming = true
         self.sessionError = nil
+        self.connectionWarning = nil
+        negotiatedVideoSize = nil
+        negotiatedCodec = nil
         self.currentStageName = "Requesting session from host..."
 
         #if DEBUG
@@ -161,9 +219,11 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
             guard isStreaming, sessionGeneration == generation else { return }
             try Task.checkCancellation()
+            didLaunchHostApp = host.currentAppId != app.id
 
             MetalStreamRenderer.shared.enableVsync = effectiveSettings.enableVsync
-            MetalStreamRenderer.shared.isHdrActive = effectiveSettings.enableHdr
+            MetalStreamRenderer.shared.isHdrActive = false
+            videoDecoder.decoderPreference = effectiveSettings.features.decoder
 
             let displayID = (WindowManager.shared.currentWindow?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
             let useNativeRenderer = effectiveSettings.videoRenderer == .native
@@ -204,70 +264,6 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
                 isRemote: isRemote
             )
 
-            // Start input capture
-            inputCoordinator.startCapturing(
-                captureMouse: settings.mouseCaptureMode,
-                mouseSensitivity: settings.mouseSensitivity,
-                mouseSensitivityX: settings.mouseSensitivityX,
-                mouseSensitivityY: settings.mouseSensitivityY,
-                mouseSubPixelAccumulation: settings.mouseSubPixelAccumulation,
-                swapWinAltKeys: settings.swapWinAltKeys,
-                keyboardLayout: settings.keyboardLayout,
-                systemKeyCaptureMode: settings.captureSystemKeys,
-                onQuit: { [weak self] in
-                    Task { @MainActor [weak self] in
-                        self?.stopSession()
-                    }
-                },
-                onToggleMouseCapture: { [weak self] in
-                    Task { @MainActor [weak self] in
-                        self?.inputCoordinator.toggleMouseCapture()
-                    }
-                },
-                onToggleFullscreen: {
-                    Task { @MainActor in
-                        WindowManager.shared.toggleFullscreen()
-                        InputCaptureCoordinator.shared.updateKeyboardGrabState()
-                    }
-                },
-                onToggleStatsOverlay: { [weak self] in
-                    Task { @MainActor [weak self] in
-                        self?.togglePerformanceOverlay()
-                    }
-                },
-                onToggleMouseMode: { [weak self] in
-                    Task { @MainActor [weak self] in
-                        self?.inputCoordinator.toggleMouseCapture()
-                    }
-                },
-                onMinimize: {
-                    Task { @MainActor in
-                        NSApp.keyWindow?.miniaturize(nil)
-                    }
-                },
-                onPaste: {
-                    guard let text = NSPasteboard.general.string(forType: .string) else { return }
-                    let clean = text.replacingOccurrences(of: "\r\n", with: "\n")
-                    // LiSendUtf8TextEvent packs the whole string into a single reliable control
-                    // packet and takes its length as UInt32, so truncate oversized pastes instead
-                    // of overflowing the length or the allocator.
-                    let utf8 = Array(clean.utf8.prefix(Self.maxPasteBytes))
-                    guard !utf8.isEmpty else { return }
-                    if utf8.count < clean.utf8.count {
-                        AppLogger.shared.warning("Pasted text truncated to \(Self.maxPasteBytes) bytes", category: "CLIPBOARD")
-                    }
-                    utf8.withUnsafeBufferPointer { buffer in
-                        buffer.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buffer.count) { cStr in
-                            _ = LiSendUtf8TextEvent(cStr, UInt32(buffer.count))
-                        }
-                    }
-                }
-            )
-
-            startMetricsPolling()
-            if let host = activeHost, activeSettings?.enableClipboardSync == true {
-                ClipboardSyncManager.shared.start(host: host)
-            }
 
         } catch {
             guard sessionGeneration == generation, isStreaming else { return }
@@ -276,7 +272,84 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         }
     }
 
+    private func startConnectedServices() {
+        guard let settings = activeSettings else { return }
+        GameControllerManager.shared.configure(settings.features, extendedSlots: activeHost?.supportsExtendedControllers == true)
+        inputCoordinator.mouseMonitor.desktopMode = settings.features.desktopMouse
+        // Input is accepted only after the library has initialized its input stream.
+        inputCoordinator.startCapturing(
+            captureMouse: settings.mouseCaptureMode || settings.features.desktopMouse,
+            mouseSensitivity: settings.mouseSensitivity,
+            mouseSensitivityX: settings.mouseSensitivityX,
+            mouseSensitivityY: settings.mouseSensitivityY,
+            mouseSubPixelAccumulation: settings.mouseSubPixelAccumulation,
+            swapWinAltKeys: settings.swapWinAltKeys,
+            systemKeyCaptureMode: settings.captureSystemKeys,
+            onQuit: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.stopSession()
+                }
+            },
+            onToggleMouseCapture: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.inputCoordinator.toggleMouseCapture()
+                }
+            },
+            onToggleFullscreen: {
+                Task { @MainActor in
+                    WindowManager.shared.toggleFullscreen()
+                    InputCaptureCoordinator.shared.updateKeyboardGrabState()
+                }
+            },
+            onToggleStatsOverlay: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.togglePerformanceOverlay()
+                }
+            },
+            onToggleMouseMode: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.inputCoordinator.mouseMonitor.toggleMode()
+                }
+            },
+            onMinimize: {
+                Task { @MainActor in
+                    NSApp.keyWindow?.miniaturize(nil)
+                }
+            },
+            onPaste: {
+                guard let text = NSPasteboard.general.string(forType: .string) else { return }
+                let clean = text.replacingOccurrences(of: "\r\n", with: "\n")
+                // LiSendUtf8TextEvent packs the whole string into a single reliable control
+                // packet and takes its length as UInt32, so truncate oversized pastes instead
+                // of overflowing the length or the allocator.
+                let utf8 = Array(clean.utf8.prefix(Self.maxPasteBytes))
+                guard !utf8.isEmpty else { return }
+                if utf8.count < clean.utf8.count {
+                    AppLogger.shared.warning("Pasted text truncated to \(Self.maxPasteBytes) bytes", category: "CLIPBOARD")
+                }
+                utf8.withUnsafeBufferPointer { buffer in
+                    buffer.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buffer.count) { cStr in
+                        _ = LiSendUtf8TextEvent(cStr, UInt32(buffer.count))
+                    }
+                }
+            }
+        )
+
+        inputCoordinator.mouseMonitor.swapButtons = settings.features.swapMouseButtons
+        inputCoordinator.mouseMonitor.reverseScroll = settings.features.reverseScroll
+        inputCoordinator.mouseMonitor.videoSize = negotiatedVideoSize ?? CGSize(width: settings.width, height: settings.height)
+        if settings.features.discordPresence, let host = activeHost, let app = activeApp {
+            DiscordPresence.shared.start(applicationID: settings.features.discordApplicationID, game: app.title, host: host.name)
+        }
+        startMetricsPolling()
+        if let host = activeHost, activeSettings?.enableClipboardSync == true {
+            ClipboardSyncManager.shared.start(host: host)
+        }
+
+    }
+
     private var streamConfigRemotely: Int32 = STREAM_CFG_LOCAL
+    private var displayRefreshRateX100: Int32 = 6000
 
     /// Upper bound for the in-stream paste shortcut. The control packet holds the text inline, so
     /// this keeps one paste from allocating a multi-megabyte enet packet.
@@ -323,6 +396,8 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     ) {
         let generation = sessionGeneration
         StreamSessionEngine.shared.callbackGeneration = generation
+        StreamSessionEngine.shared.prepareConnection()
+        let refreshRateX100 = displayRefreshRateX100
         streamTask = Task.detached(priority: .high) {
             guard !Task.isCancelled else { return }
             var streamConfig = STREAM_CONFIGURATION()
@@ -348,7 +423,8 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             streamConfig.fps = Int32(settings.fps)
             streamConfig.bitrate = Int32(chosenBitrateMbps * 1000)
             streamConfig.packetSize = Int32(settings.packetSize)
-            streamConfig.supportedVideoFormats = settings.codec.limelightMask(enableHdr: settings.enableHdr)
+            streamConfig.supportedVideoFormats = settings.videoFormatMask
+            streamConfig.clientRefreshRateX100 = refreshRateX100
             streamConfig.audioConfiguration = settings.audioMode.limelightValue
             streamConfig.colorSpace = Int32(COLORSPACE_REC_709)
             streamConfig.colorRange = Int32(settings.fullRangeColor ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED)
@@ -387,6 +463,11 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             clCallbacks.connectionTerminated = sessionConnectionTerminated
             clCallbacks.rumble = sessionRumble
             clCallbacks.setMotionEventState = sessionSetMotionEventState
+            clCallbacks.connectionStatusUpdate = sessionConnectionStatus
+            clCallbacks.setHdrMode = sessionHDR
+            clCallbacks.rumbleTriggers = sessionTriggerRumble
+            clCallbacks.setControllerLED = sessionLED
+            clCallbacks.setAdaptiveTriggers = sessionAdaptiveTriggers
 
             var drCallbacks = DECODER_RENDERER_CALLBACKS()
             LiInitializeVideoCallbacks(&drCallbacks)
@@ -395,7 +476,8 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             drCallbacks.stop = sessionVideoStop
             drCallbacks.cleanup = sessionVideoCleanup
             drCallbacks.submitDecodeUnit = sessionVideoSubmitDecodeUnit
-            drCallbacks.capabilities = CAPABILITY_DIRECT_SUBMIT
+            // VideoToolbox setup/recovery can block; use the library's decoder worker.
+            drCallbacks.capabilities = 0
 
             var arCallbacks = AUDIO_RENDERER_CALLBACKS()
             LiInitializeAudioCallbacks(&arCallbacks)
@@ -444,9 +526,11 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     public func stopSession() {
         // Also invalidate a reconnect that is still waiting for old cleanup.
         sessionGeneration &+= 1
+        StreamSessionEngine.shared.connectionWillStop()
         let isShortcut = isShortcutMode
         let hostToQuit = activeHost
-        let shouldQuitHostApp = isShortcut || (activeSettings?.quitAppOnStop == true)
+        let shouldQuitHostApp = shouldQuitHostAppOnStop
+        let expectedAppID = isShortcut ? activeApp?.id : nil
 
         if isShortcut {
             WindowManager.shared.hideStreamWindow()
@@ -464,6 +548,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         onSessionStopped?()
         stopMetricsPolling()
         ClipboardSyncManager.shared.stop()
+        DiscordPresence.shared.stop()
         DisplaySleepManager.shared.stop()
 
         if let token = latencyActivityToken {
@@ -480,7 +565,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         MetalStreamRenderer.shared.reset()
 
         // 3. Stop input capture on next main runloop tick to prevent reentrant NSEvent callback crashes
-        DispatchQueue.main.async { [weak self] in
+        let inputStop = Task { @MainActor [weak self] in
             guard let self, !self.isStreaming else { return }
             self.inputCoordinator.stopCapturing()
         }
@@ -492,6 +577,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         stoppingTask = Task.detached(priority: .userInitiated) {
             // LiStartConnection performs its own cleanup on failure. Never run
             // LiStopConnection concurrently with that cleanup.
+            await inputStop.value
             await connectionTask?.value
             LiStopConnection()
         }
@@ -503,16 +589,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             stoppingTask = Task.detached(priority: .userInitiated) {
                 await connectionStop?.value
                 AppLogger.shared.info("Quitting game on host in background (shortcutMode: \(isShortcut))", category: "SESSION")
-                await withTaskGroup(of: Void.self) { group in
-                    group.addTask {
-                        try? await SunshineHTTPClient.shared.quitApp(host: host)
-                    }
-                    group.addTask {
-                        try? await Task.sleep(for: .seconds(2))
-                    }
-                    _ = await group.next()
-                    group.cancelAll()
-                }
+                await HostAppShutdown.quit(host: host, expectedAppID: expectedAppID)
 
                 if isShortcut {
                     exit(0)
@@ -527,9 +604,11 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         metricsTimer?.invalidate()
         metricsAccumulator.reset()
 
+        let generation = sessionGeneration
         metricsTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.updateMetricsIfNeeded()
+                guard let self, self.acceptsCallback(generation: generation) else { return }
+                self.updateMetricsIfNeeded()
             }
         }
     }
@@ -547,13 +626,10 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
         let snap = metricsAccumulator.snapshot(currentFps: metrics.currentFps)
 
-        var estimatedRtt: UInt32 = 0
-        var estimatedRttVar: UInt32 = 0
         var updated = metrics
-        if LiGetEstimatedRttInfo(&estimatedRtt, &estimatedRttVar) {
-            updated.roundTripTimeMs = Double(estimatedRtt)
-            updated.roundTripTimeVarianceMs = Double(estimatedRttVar)
-        }
+        let rtt = StreamSessionEngine.shared.sampleRtt()
+        updated.roundTripTimeMs = rtt?.0 ?? 0
+        updated.roundTripTimeVarianceMs = rtt?.1 ?? 0
 
         updated.currentFps = snap.fps
         updated.decodeTimeMs = snap.decodeTime
@@ -567,10 +643,11 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             let isRemote = (streamConfigRemotely == STREAM_CFG_REMOTE)
             let activeBitrate = (isRemote && settings.enableRemoteBitrate) ? settings.remoteBitrateMbps : settings.bitrateMbps
             updated.bitrateMbps = Double(activeBitrate)
-            updated.resolution = "\(settings.width)x\(settings.height)"
-            updated.vsyncEnabled = settings.enableVsync
+            let size = negotiatedVideoSize ?? CGSize(width: settings.width, height: settings.height)
+            updated.resolution = "\(Int(size.width))x\(Int(size.height))"
+            updated.vsyncEnabled = settings.videoRenderer == .native || settings.enableVsync
             updated.pacingEnabled = settings.enableFramePacing
-            updated.currentCodec = settings.codec.rawValue
+            updated.currentCodec = negotiatedCodec ?? settings.codec.rawValue
         }
 
         if streamDiagnosticsEnabled {
@@ -590,8 +667,18 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
     // MARK: - VideoDecoderDelegate
     public nonisolated func decoderDidOutputPixelBuffer(_ pixelBuffer: CVPixelBuffer, presentationTimeUs: UInt64, decodeTimeMs: Double) {
+        StreamSessionEngine.shared.hdr.apply(to: pixelBuffer)
         FramePacer.shared.submit(pixelBuffer: pixelBuffer)
         metricsAccumulator.recordRender(decodeTimeMs: decodeTimeMs)
+    }
+
+    public nonisolated func decoderDidFail(reason: String) {
+        let generation = StreamSessionEngine.shared.callbackGeneration
+        Task { @MainActor in
+            guard self.acceptsCallback(generation: generation) else { return }
+            self.sessionError = reason
+            self.stopSession()
+        }
     }
 
     public nonisolated func decoderDidDropFrame(frameNumber: Int) {
@@ -631,6 +718,7 @@ private func sessionStageFailed(stage: Int32, errorCode: Int32) {
 }
 
 private func sessionConnectionStarted() {
+    StreamSessionEngine.shared.connectionDidStart()
     let generation = StreamSessionEngine.shared.callbackGeneration
     Task { @MainActor in
         guard StreamSessionController.shared.acceptsCallback(generation: generation) else { return }
@@ -652,12 +740,19 @@ private func sessionRumble(controllerNumber: UInt16, lowFreqMotor: UInt16, highF
 
 private func sessionSetMotionEventState(controllerNumber: UInt16, motionType: UInt8, reportRateHz: UInt16) {
     // Runs on the connection listener thread; the manager locks its own state.
-    GameControllerManager.shared.setMotionRequest(category: motionType, reportRateHz: reportRateHz)
-    _ = controllerNumber
+    GameControllerManager.shared.setMotionRequest(controllerNumber: controllerNumber, category: motionType, reportRateHz: reportRateHz)
 }
 
 private func sessionVideoSetup(videoFormat: Int32, width: Int32, height: Int32, redrawRate: Int32, context: UnsafeMutableRawPointer?, drFlags: Int32) -> Int32 {
-    return StreamSessionEngine.shared.videoDecoder.setup(videoFormat: videoFormat, width: width, height: height)
+    let generation = StreamSessionEngine.shared.callbackGeneration
+    let result = StreamSessionEngine.shared.videoDecoder.setup(videoFormat: videoFormat, width: width, height: height)
+    if result == 0 {
+        Task { @MainActor in
+            guard StreamSessionController.shared.acceptsCallback(generation: generation) else { return }
+            StreamSessionController.shared.videoWasConfigured(format: videoFormat, width: width, height: height)
+        }
+    }
+    return result
 }
 
 private func sessionVideoStart() {}
@@ -799,3 +894,30 @@ private final class StreamMetricsAccumulator: @unchecked Sendable {
     }
 }
 
+
+private func sessionConnectionStatus(status: Int32) {
+    let generation = StreamSessionEngine.shared.callbackGeneration
+    Task { @MainActor in
+        guard StreamSessionController.shared.acceptsCallback(generation: generation) else { return }
+        StreamSessionController.shared.updateConnectionStatus(status)
+    }
+}
+private func sessionHDR(enabled: Bool) {
+    StreamSessionEngine.shared.updateHDR(enabled)
+    let generation = StreamSessionEngine.shared.callbackGeneration
+    Task { @MainActor in
+        guard StreamSessionController.shared.acceptsCallback(generation: generation) else { return }
+        StreamSessionController.shared.updateHDR(enabled)
+    }
+}
+private func sessionTriggerRumble(slot: UInt16, left: UInt16, right: UInt16) {
+    GameControllerManager.shared.rumbleTriggers(slot: slot, left: left, right: right)
+}
+private func sessionLED(slot: UInt16, red: UInt8, green: UInt8, blue: UInt8) {
+    GameControllerManager.shared.setLED(slot: slot, red: red, green: green, blue: blue)
+}
+private func sessionAdaptiveTriggers(slot: UInt16, flags: UInt8, leftType: UInt8, rightType: UInt8, left: UnsafeMutablePointer<UInt8>?, right: UnsafeMutablePointer<UInt8>?) {
+    let left = left.map { Array(UnsafeBufferPointer(start: $0, count: 10)) } ?? []
+    let right = right.map { Array(UnsafeBufferPointer(start: $0, count: 10)) } ?? []
+    GameControllerManager.shared.setAdaptiveTriggers(slot: slot, flags: flags, leftType: leftType, rightType: rightType, left: left, right: right)
+}

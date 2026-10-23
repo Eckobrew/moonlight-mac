@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import MoonlightCommonC
 
+@MainActor
 public final class KeyboardMonitor: @unchecked Sendable {
     public var swapWinAltKeys: Bool = true
     public var onQuitRequested: (@Sendable () -> Void)?
@@ -16,9 +17,6 @@ public final class KeyboardMonitor: @unchecked Sendable {
     /// the same control-stream mutex inside moonlight-common-c, so they must be sent from one queue:
     /// sending them on the main thread made AppKit event dispatch block behind mouse packets.
     private let inputQueue: DispatchQueue
-
-    /// Legacy saved preference; both values now use normalized position-based virtual keys.
-    public var keyboardLayout: KeyboardLayout = .us
 
     private var localMonitor: Any?
     private var appResignObserver: NSObjectProtocol?
@@ -45,7 +43,7 @@ public final class KeyboardMonitor: @unchecked Sendable {
             object: nil,
             queue: OperationQueue.main
         ) { [weak self] _ in
-            self?.raiseModifierKeys()
+            MainActor.assumeIsolated { self?.raiseModifierKeys() }
         }
     }
 
@@ -63,6 +61,9 @@ public final class KeyboardMonitor: @unchecked Sendable {
     }
 
     private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
+        guard NSApp.isActive, let window = WindowManager.shared.currentWindow, window.isKeyWindow,
+              window.attachedSheet == nil, NSApp.modalWindow == nil,
+              event.window == nil || event.window === window else { return event }
         // Only trigger special key combos on keyDown events
         if event.type == .keyDown {
             let isMoonlightCombo = event.modifierFlags.contains([.control, .option, .shift])
@@ -187,7 +188,7 @@ public final class KeyboardMonitor: @unchecked Sendable {
         }
     }
 
-    private static func sendKeyNow(_ key: HostKey, _ action: CChar, _ modifiers: CChar) {
+    nonisolated private static func sendKeyNow(_ key: HostKey, _ action: CChar, _ modifiers: CChar) {
         LiSendKeyboardEvent2(key.wireCode, action, modifiers | key.extendedModifier, key.flags)
     }
 

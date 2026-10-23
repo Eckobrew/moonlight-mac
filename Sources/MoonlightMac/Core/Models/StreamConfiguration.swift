@@ -105,6 +105,8 @@ public enum VideoRendererMode: String, Codable, CaseIterable, Sendable {
 }
 
 public struct StreamSettings: Codable, Equatable, Sendable {
+    public var features = ClientFeatures()
+    public var controllerMask: UInt16 = 0
     public var width: Int
     public var height: Int
     public var fps: Int
@@ -213,6 +215,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
+        case features, controllerMask
         case width, height, fps, bitrateMbps, packetSize
         case codec, audioMode, enableHdr, fullRangeColor
         case mouseCaptureMode, swapWinAltKeys, windowMode
@@ -226,6 +229,8 @@ public struct StreamSettings: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.controllerMask = try container.decodeIfPresent(UInt16.self, forKey: .controllerMask) ?? 0
+        self.features = try container.decodeIfPresent(ClientFeatures.self, forKey: .features) ?? ClientFeatures()
         self.width = try container.decode(Int.self, forKey: .width)
         self.height = try container.decode(Int.self, forKey: .height)
         self.fps = try container.decode(Int.self, forKey: .fps)
@@ -260,3 +265,17 @@ public struct StreamSettings: Codable, Equatable, Sendable {
     }
 }
 
+
+public extension StreamSettings {
+    var videoFormatMask: Int32 {
+        var mask = codec.limelightMask(enableHdr: enableHdr)
+        if features.yuv444 {
+            if codec == .auto { mask &= ~VIDEO_FORMAT_MASK_AV1 }
+            if mask & VIDEO_FORMAT_MASK_H264 != 0 { mask |= VIDEO_FORMAT_H264_HIGH8_444 }
+            if mask & VIDEO_FORMAT_MASK_H265 != 0 { mask |= VIDEO_FORMAT_H265_REXT8_444; if enableHdr { mask |= VIDEO_FORMAT_H265_REXT10_444 } }
+            // AV1 High-profile hardware decoding is not exposed by the AV1 Main capability probe.
+            // Keep AV1 at 4:2:0 until that profile can be verified independently.
+        }
+        return mask
+    }
+}

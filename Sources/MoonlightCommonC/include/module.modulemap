@@ -1,4 +1,5 @@
 module MoonlightCommonC [system] {
     header "Limelight.h"
+    header "NativeBridge.h"
     export *
 }

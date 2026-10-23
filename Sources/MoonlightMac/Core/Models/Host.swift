@@ -68,6 +68,12 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
         self.lastSeen = lastSeen
     }
 
+    /// Matches common-c’s negative fourth application-version component.
+    var supportsExtendedControllers: Bool {
+        let parts = appVersion.split(separator: ".")
+        return parts.count == 4 && (Int(parts[3]) ?? 0) < 0
+    }
+
     public var isSecurelyPaired: Bool { isPaired && serverCertificateDER != nil }
     public var needsCertificatePairing: Bool { isPaired && serverCertificateDER == nil }
 

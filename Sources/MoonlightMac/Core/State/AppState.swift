@@ -6,6 +6,8 @@ import SwiftUI
 public final class AppState: @unchecked Sendable {
     public var hosts: [Host] = []
     public var selectedHost: Host?
+    public var controllerHostFocus: UUID?
+    public var controllerAppFocus: Int?
     public var appsForSelectedHost: [StreamApp] = []
     public var settings: StreamSettings = StreamSettings()
 
@@ -16,6 +18,8 @@ public final class AppState: @unchecked Sendable {
     public var pairingPin: String?
     public var pairingError: String?
     public var isPairingInProgress: Bool = false
+    private var cliLaunchTask: Task<Void, Never>?
+    private var launchTask: Task<Void, Never>?
     private var pairingTask: Task<Host, any Error>?
 
     public var activeHost: Host?
@@ -46,6 +50,7 @@ public final class AppState: @unchecked Sendable {
 
         loadSettings()
         loadHosts()
+        AppLocalization.apply(language: settings.features.language)
 
         let args = CommandLine.arguments
         if let streamIdx = args.firstIndex(of: "stream"), streamIdx + 2 < args.count {
@@ -75,6 +80,8 @@ public final class AppState: @unchecked Sendable {
             UserDefaults.standard.set(encoded, forKey: settingsKey)
         }
         DisplaySleepManager.shared.update(keepScreenActive: settings.keepScreenActive)
+        if settings.features.enableMdns { BonjourDiscoveryService.shared.startDiscovery() }
+        else { BonjourDiscoveryService.shared.stopDiscovery() }
 
         // Apply audio changes to a running session without requiring a reconnect.
         if StreamSessionController.shared.isStreaming {
@@ -362,12 +369,13 @@ public final class AppState: @unchecked Sendable {
         let overrides = PerAppSettingsStore.shared.overrides(for: host, appId: app.id)
         let effectiveSettings = settings.applying(overrides)
 
-        Task {
+        launchTask = Task {
             await StreamSessionController.shared.startSession(host: host, app: app, settings: effectiveSettings)
         }
     }
 
     public func stopActiveStream() {
+        launchTask?.cancel()
         self.isStreaming = false
         StreamSessionController.shared.stopSession()
         self.activeHost = nil
@@ -389,21 +397,24 @@ public final class AppState: @unchecked Sendable {
     }
 
     public func cancelShortcutLaunch() {
-        self.isStreaming = false
-        WindowManager.shared.hideStreamWindow()
-
-        let host = activeHost ?? hosts.first(where: { $0.name.localizedCaseInsensitiveCompare(cliHostName) == .orderedSame })
-        Task {
-            if let host = host {
-                try? await SunshineHTTPClient.shared.quitApp(host: host)
-            }
-            await MainActor.run {
-                exit(0)
-            }
+        cliLaunchTask?.cancel()
+        launchTask?.cancel()
+        if StreamSessionController.shared.isStreaming {
+            StreamSessionController.shared.stopSession()
+        } else {
+            // Negotiation has not launched a host app. Cancelling it must never
+            // send the host-wide /cancel command to an existing game.
+            NSApp.terminate(nil)
         }
     }
 
+    public func beginCLIStream(hostQuery: String, appQuery: String) {
+        guard cliLaunchTask == nil else { return }
+        cliLaunchTask = Task { await handleCLIStream(hostQuery: hostQuery, appQuery: appQuery) }
+    }
+
     public func handleCLIStream(hostQuery: String, appQuery: String) async {
+        guard !Task.isCancelled else { return }
         AppLogger.shared.info("CLI Stream invocation requested for host: '\(hostQuery)', app: '\(appQuery)'", category: "CLI")
 
         self.cliStreamStatus = "Locating host '\(hostQuery)'..."
@@ -435,18 +446,23 @@ public final class AppState: @unchecked Sendable {
         self.cliStreamStatus = "Connecting to '\(host.name)'..."
         do {
             let (updated, _) = try await SunshineHTTPClient.shared.fetchServerInfo(host: host)
+            guard !Task.isCancelled else { return }
             host = updated
             self.addOrUpdateHost(updated)
         } catch {
+            guard !Task.isCancelled else { return }
             if let mac = host.macAddress {
                 self.cliStreamStatus = "Host unreachable. Waking '\(host.name)' via Wake-on-LAN..."
                 AppLogger.shared.info("Initial connection failed for '\(host.name)'. Attempting Wake-on-LAN recovery...", category: "CLI")
                 var recovered = false
                 for i in 0..<24 {
+                    guard !Task.isCancelled else { return }
                     self.cliStreamStatus = "Waking up '\(host.name)' (\(24 - i) attempts remaining)..."
                     try? await WakeOnLAN.wake(macAddress: mac)
                     try? await Task.sleep(for: .milliseconds(2500))
+                    guard !Task.isCancelled else { return }
                     if let (updated, _) = try? await SunshineHTTPClient.shared.fetchServerInfo(host: host), updated.isOnline {
+                        guard !Task.isCancelled else { return }
                         host = updated
                         self.addOrUpdateHost(updated)
                         recovered = true
@@ -463,10 +479,12 @@ public final class AppState: @unchecked Sendable {
             }
         }
 
+        guard !Task.isCancelled else { return }
         // 4. Fetch apps and find matching app
         self.cliStreamStatus = "Loading game list..."
         do {
             let apps = try await SunshineHTTPClient.shared.fetchAppList(host: host)
+            guard !Task.isCancelled else { return }
             let matchedApp = apps.first(where: {
                 $0.title.localizedCaseInsensitiveCompare(appQuery) == .orderedSame ||
                 String($0.id) == appQuery
@@ -484,6 +502,7 @@ public final class AppState: @unchecked Sendable {
             AppLogger.shared.info("Found app '\(app.title)' (ID: \(app.id)) on '\(host.name)'. Starting stream...", category: "CLI")
             self.launchStream(host: host, app: app)
         } catch {
+            guard !Task.isCancelled else { return }
             self.cliStreamError = "Failed to fetch games from '\(host.name)': \(error.localizedDescription)"
         }
     }

@@ -15,6 +15,14 @@ public final class MouseMonitor: @unchecked Sendable {
     /// Notified whenever capture state changes (used to update the keyboard grab, like moonlight-qt setCaptureActive)
     public var onCaptureStateChanged: (() -> Void)?
 
+    public var desktopMode = false {
+        didSet { if desktopMode != oldValue { releaseRelativeCapture(); refreshCapture() } }
+    }
+    public var swapButtons = false
+    public var reverseScroll = false
+    public var videoSize = CGSize(width: 1920, height: 1080)
+    public func toggleMode() { desktopMode.toggle() }
+
     public var sensitivity: Double = 1.0
     /// Independent horizontal multiplier. Applied on top of `sensitivity`, matching
     /// moonlight-qt's per-axis scaling (useful for aspect ratio and preference corrections).
@@ -227,6 +235,7 @@ public final class MouseMonitor: @unchecked Sendable {
     }
 
     private func applyCursorAssociation() {
+        if desktopMode { releaseRelativeCapture(); return }
         if focusState.action == .restoreKeyWindow {
             // makeKey does not activate an app or raise us above banners.
             streamWindow?.makeKey()
@@ -272,16 +281,22 @@ public final class MouseMonitor: @unchecked Sendable {
 
         // Capture intent survives focus changes, but input must not leak into the
         // host while a settings window, sheet, or another app has focus.
-        guard focusState.action == .capture,
+        guard (desktopMode ? (NSApp.isActive && streamWindow?.isKeyWindow == true && streamWindow?.attachedSheet == nil) : focusState.action == .capture),
               event.window == nil || isStreamWindow(event.window) else {
             return event
         }
 
-        if !isRelativeCaptureActive { applyCursorAssociation() }
-        guard isRelativeCaptureActive else { return event }
+        if !desktopMode {
+            if !isRelativeCaptureActive { applyCursorAssociation() }
+            guard isRelativeCaptureActive else { return event }
+        }
 
         switch event.type {
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+            if desktopMode {
+                _ = sendDesktopPosition(event)
+                return event // Preserve the native cursor while desktop control is active.
+            }
             // Discard the single synthetic delta generated when centering cursor during capture
             // (Matches SDL2 / Moonlight-Qt justEnabledRelative behavior)
             if seenWarp {
@@ -299,24 +314,28 @@ public final class MouseMonitor: @unchecked Sendable {
             return nil
 
         case .leftMouseDown:
+            guard !desktopMode || sendDesktopPosition(event) else { return event }
             sendButton(BUTTON_LEFT, pressed: true)
             return nil
         case .leftMouseUp:
             sendButton(BUTTON_LEFT, pressed: false)
             return nil
         case .rightMouseDown:
+            guard !desktopMode || sendDesktopPosition(event) else { return event }
             sendButton(BUTTON_RIGHT, pressed: true)
             return nil
         case .rightMouseUp:
             sendButton(BUTTON_RIGHT, pressed: false)
             return nil
         case .otherMouseDown, .otherMouseUp:
+            guard !desktopMode || event.type == .otherMouseUp || sendDesktopPosition(event) else { return event }
             if let button = buttonForNumber(event.buttonNumber) {
                 sendButton(button, pressed: event.type == .otherMouseDown)
             }
             return nil
         case .scrollWheel:
-            let scroll = MouseWheelMotion.consume(x: Double(event.deltaX), y: Double(event.deltaY),
+            guard !desktopMode || sendDesktopPosition(event) else { return event }
+            let scroll = MouseWheelMotion.consume(x: Double(event.deltaX) * (reverseScroll ? -1 : 1), y: Double(event.deltaY) * (reverseScroll ? -1 : 1),
                                                   precise: event.hasPreciseScrollingDeltas)
             if scroll.x != 0 || scroll.y != 0 {
                 inputQueue.async {
@@ -341,7 +360,17 @@ public final class MouseMonitor: @unchecked Sendable {
         return !(window is NSPanel) && window.parent == nil
     }
 
+    private func sendDesktopPosition(_ event: NSEvent) -> Bool {
+        guard let window = streamWindow, let view = window.contentView else { return false }
+        let location = event.window == nil ? window.convertPoint(fromScreen: event.locationInWindow) : event.locationInWindow
+        guard let position = DesktopMousePosition.map(point: view.convert(location, from: nil),
+            bounds: view.bounds, video: videoSize, flipped: view.isFlipped) else { return false }
+        inputQueue.async { LiSendMousePositionEvent(position.x, position.y, position.width, position.height) }
+        return true
+    }
+
     private func sendButton(_ button: Int32, pressed: Bool) {
+        let button = swapButtons ? (button == BUTTON_LEFT ? BUTTON_RIGHT : button == BUTTON_RIGHT ? BUTTON_LEFT : button) : button
         if pressed { pressedButtons.insert(button) }
         else { pressedButtons.remove(button) }
         inputQueue.async {

@@ -264,9 +264,8 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         let extraParams = LiGetLaunchUrlQueryParameters().map { String(cString: $0) } ?? ""
 
         var urlString = "https://\(host.urlAddress):\(host.httpsPort)/launch?uniqueid=\(uniqueId)&appid=\(appId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=\(localAudioPlayMode)&surroundAudioInfo=\(surroundAudioInfo)"
-        if !extraParams.isEmpty {
-            urlString.append(extraParams)
-        }
+        urlString.append(HostLaunchOptions.query(settings: settings))
+        if !extraParams.isEmpty { urlString.append(extraParams) }
 
         guard let url = URL(string: urlString) else {
             throw URLError(.badURL)
@@ -317,9 +316,8 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         let extraParams = LiGetLaunchUrlQueryParameters().map { String(cString: $0) } ?? ""
 
         var urlString = "https://\(host.urlAddress):\(host.httpsPort)/resume?uniqueid=\(uniqueId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=\(localAudioPlayMode)&surroundAudioInfo=\(surroundAudioInfo)"
-        if !extraParams.isEmpty {
-            urlString.append(extraParams)
-        }
+        urlString.append(HostLaunchOptions.query(settings: settings))
+        if !extraParams.isEmpty { urlString.append(extraParams) }
 
         guard let url = URL(string: urlString) else {
             throw URLError(.badURL)

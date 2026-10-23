@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "MoonlightMac",
+    defaultLocalization: "en",
     platforms: [
         .macOS(.v14)
     ],
@@ -139,7 +140,8 @@ let package = Package(
             ],
             path: "Sources/MoonlightMac",
             resources: [
-                .process("Pipeline/Metal/Shaders.metal")
+                .process("Pipeline/Metal/Shaders.metal"),
+                .process("Resources")
             ],
             linkerSettings: [
                 .linkedFramework("VideoToolbox"),

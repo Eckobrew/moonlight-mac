@@ -20,6 +20,9 @@ public final class FramePacer: @unchecked Sendable {
     private var currentDisplayID: CGDirectDisplayID?
     @MainActor public private(set) var currentDisplayRefreshRate: Double = 60.0
 
+    @MainActor private weak var trackedWindow: NSWindow?
+    @MainActor private var displayObservers: [NSObjectProtocol] = []
+
     private init() {}
 
     /// Configure the pacing behavior and callback for presented frames.
@@ -48,16 +51,32 @@ public final class FramePacer: @unchecked Sendable {
     /// Update display link if window moved to another display.
     @MainActor
     public func updateWindow(_ window: NSWindow) {
+        if trackedWindow !== window {
+            removeDisplayObservers()
+            trackedWindow = window
+            let center = NotificationCenter.default
+            for (name, object) in [(NSWindow.didChangeScreenNotification, window as AnyObject?),
+                                   (NSApplication.didChangeScreenParametersNotification, nil)] {
+                let observer = center.addObserver(forName: name, object: object, queue: OperationQueue.main) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        guard let self, let window = self.trackedWindow else { return }
+                        let id = (window.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+                        self.updateDisplayID(id, force: name == NSApplication.didChangeScreenParametersNotification)
+                    }
+                }
+                displayObservers.append(observer)
+            }
+        }
         let displayID = (window.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
         updateDisplayID(displayID)
     }
 
     /// Update display link for a given display ID.
     @MainActor
-    public func updateDisplayID(_ displayID: CGDirectDisplayID?) {
-        guard currentDisplayID != displayID else { return }
+    public func updateDisplayID(_ displayID: CGDirectDisplayID?, force: Bool = false) {
+        guard force || currentDisplayID != displayID else { return }
         currentDisplayID = displayID
-        if isPacingEnabled {
+        if lock.withLock({ isPacingEnabled }) {
             stopDisplayLink()
             startDisplayLink(displayID: displayID)
         }
@@ -98,6 +117,8 @@ public final class FramePacer: @unchecked Sendable {
     /// Stop display link and flush pending frames.
     @MainActor
     public func stop() {
+        removeDisplayObservers()
+        trackedWindow = nil
         lock.lock()
         isPacingEnabled = false
         frameQueue.removeAll()
@@ -170,6 +191,12 @@ public final class FramePacer: @unchecked Sendable {
         isPacingEnabled = false
         frameQueue.removeAll()
         lock.unlock()
+    }
+
+    @MainActor
+    private func removeDisplayObservers() {
+        displayObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        displayObservers.removeAll()
     }
 
     @MainActor

@@ -1,15 +1,15 @@
 import AppKit
 import Foundation
+import Combine
 
 @MainActor
-public final class ClipboardSyncManager {
+public final class ClipboardSyncManager: ObservableObject {
     public static let shared = ClipboardSyncManager()
 
     private var activeHost: Host?
-    /// Separate failure counters: a host that rejects pushes (or lacks the clipboard endpoint for
-    /// pulls) should only disable the direction that is actually failing.
-    private var sendErrors: Int = 0
-    private var pullErrors: Int = 0
+    private var sendRetry = ClipboardRetryState()
+    private var pullRetry = ClipboardRetryState()
+    @Published public private(set) var statusMessage: String?
     private var lastSyncedClipboard: String = ""
     private var lastChangeCount: Int = -1
 
@@ -34,8 +34,9 @@ public final class ClipboardSyncManager {
         stop()
 
         self.activeHost = host
-        self.sendErrors = 0
-        self.pullErrors = 0
+        self.sendRetry = ClipboardRetryState()
+        self.pullRetry = ClipboardRetryState()
+        self.statusMessage = nil
         self.lastSyncedClipboard = ""
         self.lastChangeCount = NSPasteboard.general.changeCount
 
@@ -104,6 +105,7 @@ public final class ClipboardSyncManager {
         observers.removeAll()
 
         activeHost = nil
+        statusMessage = nil
         // Invalidate any in-flight request: its completion handler checks the generation before
         // touching state, so it can no longer resurrect a dead session (previously `isSyncing`
         // stayed true forever if the session ended mid-request, disabling sync permanently).
@@ -114,7 +116,7 @@ public final class ClipboardSyncManager {
 
     /// Pushes local macOS pasteboard string to the remote host.
     public func syncClipboardToHost() {
-        guard sendErrors < 3, let host = activeHost, !isSending else { return }
+        guard sendRetry.canAttempt(at: ProcessInfo.processInfo.systemUptime), let host = activeHost, !isSending else { return }
 
         let changeCount = NSPasteboard.general.changeCount
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
@@ -143,7 +145,8 @@ public final class ClipboardSyncManager {
                 await MainActor.run {
                     guard generation == self.sessionGeneration else { return }
                     self.isSending = false
-                    self.sendErrors = 0
+                    self.sendRetry.succeeded()
+                    self.updateStatus()
                     self.lastSyncedClipboard = text
                     self.lastChangeCount = changeCount
                     AppLogger.shared.debug("Sent \(text.count) characters to host clipboard", category: "CLIPBOARD")
@@ -152,10 +155,8 @@ public final class ClipboardSyncManager {
                 await MainActor.run {
                     guard generation == self.sessionGeneration else { return }
                     self.isSending = false
-                    self.sendErrors += 1
-                    if self.sendErrors >= 3 {
-                        AppLogger.shared.warning("Repeated failures sending clipboard to host; disabling clipboard pushes for this session.", category: "CLIPBOARD")
-                    }
+                    self.sendRetry.failed(error, at: ProcessInfo.processInfo.systemUptime)
+                    self.updateStatus()
                 }
             }
         }
@@ -163,7 +164,7 @@ public final class ClipboardSyncManager {
 
     /// Pulls remote host clipboard string to the macOS pasteboard.
     public func syncClipboardFromHost() {
-        guard pullErrors < 3, let host = activeHost, !isPulling, !isSending else { return }
+        guard pullRetry.canAttempt(at: ProcessInfo.processInfo.systemUptime), let host = activeHost, !isPulling, !isSending else { return }
 
         isPulling = true
         let changeCount = NSPasteboard.general.changeCount
@@ -175,7 +176,8 @@ public final class ClipboardSyncManager {
                 await MainActor.run {
                     guard self.sessionGeneration == generation else { return }
                     self.isPulling = false
-                    self.pullErrors = 0
+                    self.pullRetry.succeeded()
+                    self.updateStatus()
 
                     // A slow response must not overwrite text copied locally while
                     // the request was in flight.
@@ -192,12 +194,21 @@ public final class ClipboardSyncManager {
                 await MainActor.run {
                     guard self.sessionGeneration == generation else { return }
                     self.isPulling = false
-                    self.pullErrors += 1
-                    if self.pullErrors >= 3 {
-                        AppLogger.shared.warning("Clipboard pulls disabled: host does not support clipboard sync or returned repeated errors.", category: "CLIPBOARD")
-                    }
+                    self.pullRetry.failed(error, at: ProcessInfo.processInfo.systemUptime)
+                    self.updateStatus()
                 }
             }
         }
     }
+
+    private func updateStatus() {
+        let message: String?
+        if sendRetry.unsupported || pullRetry.unsupported {
+            message = "Host clipboard sync is unavailable in one or both directions."
+        } else if sendRetry.failures > 0 || pullRetry.failures > 0 {
+            message = "Clipboard sync interrupted. Retrying automatically…"
+        } else { message = nil }
+        if statusMessage != message { statusMessage = message }
+    }
+
 }

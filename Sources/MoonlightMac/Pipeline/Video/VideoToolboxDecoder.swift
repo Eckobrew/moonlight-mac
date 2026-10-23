@@ -9,10 +9,15 @@ public protocol VideoDecoderDelegate: AnyObject, Sendable {
     func decoderDidOutputPixelBuffer(_ pixelBuffer: CVPixelBuffer, presentationTimeUs: UInt64, decodeTimeMs: Double)
     func decoderDidDropFrame(frameNumber: Int)
     func decoderDidDetectNetworkFrameDrop(count: Int)
+    func decoderDidFail(reason: String)
+}
+public extension VideoDecoderDelegate {
+    func decoderDidFail(reason: String) {}
 }
 
 public final class VideoToolboxDecoder: @unchecked Sendable {
     public weak var delegate: VideoDecoderDelegate?
+    public var decoderPreference: DecoderPreference = .automatic
 
     private var decompressionSession: VTDecompressionSession?
     private var formatDescription: CMVideoFormatDescription?
@@ -128,22 +133,23 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         lastFrameNumber = du.frameNumber
 
         // Scan buffer chain for parameter sets (SPS, PPS, VPS) and copy picture data into single contiguous buffer
-        guard du.fullLength > 0 else { return DR_OK }
+        if du.fullLength == 0, du.bufferList == nil { return DR_OK }
+        guard du.fullLength > 0 else { return DR_NEED_IDR }
         guard let rawData = malloc(Int(du.fullLength))?.assumingMemoryBound(to: UInt8.self) else {
             return DR_NEED_IDR
         }
 
         var curEntry: PLENTRY? = du.bufferList
         var picDataOffset = 0
+        var chainBytes = 0
         var hasNewParamSets = false
 
         while let entry = curEntry?.pointee {
-            guard let dataPtr = entry.data, entry.length > 0 else {
-                curEntry = entry.next
-                continue
-            }
+            guard let dataPtr = entry.data, entry.length > 0 else { free(rawData); return DR_NEED_IDR }
             let bytePtr = UnsafeRawPointer(dataPtr).assumingMemoryBound(to: UInt8.self)
             let length = Int(entry.length)
+            guard length <= Int(du.fullLength) - chainBytes else { free(rawData); return DR_NEED_IDR }
+            chainBytes += length
 
             switch entry.bufferType {
             case BUFFER_TYPE_SPS:
@@ -165,6 +171,8 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
 
             curEntry = entry.next
         }
+
+        guard chainBytes == Int(du.fullLength) else { free(rawData); return DR_NEED_IDR }
 
         // If this decode unit only contained parameter sets and no picture data, we're done
         if picDataOffset == 0 {
@@ -267,40 +275,14 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
                 return DR_NEED_IDR
             }
 
-            // Scan rawData for Annex-B NAL unit start codes (00 00 01)
-            var lastNaluOffset: Int = -1
-            let scanLimit = picDataOffset - 3
-            if scanLimit >= 0 {
-                for i in 0...scanLimit {
-                    if rawData[i] == 0 && rawData[i+1] == 0 && rawData[i+2] == 1 {
-                        if lastNaluOffset != -1 {
-                            appendNalu(
-                                to: frameBuffer,
-                                from: dataBuffer,
-                                data: rawData,
-                                startOffset: lastNaluOffset,
-                                endOffset: i
-                            )
-                        }
-                        lastNaluOffset = i
-                    }
-                }
-            }
-
-            if lastNaluOffset != -1 {
-                appendNalu(
-                    to: frameBuffer,
-                    from: dataBuffer,
-                    data: rawData,
-                    startOffset: lastNaluOffset,
-                    endOffset: picDataOffset
-                )
+            guard let ranges = Self.pictureNALRanges(in: UnsafeBufferPointer(start: rawData, count: picDataOffset)) else { return DR_NEED_IDR }
+            for range in ranges {
+                guard appendNalu(to: frameBuffer, from: dataBuffer, data: rawData,
+                                 startOffset: range.lowerBound, endOffset: range.upperBound) else { return DR_NEED_IDR }
             }
 
             let totalLength = CMBlockBufferGetDataLength(frameBuffer)
-            guard totalLength > 0 else {
-                return DR_OK
-            }
+            guard totalLength > 0 else { return DR_NEED_IDR }
 
             status = CMSampleBufferCreateReady(
                 allocator: kCFAllocatorDefault,
@@ -478,7 +460,10 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         teardownDecompressionSession()
 
         let is10Bit = (videoFormat & VIDEO_FORMAT_MASK_10BIT) != 0
-        let pixelFormat = is10Bit ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        let is444 = (videoFormat & VIDEO_FORMAT_MASK_YUV444) != 0
+        let pixelFormat = is444
+            ? (is10Bit ? kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_444YpCbCr8BiPlanarVideoRange)
+            : (is10Bit ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
 
         // Do not constrain width/height here; allow VideoToolbox to output CVPixelBuffers at the
         // full native resolution of the incoming video stream (from the SPS parameter set),
@@ -492,9 +477,12 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
             kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary
         ]
 
-        let decoderSpecification: [CFString: Any] = [
-            kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: true
+        var decoderSpecification: [CFString: Any] = [
+            kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: decoderPreference != .software
         ]
+        if decoderPreference == .hardware {
+            decoderSpecification[kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder] = true
+        }
 
         var session: VTDecompressionSession?
         let status = VTDecompressionSessionCreate(
@@ -508,6 +496,7 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
 
         guard status == noErr, let decSession = session else {
             AppLogger.shared.error("VTDecompressionSessionCreate failed with status: \(status)")
+            delegate?.decoderDidFail(reason: "VideoToolbox could not create the selected decoder (\(status)). Try Automatic decoding, a different codec, or turn off 4:4:4/HDR.")
             return false
         }
 
@@ -528,23 +517,38 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         return Data(bytes: ptr, count: length)
     }
 
+    /// Picture units must contain complete Annex-B NAL payloads. Both three- and
+    /// four-byte start codes are accepted; padding and empty/truncated NALs are not pictures.
+    static func pictureNALRanges(in bytes: UnsafeBufferPointer<UInt8>) -> [Range<Int>]? {
+        guard bytes.count >= 4 else { return nil }
+        var starts: [Int] = []
+        for index in 0...(bytes.count - 3) where bytes[index] == 0 && bytes[index + 1] == 0 && bytes[index + 2] == 1 {
+            starts.append(index)
+        }
+        guard let first = starts.first, bytes.prefix(first).allSatisfy({ $0 == 0 }) else { return nil }
+        var ranges: [Range<Int>] = []
+        for (index, start) in starts.enumerated() {
+            let payload = start + 3
+            var end = index + 1 < starts.count ? starts[index + 1] : bytes.count
+            while end > payload && bytes[end - 1] == 0 { end -= 1 }
+            guard end > payload else { return nil }
+            ranges.append(payload..<end)
+        }
+        return ranges
+    }
+
     private func appendNalu(
         to frameBuffer: CMBlockBuffer,
         from dataBuffer: CMBlockBuffer,
         data: UnsafePointer<UInt8>,
         startOffset: Int,
         endOffset: Int
-    ) {
-        let payloadStart = startOffset + 3
-        var payloadEnd = endOffset
-
-        // Trim trailing zeros (from byte stream padding or preceding 4-byte start codes)
-        while payloadEnd > payloadStart && data[payloadEnd - 1] == 0 {
-            payloadEnd -= 1
-        }
+    ) -> Bool {
+        let payloadStart = startOffset
+        let payloadEnd = endOffset
 
         let naluLength = payloadEnd - payloadStart
-        guard naluLength > 0 else { return }
+        guard naluLength > 0 else { return false }
 
         let oldOffset = CMBlockBufferGetDataLength(frameBuffer)
         let prefixSize = 4
@@ -561,11 +565,11 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         )
         guard status == noErr else {
             AppLogger.shared.error("CMBlockBufferAppendMemoryBlock failed: \(status)")
-            return
+            return false
         }
 
         var bigLen = UInt32(naluLength).bigEndian
-        _ = withUnsafeBytes(of: &bigLen) { lenBytes in
+        status = withUnsafeBytes(of: &bigLen) { lenBytes in
             CMBlockBufferReplaceDataBytes(
                 with: lenBytes.baseAddress!,
                 blockBuffer: frameBuffer,
@@ -573,6 +577,8 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
                 dataLength: prefixSize
             )
         }
+
+        guard status == noErr else { return false }
 
         // Attach the data buffer to the frame buffer by reference (zero payload copy)
         status = CMBlockBufferAppendBufferReference(
@@ -585,6 +591,7 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         if status != noErr {
             AppLogger.shared.error("CMBlockBufferAppendBufferReference failed: \(status)")
         }
+        return status == noErr
     }
 }
 

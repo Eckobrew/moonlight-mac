@@ -9,25 +9,30 @@ public final class BonjourDiscoveryService: ObservableObject, @unchecked Sendabl
     @Published public private(set) var isSearching: Bool = false
 
     private var resolver: NetServiceResolver?
+    private var generation: UInt64 = 0
 
     private init() {}
 
     public func startDiscovery() {
         guard !isSearching else { return }
         isSearching = true
+        generation &+= 1
+        let current = generation
         AppLogger.shared.info("Starting Bonjour mDNS host discovery (_nvstream._tcp)...", category: "DISCOVERY")
 
         let r = NetServiceResolver()
         r.onHostResolved = { [weak self] name, ip, port in
             AppLogger.shared.info("mDNS resolved host: \(name) at \(ip):\(port)", category: "DISCOVERY")
             Task { @MainActor [weak self] in
-                self?.verifyAndAddDiscoveredHost(name: name, address: ip, httpPort: port)
+                guard let self, self.isSearching, self.generation == current else { return }
+                self.verifyAndAddDiscoveredHost(name: name, address: ip, httpPort: port)
             }
         }
         r.onSearchStopped = { [weak self] in
             AppLogger.shared.debug("mDNS search stopped", category: "DISCOVERY")
             Task { @MainActor [weak self] in
-                self?.isSearching = false
+                guard let self, self.generation == current else { return }
+                self.isSearching = false
             }
         }
         r.start()
@@ -36,6 +41,7 @@ public final class BonjourDiscoveryService: ObservableObject, @unchecked Sendabl
 
     public func stopDiscovery() {
         AppLogger.shared.info("Stopping host discovery", category: "DISCOVERY")
+        generation &+= 1
         resolver?.stop()
         resolver = nil
         isSearching = false
@@ -44,6 +50,7 @@ public final class BonjourDiscoveryService: ObservableObject, @unchecked Sendabl
     // MARK: - Verified Host Management (Matches Moonlight-Qt)
 
     public func verifyAndAddDiscoveredHost(name: String, address: String, httpPort: Int = 47989) {
+        let current = generation
         // Probe serverinfo first to ensure it's a real Sunshine / GameStream host before publishing
         let candidate = Host(
             name: name,
@@ -61,6 +68,7 @@ public final class BonjourDiscoveryService: ObservableObject, @unchecked Sendabl
             }
 
             await MainActor.run {
+                guard self.generation == current, self.isSearching else { return }
                 if let idx = self.discoveredHosts.firstIndex(where: {
                     $0.address == address ||
                     ($0.serverId != nil && verified.serverId != nil && $0.serverId == verified.serverId)

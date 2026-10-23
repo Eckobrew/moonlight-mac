@@ -77,6 +77,7 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     private let renderQueue = DispatchQueue(label: "com.moonlight.metal.render", qos: .userInteractive)
     private var pendingPixelBuffer: CVPixelBuffer?
     private var isRenderActive: Bool = false
+    private var renderGeneration: UInt64 = 0
 
     /// Set while the layer's drawable format is being switched for HDR. Guarded by `lock`.
     private var isHDRTransitioning: Bool = false
@@ -183,7 +184,8 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         // Preferred: the precompiled `Shaders.metal` from the SwiftPM resource bundle. This avoids a
         // runtime Metal compile on every launch, which otherwise costs hundreds of milliseconds when
         // the default library is unavailable in a plain `swift build` executable.
-        if let bundledLibrary = try? device.makeDefaultLibrary(bundle: .module) {
+        if let bundle = AppResources.bundle(),
+           let bundledLibrary = try? device.makeDefaultLibrary(bundle: bundle) {
             AppLogger.shared.debug("[MetalStreamRenderer] Using precompiled shader library from resource bundle")
             buildPipelines(device: device, library: bundledLibrary)
             return
@@ -484,20 +486,22 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         }
 
         isRenderActive = true
+        let generation = renderGeneration
         lock.unlock()
 
         renderQueue.async { [weak self] in
-            self?.drainRenderQueue()
+            self?.drainRenderQueue(generation: generation)
         }
     }
 
     /// Continuously drains pending frames on the dedicated render queue.
     /// If the window is tabbed out or occluded and nextDrawable() waits, only this queue waits;
     /// VideoToolbox continues running, constantly replacing pendingPixelBuffer with the latest frame.
-    /// When tabbed back in, the single newest frame is rendered instantly with 0ms lag!
-    private func drainRenderQueue() {
+    /// When presentation resumes, the newest pending frame is used.
+    private func drainRenderQueue(generation: UInt64) {
         while true {
             lock.lock()
+            guard generation == renderGeneration else { lock.unlock(); return }
             guard let pixelBuffer = self.pendingPixelBuffer else {
                 self.isRenderActive = false
                 lock.unlock()
@@ -517,8 +521,10 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
                     return
                 }
                 lock.unlock()
-                Thread.sleep(forTimeInterval: 0.002)
-                continue
+                renderQueue.asyncAfter(deadline: .now() + .milliseconds(16)) { [weak self] in
+                    self?.drainRenderQueue(generation: generation)
+                }
+                return
             }
         }
     }
@@ -565,6 +571,8 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
         let is10Bit = pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
             || pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+            || pixelFormat == kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange
+            || pixelFormat == kCVPixelFormatType_444YpCbCr10BiPlanarFullRange
 
         let drawableWidth = Int(layer.drawableSize.width)
         let drawableHeight = Int(layer.drawableSize.height)
@@ -597,8 +605,8 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             pixelBuffer,
             nil,
             uvFormat,
-            width / 2,
-            height / 2,
+            CVPixelBufferGetWidthOfPlane(pixelBuffer, 1),
+            CVPixelBufferGetHeightOfPlane(pixelBuffer, 1),
             1,
             &cvTextureUV
         )
@@ -627,9 +635,11 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
             return true
         }
 
-        let pipeline = isHdrActive
-            ? (pipelineStateBT2020EDR ?? pipelineStateBT709EDR)
-            : pipelineStateBT709
+        let transfer = CVBufferCopyAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey, nil) as? String
+        let frameIsPQ = transfer == (kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String)
+        let pipeline = drawable.texture.pixelFormat == .rgba16Float
+            ? (frameIsPQ ? pipelineStateBT2020EDR : pipelineStateBT709EDR)
+            : (frameIsPQ ? pipelineStateBT2020 : pipelineStateBT709)
         if let pState = pipeline {
             encoder.setRenderPipelineState(pState)
             encoder.setVertexBuffer(positionBuffer, offset: 0, index: 0)
@@ -663,6 +673,7 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
 
     public func reset() {
         lock.lock()
+        renderGeneration &+= 1
         self.pendingPixelBuffer = nil
         self.currentPixelBuffer = nil
         self.isRenderActive = false

@@ -74,3 +74,24 @@ private func read(_ ring: AudioRingBuffer, frames: Int) -> [[Float]]? {
     ring.reset()
     #expect(read(ring, frames: 512) == nil)
 }
+
+@Test func audioLargeRenderQuantaDoNotStarve() {
+    for quantum in [128, 512, 1024, 2048, 4096, 8192] {
+        let ring = AudioRingBuffer(channels: 1)
+        var elapsed = 0
+        var renders = 0
+        for packet in 0..<1000 {
+            writeRamp(to: ring, start: packet * 240, frames: 240)
+            elapsed += 240
+            while elapsed >= quantum {
+                if read(ring, frames: quantum) != nil { renders += 1 }
+                elapsed -= quantum
+            }
+        }
+        #expect(renders > 10, "Audio must leave prebuffering for \(quantum)-frame callbacks")
+        ring.reset()
+        #expect(read(ring, frames: quantum) == nil)
+        writeRamp(to: ring, frames: quantum + 960)
+        #expect(read(ring, frames: quantum) != nil)
+    }
+}

@@ -26,7 +26,6 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         mouseSensitivityY: Double = 1.0,
         mouseSubPixelAccumulation: Bool = true,
         swapWinAltKeys: Bool = true,
-        keyboardLayout: KeyboardLayout = .us,
         systemKeyCaptureMode: SystemKeyCaptureMode = .off,
         onQuit: @escaping @Sendable () -> Void,
         onToggleMouseCapture: (@Sendable () -> Void)? = nil,
@@ -40,7 +39,6 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         self.systemKeyCaptureMode = systemKeyCaptureMode
 
         keyboardMonitor.swapWinAltKeys = swapWinAltKeys
-        keyboardMonitor.keyboardLayout = keyboardLayout
         keyboardMonitor.onQuitRequested = onQuit
         keyboardMonitor.onToggleMouseCaptureRequested = onToggleMouseCapture
         keyboardMonitor.onToggleFullscreenRequested = onToggleFullscreen
@@ -77,6 +75,7 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         mouseMonitor.stop()
         keyboardMonitor.stop()
         gameControllerManager.stop()
+        inputQueue.sync {} // Drain queued releases before the C input stream is destroyed.
     }
 
     public func toggleMouseCapture() {
@@ -90,7 +89,8 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
             systemKeyCaptureMode != .off &&
             mouseMonitor.isRelativeCaptureActive &&
             NSApp.isActive &&
-            (NSApp.keyWindow != nil)
+            (WindowManager.shared.currentWindow?.isKeyWindow == true) &&
+            (WindowManager.shared.currentWindow?.attachedSheet == nil)
 
         if shouldGrab && systemKeyCaptureMode == .fullscreenOnly {
             shouldGrab = isStreamWindowFullscreen()
@@ -132,14 +132,16 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         ]
         for name in names {
             let isResign = (name == NSApplication.didResignActiveNotification)
+            let isWindowResign = (name == NSWindow.didResignKeyNotification)
             // Fullscreen transitions post these notifications before AppKit finishes updating the
             // window's style mask and frame, so evaluating synchronously would read stale state.
             let isFullscreenTransition = (name == NSWindow.didEnterFullScreenNotification ||
                                           name == NSWindow.didExitFullScreenNotification)
-            let obs = NotificationCenter.default.addObserver(forName: name, object: nil, queue: OperationQueue.main) { [weak self] _ in
+            let obs = NotificationCenter.default.addObserver(forName: name, object: nil, queue: OperationQueue.main) { [weak self] notification in
+                let sourceWindow = notification.object as? NSWindow
                 MainActor.assumeIsolated {
                     guard let self = self else { return }
-                    if isResign {
+                    if isResign || (isWindowResign && sourceWindow === WindowManager.shared.currentWindow) {
                         // Never hold the grab while another app is focused
                         KeyboardGrab.shared.setGrabbed(false)
                         self.keyboardMonitor.raiseAllKeys()
