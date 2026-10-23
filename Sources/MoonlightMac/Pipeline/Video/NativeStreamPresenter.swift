@@ -14,6 +14,13 @@ public final class NativeStreamPresenter: @unchecked Sendable {
     private var pendingPixelBuffer: CVPixelBuffer?
     private var isDraining = false
 
+    // Older AVFoundation SDKs do not annotate the display layer as Sendable.
+    // Retain the exact layer across dispatch; renderer operations are serialized
+    // on presentationQueue, including flushes after the view has detached.
+    private struct LayerReference: @unchecked Sendable {
+        let layer: AVSampleBufferDisplayLayer
+    }
+
     private init() {}
 
     public func setDisplayLayer(_ layer: AVSampleBufferDisplayLayer?) {
@@ -129,7 +136,9 @@ public final class NativeStreamPresenter: @unchecked Sendable {
         lock.unlock()
 
         guard let displayLayer = layer else { return }
+        let reference = LayerReference(layer: displayLayer)
         presentationQueue.async {
+            let displayLayer = reference.layer
             if #available(macOS 14.0, *) {
                 displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: true)
             } else {
