@@ -6,6 +6,7 @@ import SwiftUI
 /// Direct CAMetalLayer-backed native view for event-driven stream rendering.
 @MainActor
 public final class MetalStreamView: NSView {
+    public override var acceptsFirstResponder: Bool { true }
     public var onWindowAttached: ((NSWindow) -> Void)?
 
     public override var wantsUpdateLayer: Bool { true }
@@ -55,6 +56,7 @@ public final class MetalStreamView: NSView {
         updateDrawableSize()
         if let window = self.window {
             window.acceptsMouseMovedEvents = true
+            if window.attachedSheet == nil { window.makeFirstResponder(self) }
             onWindowAttached?(window)
             if let layer = self.metalLayer {
                 MetalStreamRenderer.shared.attachLayer(layer)

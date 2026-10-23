@@ -88,7 +88,7 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
     public func updateKeyboardGrabState() {
         var shouldGrab = isActive &&
             systemKeyCaptureMode != .off &&
-            mouseMonitor.isCaptured &&
+            mouseMonitor.isRelativeCaptureActive &&
             NSApp.isActive &&
             (NSApp.keyWindow != nil)
 

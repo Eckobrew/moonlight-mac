@@ -22,19 +22,17 @@ public final class MouseMonitor: @unchecked Sendable {
     /// Independent vertical multiplier, applied on top of `sensitivity`.
     public var sensitivityY: Double = 1.0
 
-    /// When true, non-integer deltas accumulate across events (no movement is dropped).
-    /// When false, each event is rounded independently, which matches moonlight-qt's default
-    /// behavior for mice that already report whole-pixel deltas.
+    /// Preserve fractional sensitivity adjustments after SDL-compatible Cocoa delta conversion.
     public var useSubPixelAccumulation: Bool = true
 
     private var localMonitor: Any?
     private var isMonitoring = false
     private var seenWarp = false
-    private var fractionalX: Double = 0.0
-    private var fractionalY: Double = 0.0
+    private var motion = RelativeMouseMotion()
+    public private(set) var isRelativeCaptureActive = false
+    private var recoveryWorkItems: [DispatchWorkItem] = []
     private var isCursorHidden: Bool = false
-    /// Process-global coalescing flag we changed in `start()`, restored in `stop()`.
-    private var previousCoalescingState: Bool?
+    private var pressedButtons = Set<Int32>()
 
     private var appResignObserver: NSObjectProtocol?
     private var appBecomeActiveObserver: NSObjectProtocol?
@@ -53,19 +51,18 @@ public final class MouseMonitor: @unchecked Sendable {
     public func setStreamWindow(_ window: NSWindow) {
         guard streamWindow !== window else { return }
         streamWindow = window
-        if isMonitoring { applyCursorAssociation() }
+        if isMonitoring { scheduleCaptureRecovery() }
     }
 
     public func refreshCapture() {
         guard isMonitoring else { return }
-        applyCursorAssociation()
+        scheduleCaptureRecovery()
     }
 
     public func start() {
         guard !isMonitoring else { return }
         isMonitoring = true
         if streamWindow == nil { streamWindow = WindowManager.shared.currentWindow }
-        previousCoalescingState = NSEvent.isMouseCoalescingEnabled
 
         let mask: NSEvent.EventTypeMask = [
             .mouseMoved,
@@ -89,9 +86,8 @@ public final class MouseMonitor: @unchecked Sendable {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self = self, self.isCaptured else { return }
-                CGAssociateMouseAndMouseCursorPosition(1)
-                self.restoreMouseCoalescing()
-                self.unhideCursorIfNeeded()
+                self.cancelCaptureRecovery()
+                self.releaseRelativeCapture()
             }
         }
 
@@ -103,7 +99,7 @@ public final class MouseMonitor: @unchecked Sendable {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self = self, self.isCaptured else { return }
-                self.applyCursorAssociation()
+                self.scheduleCaptureRecovery()
             }
         }
 
@@ -115,14 +111,7 @@ public final class MouseMonitor: @unchecked Sendable {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self = self, self.isCaptured else { return }
-                let isKey = (NSApp.keyWindow ?? NSApp.mainWindow)?.isKeyWindow ?? false
-                if !isKey || !NSApp.isActive {
-                    CGAssociateMouseAndMouseCursorPosition(1)
-                    self.restoreMouseCoalescing()
-                    self.unhideCursorIfNeeded()
-                } else {
-                    self.applyCursorAssociation()
-                }
+                self.scheduleCaptureRecovery()
             }
         }
 
@@ -130,15 +119,13 @@ public final class MouseMonitor: @unchecked Sendable {
         // Re-arm when it completes, just as we do after switching back to the app.
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
                      NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification,
-                     NSWindow.didEndSheetNotification] {
+                     NSWindow.didEndSheetNotification, NSWindow.didBecomeMainNotification,
+                     NSWindow.didChangeOcclusionStateNotification, NSWindow.didDeminiaturizeNotification] {
             let observer = NotificationCenter.default.addObserver(forName: name, object: nil, queue: OperationQueue.main) { [weak self] notification in
                 guard let window = notification.object as? NSWindow else { return }
                 MainActor.assumeIsolated {
                     guard let self, window === self.streamWindow else { return }
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self, self.isMonitoring else { return }
-                        self.applyCursorAssociation()
-                    }
+                    self.scheduleCaptureRecovery()
                 }
             }
             windowObservers.append(observer)
@@ -149,11 +136,7 @@ public final class MouseMonitor: @unchecked Sendable {
         if isCaptured {
             isCaptured = false
         }
-        // Only restore the global flag if this monitor is the one that changed it.
-        if let previous = previousCoalescingState {
-            NSEvent.isMouseCoalescingEnabled = previous
-            previousCoalescingState = nil
-        }
+        cancelCaptureRecovery()
         if let monitor = localMonitor {
             NSEvent.removeMonitor(monitor)
             localMonitor = nil
@@ -174,16 +157,14 @@ public final class MouseMonitor: @unchecked Sendable {
         windowObservers.removeAll()
         streamWindow = nil
         isMonitoring = false
-        fractionalX = 0.0
-        fractionalY = 0.0
-        unhideCursorIfNeeded()
-        CGAssociateMouseAndMouseCursorPosition(1)
+        releaseRelativeCapture()
     }
 
     // MARK: - Relative Mouse Capture (Matches Moonlight-Qt SDL Cocoa Backend)
 
     private func updateCursorAssociation() {
-        applyCursorAssociation()
+        if isCaptured { scheduleCaptureRecovery() }
+        else { cancelCaptureRecovery(); releaseRelativeCapture() }
     }
 
     private func hideCursorIfNeeded() {
@@ -198,48 +179,84 @@ public final class MouseMonitor: @unchecked Sendable {
         isCursorHidden = false
     }
 
-    private func applyCursorAssociation() {
-        if isCaptured, NSApp.isActive, let window = streamWindow,
-           window.isKeyWindow, window.attachedSheet == nil {
-            // Forward motion promptly. Limelight already batches high-rate relative
-            // input at 1 ms intervals; AppKit grouping adds another source of bursts.
-            NSEvent.isMouseCoalescingEnabled = false
+    private var focusState: StreamMouseFocus {
+        guard let window = streamWindow else { return StreamMouseFocus(requested: false) }
+        return StreamMouseFocus(requested: isMonitoring && isCaptured,
+                                appActive: NSApp.isActive, windowKey: window.isKeyWindow,
+                                otherKeyWindow: NSApp.keyWindow != nil && NSApp.keyWindow !== window,
+                                visible: window.isVisible && window.occlusionState.contains(.visible),
+                                onActiveSpace: window.isOnActiveSpace,
+                                blockedByDialog: window.attachedSheet != nil || NSApp.modalWindow != nil,
+                                minimized: window.isMiniaturized)
+    }
 
-            // Ensure the streaming window receives continuous mouseMoved events
-            window.acceptsMouseMovedEvents = true
+    private func cancelCaptureRecovery() {
+        recoveryWorkItems.forEach { $0.cancel() }
+        recoveryWorkItems.removeAll()
+    }
 
-            // In CoreGraphics screen coordinates, Y starts at top of the primary screen
-            let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? NSScreen.main?.frame.height ?? 1080.0
-            let centerScreenX = window.frame.midX
-            let centerScreenY = primaryScreenHeight - window.frame.midY
-            let centerPoint = CGPoint(x: centerScreenX, y: centerScreenY)
-
-            // Discard the first motion event after entering relative mode (as SDL does).
-            seenWarp = true
-            CGWarpMouseCursorPosition(centerPoint)
-
-            // Disassociate cursor position to allow infinite relative mouse travel
-            CGAssociateMouseAndMouseCursorPosition(0)
-            hideCursorIfNeeded()
-            fractionalX = 0.0
-            fractionalY = 0.0
-        } else {
-            restoreMouseCoalescing()
-            seenWarp = false
-            fractionalX = 0.0
-            fractionalY = 0.0
-            CGAssociateMouseAndMouseCursorPosition(1)
-            unhideCursorIfNeeded()
+    private func scheduleCaptureRecovery() {
+        cancelCaptureRecovery()
+        guard isMonitoring else { return }
+        // Release immediately when focus genuinely moves away. Retry only after
+        // AppKit has settled its key-window and fullscreen/Space notifications.
+        if focusState.action == .release { releaseRelativeCapture() }
+        for delay in [0.0, 0.1, 0.35, 1.0] {
+            let item = DispatchWorkItem { [weak self] in
+                guard let self, self.isMonitoring else { return }
+                self.applyCursorAssociation()
+            }
+            recoveryWorkItems.append(item)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
         }
+    }
+
+    private func releaseRelativeCapture() {
+        for button in pressedButtons {
+            inputQueue.async { LiSendMouseButtonEvent(CChar(BUTTON_ACTION_RELEASE), button) }
+        }
+        pressedButtons.removeAll()
+        if isRelativeCaptureActive {
+            CGAssociateMouseAndMouseCursorPosition(1)
+            isRelativeCaptureActive = false
+            onCaptureStateChanged?()
+        }
+        seenWarp = false
+        motion.reset()
+        unhideCursorIfNeeded()
+    }
+
+    private func applyCursorAssociation() {
+        if focusState.action == .restoreKeyWindow {
+            // makeKey does not activate an app or raise us above banners.
+            streamWindow?.makeKey()
+        }
+        guard focusState.action == .capture, let window = streamWindow else {
+            releaseRelativeCapture()
+            return
+        }
+        window.acceptsMouseMovedEvents = true
+        if !isRelativeCaptureActive {
+            let primaryHeight = NSScreen.screens.first?.frame.height ?? 1080
+            let point = CGPoint(x: window.frame.midX, y: primaryHeight - window.frame.midY)
+            seenWarp = true
+            CGWarpMouseCursorPosition(point)
+            motion.reset()
+        }
+        // Reassert association after a temporary system interruption, but do not
+        // recenter/drop real motion on every focus/visibility notification.
+        guard CGAssociateMouseAndMouseCursorPosition(0) == .success else {
+            releaseRelativeCapture()
+            return
+        }
+        if !isRelativeCaptureActive {
+            isRelativeCaptureActive = true
+            onCaptureStateChanged?()
+        }
+        hideCursorIfNeeded()
     }
 
     // MARK: - Event Dispatching
-
-    private func restoreMouseCoalescing() {
-        if let previous = previousCoalescingState {
-            NSEvent.isMouseCoalescingEnabled = previous
-        }
-    }
 
     private func handleMouseEvent(_ event: NSEvent) -> NSEvent? {
         if !isCaptured {
@@ -255,9 +272,13 @@ public final class MouseMonitor: @unchecked Sendable {
 
         // Capture intent survives focus changes, but input must not leak into the
         // host while a settings window, sheet, or another app has focus.
-        guard NSApp.isActive, isStreamWindow(event.window), event.window?.isKeyWindow == true else {
+        guard focusState.action == .capture,
+              event.window == nil || isStreamWindow(event.window) else {
             return event
         }
+
+        if !isRelativeCaptureActive { applyCursorAssociation() }
+        guard isRelativeCaptureActive else { return event }
 
         switch event.type {
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
@@ -268,100 +289,39 @@ public final class MouseMonitor: @unchecked Sendable {
                 return nil
             }
 
-            // Extract native Cocoa deltas directly (matches SDL2 / moonlight-qt Cocoa_HandleMouseEvent)
-            var deltaX = Double(event.deltaX)
-            var deltaY = Double(event.deltaY)
-
-            // Apply per-axis scaling on top of the global sensitivity.
-            let scaleX = sensitivity * sensitivityX
-            let scaleY = sensitivity * sensitivityY
-            if scaleX != 1.0 { deltaX *= scaleX }
-            if scaleY != 1.0 { deltaY *= scaleY }
-
-            if !useSubPixelAccumulation {
-                let stepX = Int16(clamping: Int(deltaX.rounded()))
-                let stepY = Int16(clamping: Int(deltaY.rounded()))
-                if stepX != 0 || stepY != 0 {
-                    inputQueue.async {
-                        LiSendMouseMoveEvent(stepX, stepY)
-                    }
-                }
-                return nil
-            }
-
-            // Sub-pixel fractional accumulator: accumulates micro-movements across events
-            // and emits exact integer steps without dropping movement or artificially accelerating slow aim
-            fractionalX += deltaX
-            fractionalY += deltaY
-
-            let stepX = Int16(clamping: Int(fractionalX))
-            let stepY = Int16(clamping: Int(fractionalY))
-
-            fractionalX -= Double(stepX)
-            fractionalY -= Double(stepY)
-
-            if stepX != 0 || stepY != 0 {
-                inputQueue.async {
-                    LiSendMouseMoveEvent(stepX, stepY)
-                }
+            let step = motion.consume(x: Double(event.deltaX), y: Double(event.deltaY),
+                                      scaleX: sensitivity * sensitivityX,
+                                      scaleY: sensitivity * sensitivityY,
+                                      accumulateSensitivity: useSubPixelAccumulation)
+            if step.x != 0 || step.y != 0 {
+                inputQueue.async { LiSendMouseMoveEvent(step.x, step.y) }
             }
             return nil
 
         case .leftMouseDown:
-            inputQueue.async {
-                LiSendMouseButtonEvent(CChar(BUTTON_ACTION_PRESS), Int32(BUTTON_LEFT))
-            }
+            sendButton(BUTTON_LEFT, pressed: true)
             return nil
         case .leftMouseUp:
-            inputQueue.async {
-                LiSendMouseButtonEvent(CChar(BUTTON_ACTION_RELEASE), Int32(BUTTON_LEFT))
-            }
+            sendButton(BUTTON_LEFT, pressed: false)
             return nil
-
         case .rightMouseDown:
-            inputQueue.async {
-                LiSendMouseButtonEvent(CChar(BUTTON_ACTION_PRESS), Int32(BUTTON_RIGHT))
-            }
+            sendButton(BUTTON_RIGHT, pressed: true)
             return nil
         case .rightMouseUp:
-            inputQueue.async {
-                LiSendMouseButtonEvent(CChar(BUTTON_ACTION_RELEASE), Int32(BUTTON_RIGHT))
+            sendButton(BUTTON_RIGHT, pressed: false)
+            return nil
+        case .otherMouseDown, .otherMouseUp:
+            if let button = buttonForNumber(event.buttonNumber) {
+                sendButton(button, pressed: event.type == .otherMouseDown)
             }
             return nil
-
-        case .otherMouseDown:
-            let btn = buttonForNumber(event.buttonNumber)
-            inputQueue.async {
-                LiSendMouseButtonEvent(CChar(BUTTON_ACTION_PRESS), Int32(btn))
-            }
-            return nil
-        case .otherMouseUp:
-            let btn = buttonForNumber(event.buttonNumber)
-            inputQueue.async {
-                LiSendMouseButtonEvent(CChar(BUTTON_ACTION_RELEASE), Int32(btn))
-            }
-            return nil
-
         case .scrollWheel:
-            // Match SDL2 / moonlight-qt scroll handling with macOS acceleration clamp
-            var preciseY = Float(event.hasPreciseScrollingDeltas ? event.scrollingDeltaY * 0.1 : event.deltaY)
-            var preciseX = Float(event.hasPreciseScrollingDeltas ? event.scrollingDeltaX * 0.1 : event.deltaX)
-
-            // Clamp on macOS to prevent wild OS scroll acceleration deltas (matching moonlight-qt mouse.cpp)
-            preciseY = max(-1.0, min(1.0, preciseY))
-            preciseX = max(-1.0, min(1.0, preciseX))
-
-            let scrollY = Int16(clamping: Int(lrint(Double(preciseY * 120.0))))
-            let scrollX = Int16(clamping: Int(lrint(Double(preciseX * 120.0))))
-
-            if scrollY != 0 || scrollX != 0 {
+            let scroll = MouseWheelMotion.consume(x: Double(event.deltaX), y: Double(event.deltaY),
+                                                  precise: event.hasPreciseScrollingDeltas)
+            if scroll.x != 0 || scroll.y != 0 {
                 inputQueue.async {
-                    if scrollY != 0 {
-                        LiSendHighResScrollEvent(scrollY)
-                    }
-                    if scrollX != 0 {
-                        LiSendHighResHScrollEvent(scrollX)
-                    }
+                    if scroll.y != 0 { LiSendHighResScrollEvent(scroll.y) }
+                    if scroll.x != 0 { LiSendHighResHScrollEvent(scroll.x) }
                 }
             }
             return nil
@@ -372,7 +332,6 @@ public final class MouseMonitor: @unchecked Sendable {
     }
 
     /// True only for the window that is currently presenting the stream.
-    ///
     private func isStreamWindow(_ window: NSWindow?) -> Bool {
         guard let window = window else { return false }
         guard let streamWindow else { return false }
@@ -382,7 +341,15 @@ public final class MouseMonitor: @unchecked Sendable {
         return !(window is NSPanel) && window.parent == nil
     }
 
-    private func buttonForNumber(_ number: Int) -> Int32 {
+    private func sendButton(_ button: Int32, pressed: Bool) {
+        if pressed { pressedButtons.insert(button) }
+        else { pressedButtons.remove(button) }
+        inputQueue.async {
+            LiSendMouseButtonEvent(CChar(pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE), button)
+        }
+    }
+
+    private func buttonForNumber(_ number: Int) -> Int32? {
         switch number {
         case 2:
             return BUTTON_MIDDLE
@@ -391,7 +358,7 @@ public final class MouseMonitor: @unchecked Sendable {
         case 4:
             return BUTTON_X2
         default:
-            return BUTTON_MIDDLE
+            return nil
         }
     }
 }

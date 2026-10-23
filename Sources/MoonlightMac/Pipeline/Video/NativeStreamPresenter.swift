@@ -150,6 +150,7 @@ public final class NativeStreamPresenter: @unchecked Sendable {
 
 @MainActor
 public final class SampleBufferStreamView: NSView {
+    public override var acceptsFirstResponder: Bool { true }
     public var onWindowAttached: ((NSWindow) -> Void)?
     public let displayLayer = AVSampleBufferDisplayLayer()
 
@@ -182,6 +183,7 @@ public final class SampleBufferStreamView: NSView {
         super.viewDidMoveToWindow()
         if let window = self.window {
             window.acceptsMouseMovedEvents = true
+            if window.attachedSheet == nil { window.makeFirstResponder(self) }
             onWindowAttached?(window)
         }
     }

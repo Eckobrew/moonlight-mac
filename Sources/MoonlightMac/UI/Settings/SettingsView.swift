@@ -390,8 +390,8 @@ public struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Toggle("Accumulate sub-pixel movement", isOn: $settings.mouseSubPixelAccumulation)
-                Text("When off, each mouse event is rounded independently, matching hosts that expect whole-pixel deltas.")
+                Toggle("Preserve fractional sensitivity", isOn: $settings.mouseSubPixelAccumulation)
+                Text("Preserves fractions introduced by sensitivity multipliers. At 1× sensitivity, movement follows moonlight-qt’s SDL2 macOS conversion.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
