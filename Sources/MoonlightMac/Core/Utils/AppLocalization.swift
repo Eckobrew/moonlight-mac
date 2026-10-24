@@ -6,7 +6,7 @@ enum AppLocalization {
 
     /// Packaged apps must resolve inside Contents/Resources, including after relocation.
     /// SwiftPM's generated accessor embeds a development path and may fatalError.
-    static func resourceBundle(appBundle: Bundle = .main) -> Bundle? {
+    static func resourceBundle(appBundle: Bundle? = nil) -> Bundle? {
         AppResources.bundle(appBundle: appBundle)
     }
 
