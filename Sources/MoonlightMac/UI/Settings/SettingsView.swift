@@ -243,7 +243,9 @@ public struct SettingsView: View {
                         HStack {
                             Text(AppLocalization.text("Remote Bitrate:"))
                             Spacer()
-                            Text("\(settings.remoteBitrateMbps) Mbps")
+                            Text(settings.remoteBitrateMbps == 0
+                                ? "Auto (\((Double(settings.streamBitrateKbps(isRemote: true)) / 1000).formatted()) Mbps)"
+                                : "\(settings.remoteBitrateMbps) Mbps")
                                 .monospacedDigit()
                                 .fontWeight(.semibold)
                         }
@@ -252,11 +254,13 @@ public struct SettingsView: View {
                                 get: { Double(settings.remoteBitrateMbps) },
                                 set: { settings.remoteBitrateMbps = Int($0) }
                             ),
-                            in: 2...100,
+                            in: 0...100,
                             step: 1
                         )
                     }
                     .padding(.leading, 12)
+                    Text("0 uses one quarter of the normal bitrate. Changes apply to the next stream.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             .padding(8)

@@ -168,7 +168,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         quitAppOnStop: Bool = false,
         mouseSensitivity: Double = 1.0,
         enableRemoteBitrate: Bool = false,
-        remoteBitrateMbps: Int = 15,
+        remoteBitrateMbps: Int = 0,
         enableClipboardSync: Bool = false,
         hideUnpairedHosts: Bool = false,
         muteHostAudio: Bool = true,
@@ -250,7 +250,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         self.quitAppOnStop = (try? container.decode(Bool.self, forKey: .quitAppOnStop)) ?? false
         self.mouseSensitivity = (try? container.decode(Double.self, forKey: .mouseSensitivity)) ?? 1.0
         self.enableRemoteBitrate = (try? container.decode(Bool.self, forKey: .enableRemoteBitrate)) ?? false
-        self.remoteBitrateMbps = (try? container.decode(Int.self, forKey: .remoteBitrateMbps)) ?? 15
+        self.remoteBitrateMbps = (try? container.decode(Int.self, forKey: .remoteBitrateMbps)) ?? 0
         self.enableClipboardSync = (try? container.decode(Bool.self, forKey: .enableClipboardSync)) ?? false
         self.hideUnpairedHosts = (try? container.decode(Bool.self, forKey: .hideUnpairedHosts)) ?? false
         self.muteHostAudio = (try? container.decode(Bool.self, forKey: .muteHostAudio)) ?? true

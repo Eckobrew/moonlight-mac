@@ -41,12 +41,19 @@ public struct ClientFeatures: Codable, Equatable, Sendable {
 }
 
 public extension StreamSettings {
+    /// Zero selects 25% of the normal bitrate. Calculate in Kbps to retain fractional Mbps.
+    func streamBitrateKbps(isRemote: Bool) -> Int {
+        let normal = bitrateMbps * 1000
+        guard isRemote && enableRemoteBitrate else { return normal }
+        return remoteBitrateMbps == 0 ? normal / 4 : remoteBitrateMbps * 1000
+    }
+
     var validationMessage: String? {
         if !(width == 0 && height == 0) && (!(256...8192).contains(width) || !(256...8192).contains(height) || width % 2 != 0 || height % 2 != 0) {
             return "Resolution must use even dimensions between 256 and 8192, or Native."
         }
         if !(1...500).contains(fps) { return "Frame rate must be between 1 and 500 FPS." }
-        if !(1...500).contains(bitrateMbps) || !(1...500).contains(remoteBitrateMbps) { return "Bitrate must be between 1 and 500 Mbps." }
+        if !(1...500).contains(bitrateMbps) || !(0...500).contains(remoteBitrateMbps) { return "Bitrate must be between 1 and 500 Mbps; remote bitrate can also be 0 (automatic)." }
         if !(256...1408).contains(packetSize) || packetSize % 16 != 0 { return "Packet size must be a multiple of 16 between 256 and 1408." }
         return nil
     }

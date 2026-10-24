@@ -409,19 +409,13 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             // subtraction in the SDP. Passing STREAM_CFG_LOCAL/.REMOTE skipped both.
             streamConfig.streamingRemotely = Int32(STREAM_CFG_AUTO)
 
-            let chosenBitrateMbps: Int
-            if isRemote && settings.enableRemoteBitrate {
-                chosenBitrateMbps = settings.remoteBitrateMbps
-                AppLogger.shared.info("Using custom remote bitrate: \(chosenBitrateMbps) Mbps (connection evaluated as remote)", category: "SESSION")
-            } else {
-                chosenBitrateMbps = settings.bitrateMbps
-                AppLogger.shared.info("Using standard bitrate: \(chosenBitrateMbps) Mbps (connection evaluated as local)", category: "SESSION")
-            }
+            let chosenBitrateKbps = settings.streamBitrateKbps(isRemote: isRemote)
+            AppLogger.shared.info("Using \(chosenBitrateKbps) Kbps (\(isRemote ? "remote" : "local") connection)", category: "SESSION")
 
             streamConfig.width = Int32(settings.width)
             streamConfig.height = Int32(settings.height)
             streamConfig.fps = Int32(settings.fps)
-            streamConfig.bitrate = Int32(chosenBitrateMbps * 1000)
+            streamConfig.bitrate = Int32(chosenBitrateKbps)
             streamConfig.packetSize = Int32(settings.packetSize)
             streamConfig.supportedVideoFormats = settings.videoFormatMask
             streamConfig.clientRefreshRateX100 = refreshRateX100
@@ -641,8 +635,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         if let settings = activeSettings {
             updated.targetFps = settings.fps
             let isRemote = (streamConfigRemotely == STREAM_CFG_REMOTE)
-            let activeBitrate = (isRemote && settings.enableRemoteBitrate) ? settings.remoteBitrateMbps : settings.bitrateMbps
-            updated.bitrateMbps = Double(activeBitrate)
+            updated.bitrateMbps = Double(settings.streamBitrateKbps(isRemote: isRemote)) / 1000
             let size = negotiatedVideoSize ?? CGSize(width: settings.width, height: settings.height)
             updated.resolution = "\(Int(size.width))x\(Int(size.height))"
             updated.vsyncEnabled = settings.videoRenderer == .native || settings.enableVsync
