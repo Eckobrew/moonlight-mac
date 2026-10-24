@@ -137,6 +137,8 @@ settings; desktop-shortcut sessions quit the game they launched on exit.
   (for example, 25 Mbps becomes 6.25 Mbps). With the remote override disabled,
   both local and remote sessions use the normal bitrate. Changes take effect on
   the next connection; this does not measure bandwidth or tune it during a stream.
+  NAT hairpin connections through the same public gateway count as local and keep
+  the normal bitrate.
 - **Renderer, V-Sync and frame pacing:** select the presentation path and whether
   to pace frames against display refresh. Manual V-Sync control applies to Metal;
   the native renderer manages synchronization automatically.
@@ -197,8 +199,13 @@ unreachable primary address. The second opens Desktop, checks decoded frames at
 MOONLIGHT_LIVE_HOST=Nathan-PC MOONLIGHT_LIVE_STREAM=1 swift test --jobs 4
 ```
 
-Use your saved PC's name for `MOONLIGHT_LIVE_HOST`. These tests do not verify
-Internet routing or subjective mouse, audio or window behaviour.
+Use your saved PC's name for `MOONLIGHT_LIVE_HOST`. Add `MOONLIGHT_LIVE_WAN=1`
+to the command to discover this gateway's public IP through STUN, force fallback
+through that address, and assert that a hairpin stream retains the normal bitrate.
+This requires working host port forwarding and NAT loopback on the same gateway.
+`MOONLIGHT_LIVE_WAN_ADDRESS` optionally specifies the public address explicitly.
+These tests do not verify off-site routing or subjective mouse, audio or window
+behaviour.
 
 
 The [macOS CI workflow](.github/workflows/macos.yml) runs tests and release

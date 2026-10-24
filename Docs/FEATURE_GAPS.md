@@ -79,3 +79,12 @@ Two opt-in hardware tests supplement the 73 default regression tests. Desktop
 stream testing checks decoded frames, configuration changes between 40 and
 20 Mbps, resume and cleanup. Subjective input/audio/window behaviour and a true
 WAN connection remain separate hardware checks.
+
+
+The live WAN/hairpin test also passed: authenticated fallback, app listing,
+launch/resume and decoded video all used the public address. The client classified
+this shared-gateway route as local and selected the full 40 and 20 Mbps targets,
+with the automatic remote override enabled. The two runs decoded 67 and 60 frames
+respectively and sampled RTT at 4 and 2 ms. The test's Desktop session was closed
+afterward. Hairpinning deliberately does not exercise the remote-bitrate branch;
+that branch remains covered by policy tests until an off-site test is available.

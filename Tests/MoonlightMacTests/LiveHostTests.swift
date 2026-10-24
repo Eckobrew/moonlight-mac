@@ -44,7 +44,26 @@ import Testing
     let data = try #require(UserDefaults.sharedApp.data(forKey: "com.moonlight.mac.savedHosts"))
     let hosts = try JSONDecoder().decode([MoonlightMac.Host].self, from: data)
     let saved = try #require(hosts.first { $0.name == name })
-    let host = try await HostWakeConnection.resolve(host: saved, onWaking: {})
+    var host = try await HostWakeConnection.resolve(host: saved, onWaking: {})
+    if ProcessInfo.processInfo.environment["MOONLIGHT_LIVE_WAN"] == "1" {
+        let discovered = await Task.detached { NetworkReachability.queryClientExternalAddress() }.value
+        let address = try #require(
+            ProcessInfo.processInfo.environment["MOONLIGHT_LIVE_WAN_ADDRESS"] ?? discovered,
+            "Could not discover the gateway WAN address; set MOONLIGHT_LIVE_WAN_ADDRESS explicitly")
+        try #require(NetworkReachability.isUsableRemoteAddress(address))
+        try #require(!NetworkReachability.isLocalNetworkAddress(address))
+        // Deliberately make the primary unreachable. All authenticated traffic,
+        // including stream startup, must use the public address as its fallback.
+        var fallback = host
+        fallback.address = "127.0.0.2"
+        fallback.activeAddress = nil
+        fallback.remoteAddress = address
+        host = try await SunshineHTTPClient.shared.fetchServerInfo(host: fallback).0
+        try #require(host.effectiveAddress == address)
+        let isRemote = await NetworkReachability.isRemoteSession(host: host)
+        try #require(!isRemote, "A shared-gateway hairpin connection must remain local")
+        print("LIVE WAN: public-address fallback authenticated; hairpin correctly classified local")
+    }
     let apps = try await SunshineHTTPClient.shared.fetchAppList(host: host)
     let desktop = try #require(apps.first { $0.title.caseInsensitiveCompare("Desktop") == .orderedSame })
     try #require(host.currentAppId == nil || host.currentAppId == desktop.id, "Another host app is running")
