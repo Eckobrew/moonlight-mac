@@ -13,6 +13,9 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
     public var name: String
     public var address: String
     public var remoteAddress: String?
+    public var remoteHTTPSPort: Int?
+    public var remoteHTTPPort: Int?
+    public var remoteAddressVerification: String?
     public var activeAddress: String?
     public var httpsPort: Int
     public var httpPort: Int
@@ -87,14 +90,22 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
         return "[\(address)]"
     }
 
+    public var effectiveHTTPSPort: Int {
+        effectiveAddress == remoteAddress ? (remoteHTTPSPort ?? httpsPort) : httpsPort
+    }
+
+    public var effectiveHTTPPort: Int {
+        effectiveAddress == remoteAddress ? (remoteHTTPPort ?? httpPort) : httpPort
+    }
+
     var urlAddress: String { Self.urlHost(effectiveAddress) }
 
     public var baseUrlHttps: URL? {
-        URL(string: "https://\(urlAddress):\(httpsPort)")
+        URL(string: "https://\(urlAddress):\(effectiveHTTPSPort)")
     }
 
     public var baseUrlHttp: URL? {
-        URL(string: "http://\(urlAddress):\(httpPort)")
+        URL(string: "http://\(urlAddress):\(effectiveHTTPPort)")
     }
 
     public var isOnline: Bool {

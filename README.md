@@ -102,10 +102,15 @@ reinstalling or replacing a host, unpair it and pair again.
 
 Remote connections require a working network route to the host, such as a VPN or
 an appropriately configured host/network. Discovery does not configure remote
-access automatically. Host Details shows the reported **Remote IP** and the active
-address. The client checks the primary address first and falls back to the saved
-remote IP, with the same certificate and host-identity checks. An unreported or
-unspecified remote IP cannot provide a fallback.
+access automatically. For paired PCs on a directly connected local IPv4 subnet, the
+client uses STUN when the host does not report an external address. A remote candidate
+is saved only after an HTTPS serverinfo check matches both the paired certificate and
+server ID, and the reported HTTP port returns the same server ID. Host Details shows the **Remote IP**, verified HTTPS port and check result.
+Checks are cached for five minutes; **Refresh** in Host Details runs a fresh check. Routers without NAT loopback may prevent verification
+from home even when remote access would work from outside. Discovery does not open ports.
+Remote port mappings are stored separately from LAN listener ports. The client checks
+the primary address first and falls back to the saved remote IP, with the same
+certificate and host-identity checks. Unverified candidates cannot provide a fallback.
 
 ## Streaming shortcuts
 

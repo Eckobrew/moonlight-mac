@@ -125,3 +125,123 @@ public enum NetworkReachability {
         }.value
     }
 }
+
+/// STUN discovers the client's address. Only infer a host address when its IPv4
+/// is on a physical local subnet; a private address reached through a VPN is insufficient.
+extension NetworkReachability {
+    static func isDirectlyConnectedIPv4(_ address: String) -> Bool {
+        guard isLocalNetworkAddress(address), !isTailscaleAddress(address) else { return false }
+        var target = in_addr()
+        guard inet_pton(AF_INET, normalizedAddress(address), &target) == 1 else { return false }
+        var interfaces: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaces) == 0 else { return false }
+        defer { freeifaddrs(interfaces) }
+        var current = interfaces
+        while let entry = current {
+            defer { current = entry.pointee.ifa_next }
+            let interface = entry.pointee
+            let flags = Int32(interface.ifa_flags)
+            guard flags & IFF_UP != 0, flags & (IFF_LOOPBACK | IFF_POINTOPOINT) == 0,
+                  String(cString: interface.ifa_name).hasPrefix("en"),
+                  let addr = interface.ifa_addr, addr.pointee.sa_family == AF_INET,
+                  let mask = interface.ifa_netmask else { continue }
+            let local = UnsafeRawPointer(addr).assumingMemoryBound(to: sockaddr_in.self).pointee.sin_addr.s_addr
+            let subnet = UnsafeRawPointer(mask).assumingMemoryBound(to: sockaddr_in.self).pointee.sin_addr.s_addr
+            if subnet != 0, target.s_addr & subnet == local & subnet { return true }
+        }
+        return false
+    }
+}
+
+actor RemoteAddressDiscovery {
+    static let shared = RemoteAddressDiscovery()
+    typealias Verifier = @Sendable (String, Int, Int, Host) async -> Bool
+    private struct Key: Hashable {
+        let id: UUID
+        let certificate: Data?
+        let serverID: String?
+        let address: String
+        let httpsPort: Int
+        let httpPort: Int
+        let reportedAddress: String?
+        let reportedHTTPPort: Int?
+    }
+    private struct Result: Sendable {
+        var address: String?
+        var httpsPort: Int?
+        var httpPort: Int?
+        var status: String
+    }
+    private var attempts: [Key: (Date, Task<Result, Never>)] = [:]
+    private var stun: (Date, Task<String?, Never>)?
+    private let query: @Sendable () async -> String?
+    private let isLocal: @Sendable (String) -> Bool
+
+    init(query: @escaping @Sendable () async -> String? = {
+        await Task.detached(priority: .utility) { NetworkReachability.queryClientExternalAddress() }.value
+    }, isLocal: @escaping @Sendable (String) -> Bool = { NetworkReachability.isDirectlyConnectedIPv4($0) }) {
+        self.query = query
+        self.isLocal = isLocal
+    }
+
+    func update(host: Host, reportedAddress: String?, reportedHTTPPort: Int?, force: Bool = false, verify: @escaping Verifier) async -> Host {
+        var updated = host
+        guard host.isSecurelyPaired, let identity = host.serverId, !identity.isEmpty else {
+            updated.remoteAddressVerification = "Pair with this PC to verify remote access."
+            return updated
+        }
+        let key = Key(id: host.id, certificate: host.serverCertificateDER, serverID: host.serverId,
+                      address: host.address, httpsPort: host.httpsPort, httpPort: host.httpPort,
+                      reportedAddress: reportedAddress, reportedHTTPPort: reportedHTTPPort)
+        let task: Task<Result, Never>
+        if !force, let (date, existing) = attempts[key], Date().timeIntervalSince(date) < 300 {
+            task = existing
+        } else {
+            // Share one STUN request across hosts and cache failures too.
+            let stunTask: Task<String?, Never>?
+            if reportedAddress.map(NetworkReachability.isUsableRemoteAddress) != true && isLocal(host.address) {
+                if !force, let (date, existing) = stun, Date().timeIntervalSince(date) < 300 {
+                    stunTask = existing
+                } else {
+                    let pending = Task { await query() }
+                    stun = (Date(), pending)
+                    stunTask = pending
+                }
+            } else {
+                stunTask = nil
+            }
+            task = Task {
+                let reported = reportedAddress.flatMap { NetworkReachability.isUsableRemoteAddress($0) ? NetworkReachability.normalizedAddress($0) : nil }
+                let discovered = await stunTask?.value
+                guard let address = reported ?? discovered, NetworkReachability.isUsableRemoteAddress(address) else {
+                    return Result(status: "No remote address available from the host or local STUN discovery.")
+                }
+                let httpPort = reportedHTTPPort.flatMap { (1...65535).contains($0) ? $0 : nil } ?? host.httpPort
+                // GameStream normally maps HTTPS five ports below HTTP. This is
+                // only a candidate: never accept the derived port without pinned TLS.
+                var ports = [host.remoteHTTPSPort ?? host.httpsPort]
+                if !ports.contains(host.httpsPort) { ports.append(host.httpsPort) }
+                if httpPort > 5 && !ports.contains(httpPort - 5) { ports.append(httpPort - 5) }
+                for port in ports where (1...65535).contains(port) {
+                    if await verify(address, port, httpPort, host) {
+                        return Result(address: address, httpsPort: port, httpPort: httpPort,
+                                      status: "Verified: HTTPS certificate and server ID match; HTTP server ID matches (\(reported == nil ? "STUN" : "host-reported")).")
+                    }
+                }
+                return Result(status: "Could not verify \(address) on HTTP port \(httpPort) and HTTPS ports \(ports.map(String.init).joined(separator: ", ")). The endpoint may be unreachable, or its identity did not match. Router loopback may be unavailable.")
+            }
+            attempts = attempts.filter { Date().timeIntervalSince($0.value.0) < 300 }
+            attempts[key] = (Date(), task)
+        }
+        let result = await task.value
+        // Failed candidates never overwrite a previously saved route. Every use
+        // of that route still rechecks the pin and server ID in fetchServerInfo.
+        if let address = result.address {
+            updated.remoteAddress = address
+            updated.remoteHTTPSPort = result.httpsPort
+            updated.remoteHTTPPort = result.httpPort
+        }
+        updated.remoteAddressVerification = result.status
+        return updated
+    }
+}

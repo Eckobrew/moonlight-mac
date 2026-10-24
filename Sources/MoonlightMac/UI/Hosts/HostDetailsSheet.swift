@@ -88,6 +88,11 @@ struct HostDetailsSheet: View {
             row("Name", host.name)
             row("Address", host.address)
             row("Remote IP", host.remoteAddress.flatMap { $0.isEmpty ? nil : $0 } ?? "Not reported")
+            if let port = host.remoteHTTPPort { row("Remote HTTP port", "\(port)") }
+            if let port = host.remoteHTTPSPort { row("Remote HTTPS port", "\(port)") }
+            if let verification = host.remoteAddressVerification {
+                Text(verification).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
             if let active = host.activeAddress, active != host.address {
                 row("Active address", active)
             }
@@ -166,7 +171,7 @@ struct HostDetailsSheet: View {
         refreshError = nil
         Task {
             do {
-                let (updated, _) = try await SunshineHTTPClient.shared.fetchServerInfo(host: host)
+                let (updated, _) = try await SunshineHTTPClient.shared.fetchServerInfo(host: host, forceRemoteVerification: true)
                 await MainActor.run {
                     appState.addOrUpdateHost(updated)
                     isRefreshing = false
@@ -189,7 +194,10 @@ struct HostDetailsSheet: View {
         Active: \(host.activeAddress ?? "none")
         Server ID: \(host.serverId ?? "none")
         MAC: \(host.macAddress ?? "none")
-        HTTPS: \(host.httpsPort)  HTTP: \(host.httpPort)
+        HTTPS: \(host.effectiveHTTPSPort)  HTTP: \(host.effectiveHTTPPort)
+        Remote verification: \(host.remoteAddressVerification ?? "Not checked")
+        Remote HTTPS port: \(host.remoteHTTPSPort.map(String.init) ?? "Not verified")
+        Remote HTTP port: \(host.remoteHTTPPort.map(String.init) ?? "Not verified")
         Paired: \(host.isSecurelyPaired)
         App version: \(host.appVersion)
         GFE version: \(host.gfeVersion)

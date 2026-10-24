@@ -163,6 +163,8 @@ public final class AppState: @unchecked Sendable {
             }
             if merged.remoteAddress == nil || merged.remoteAddress?.isEmpty == true {
                 merged.remoteAddress = hosts[idx].remoteAddress
+                merged.remoteHTTPSPort = hosts[idx].remoteHTTPSPort
+                merged.remoteHTTPPort = hosts[idx].remoteHTTPPort
             }
             if merged.macAddress == nil || merged.macAddress?.isEmpty == true {
                 merged.macAddress = hosts[idx].macAddress
@@ -263,6 +265,8 @@ public final class AppState: @unchecked Sendable {
                         }
                         if merged.remoteAddress == nil || merged.remoteAddress?.isEmpty == true {
                             merged.remoteAddress = self.hosts[idx].remoteAddress
+                            merged.remoteHTTPSPort = self.hosts[idx].remoteHTTPSPort
+                            merged.remoteHTTPPort = self.hosts[idx].remoteHTTPPort
                         }
                         if merged.appVersion.isEmpty && !self.hosts[idx].appVersion.isEmpty {
                             merged.appVersion = self.hosts[idx].appVersion

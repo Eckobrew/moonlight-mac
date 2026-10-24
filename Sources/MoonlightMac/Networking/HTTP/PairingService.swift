@@ -54,7 +54,7 @@ public final class PairingService: @unchecked Sendable {
         // Stage 1: phrase=getservercert
         // ==========================================
         AppLogger.shared.info("[Stage 1/5] Waiting for user to enter PIN on host (phrase=getservercert)...", category: "PAIRING")
-        let getCertUrl = "http://\(host.urlAddress):\(host.httpPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&phrase=getservercert&salt=\(clientSaltHex)&clientcert=\(clientCertHex)"
+        let getCertUrl = "http://\(host.urlAddress):\(host.effectiveHTTPPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&phrase=getservercert&salt=\(clientSaltHex)&clientcert=\(clientCertHex)"
         
         let (_, certDict) = try await httpClient.fetchRaw(urlString: getCertUrl, timeout: 180.0, usePairingSession: true)
 
@@ -89,7 +89,7 @@ public final class PairingService: @unchecked Sendable {
         }
         let challengeHex = CryptoUtils.hexString(encryptedChallenge)
 
-        let clientChallengeUrl = "http://\(host.urlAddress):\(host.httpPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&clientchallenge=\(challengeHex)"
+        let clientChallengeUrl = "http://\(host.urlAddress):\(host.effectiveHTTPPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&clientchallenge=\(challengeHex)"
         let (_, challengeDict) = try await httpClient.fetchRaw(urlString: clientChallengeUrl, timeout: 10.0)
 
         guard challengeDict["paired"] == "1" else {
@@ -127,7 +127,7 @@ public final class PairingService: @unchecked Sendable {
         }
         let serverChallengeRespHex = CryptoUtils.hexString(encryptedChallengeResponseHash)
 
-        let serverChallengeRespUrl = "http://\(host.urlAddress):\(host.httpPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&serverchallengeresp=\(serverChallengeRespHex)"
+        let serverChallengeRespUrl = "http://\(host.urlAddress):\(host.effectiveHTTPPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&serverchallengeresp=\(serverChallengeRespHex)"
         let (_, serverRespDict) = try await httpClient.fetchRaw(urlString: serverChallengeRespUrl, timeout: 10.0)
 
         guard serverRespDict["paired"] == "1" else {
@@ -172,7 +172,7 @@ public final class PairingService: @unchecked Sendable {
         clientPairingSecret.append(clientSignature)
         let clientPairingSecretHex = CryptoUtils.hexString(clientPairingSecret)
 
-        let clientSecretUrl = "http://\(host.urlAddress):\(host.httpPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&clientpairingsecret=\(clientPairingSecretHex)"
+        let clientSecretUrl = "http://\(host.urlAddress):\(host.effectiveHTTPPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&clientpairingsecret=\(clientPairingSecretHex)"
         let (_, clientSecretDict) = try await httpClient.fetchRaw(urlString: clientSecretUrl, timeout: 10.0)
 
         guard clientSecretDict["paired"] == "1" else {
@@ -185,7 +185,7 @@ public final class PairingService: @unchecked Sendable {
         // Stage 5: phrase=pairchallenge over HTTPS
         // ==========================================
         AppLogger.shared.info("[Stage 5/5] Establishing mTLS encrypted verification (phrase=pairchallenge)...", category: "PAIRING")
-        let pairChallengeUrl = "https://\(host.urlAddress):\(host.httpsPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&phrase=pairchallenge"
+        let pairChallengeUrl = "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/pair?uniqueid=\(uniqueId)&devicename=roth&updateState=1&phrase=pairchallenge"
         let (_, pairChallengeDict) = try await httpClient.fetchRaw(urlString: pairChallengeUrl, timeout: 15.0, certificateDER: serverCertificateDER)
 
         guard pairChallengeDict["paired"] == "1" else {

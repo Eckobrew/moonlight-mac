@@ -115,10 +115,12 @@ server.serve_forever()
     let pem = try String(contentsOf: directory.appendingPathComponent("cert.pem"), encoding: .utf8)
     let pin = try #require(HostTrust.certificateDER(pem: pem))
     let port = try reserveTestPort()
+    var httpPort = try reserveTestPort()
+    while httpPort == port { httpPort = try reserveTestPort() }
     let server = Process()
     server.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     server.arguments = ["python3", "-c", """
-import http.server, ssl, sys
+import http.server, ssl, sys, threading
 from urllib.parse import urlsplit
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -127,6 +129,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # still proceed after validation, using the same pinned certificate.
         if path == '/serverinfo':
             identity = 'wrong-host' if self.headers.get('Host', '').startswith('localhost:') else 'expected-host'
+            if self.server.server_port == int(sys.argv[3]) and 'wrong-http-client' in self.path:
+                identity = 'wrong-http-host'
             content = '<hostname>Fixture</hostname><uniqueid>' + identity + '</uniqueid><appversion>7.1.0.-1</appversion><PairStatus>1</PairStatus><ExternalIP>0.0.0.0</ExternalIP><ExternalPort>12345</ExternalPort>'
         elif path == '/applist':
             content = '<App><ID>1</ID><AppTitle>Desktop</AppTitle></App>'
@@ -142,12 +146,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
     def log_message(self, *args):
         pass
+plain = http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[3])), Handler)
+threading.Thread(target=plain.serve_forever, daemon=True).start()
 server = http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[2])), Handler)
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(sys.argv[1] + '/cert.pem', sys.argv[1] + '/key.pem')
 server.socket = context.wrap_socket(server.socket, server_side=True)
 server.serve_forever()
-""", directory.path, String(port)]
+""", directory.path, String(port), String(httpPort)]
     server.standardInput = FileHandle.nullDevice
     server.standardOutput = FileHandle.nullDevice
     server.standardError = FileHandle.nullDevice
@@ -164,6 +170,24 @@ server.serve_forever()
     }
     try #require(ready)
     let client = SunshineHTTPClient(uniqueID: { "test-client" })
+    let expected = Host(name: "Fixture", address: "127.0.0.1", serverId: "expected-host",
+                        isPaired: true, serverCertificateDER: pin)
+    #expect(await client.verifyRemoteEndpoint(address: "127.0.0.1", httpsPort: Int(port), httpPort: Int(httpPort), host: expected))
+    // Even with the correct certificate, a different server UUID must fail.
+    #expect(await !client.verifyRemoteEndpoint(address: "localhost", httpsPort: Int(port), httpPort: Int(httpPort), host: expected))
+    let wrongHTTPClient = SunshineHTTPClient(uniqueID: { "wrong-http-client" })
+    #expect(await !wrongHTTPClient.verifyRemoteEndpoint(address: "127.0.0.1", httpsPort: Int(port), httpPort: Int(httpPort), host: expected))
+    // An open plaintext listener cannot stand in for pinned HTTPS.
+    #expect(await !client.verifyRemoteEndpoint(address: "127.0.0.1", httpsPort: Int(httpPort), host: expected))
+    #expect(await !client.verifyRemoteEndpoint(address: "127.0.0.1", httpsPort: 0, host: expected))
+    var wrongIdentity = expected
+    wrongIdentity.serverId = "other-PC"
+    #expect(await !client.verifyRemoteEndpoint(address: "127.0.0.1", httpsPort: Int(port), host: wrongIdentity))
+    var noIdentity = expected
+    noIdentity.serverId = nil
+    #expect(await !client.verifyRemoteEndpoint(address: "127.0.0.1", httpsPort: Int(port), host: noIdentity))
+    // The reported HTTP port must answer as the same PC too.
+    #expect(await !client.verifyRemoteEndpoint(address: "127.0.0.1", httpsPort: Int(port), httpPort: Int(port), host: expected))
     for primary in ["127.0.0.2", "localhost"] {
         let host = Host(name: "Fixture", address: primary, remoteAddress: "127.0.0.1",
                         httpsPort: Int(port), httpPort: 47989, serverId: "expected-host",
@@ -182,9 +206,21 @@ server.serve_forever()
         let resumed = try await client.resumeApp(host: resolved, settings: StreamSettings(), rikey: String(repeating: "0", count: 32), rikeyId: 1)
         #expect(resumed == url)
     }
+    var mapped = Host(name: "Mapped ports", address: "127.0.0.2", remoteAddress: "127.0.0.1",
+                      httpsPort: 9, httpPort: 8, serverId: "expected-host",
+                      isPaired: true, serverCertificateDER: pin)
+    mapped.remoteHTTPSPort = Int(port)
+    mapped.remoteHTTPPort = Int(httpPort)
+    let (mappedRoute, _) = try await client.fetchServerInfo(host: mapped)
+    #expect(mappedRoute.effectiveHTTPSPort == Int(port))
+    #expect(mappedRoute.httpsPort == 9)
+    let mappedApps = try await client.fetchAppList(host: mappedRoute)
+    #expect(mappedApps.first?.boxArtUrl?.port == Int(port))
+    #expect(mappedApps.first?.title == "Desktop")
     let differentCertificateURL = try #require(Bundle.module.url(forResource: "host.der", withExtension: nil, subdirectory: "Fixtures"))
     let wrongPin = try Data(contentsOf: differentCertificateURL)
     let untrusted = Host(name: "Wrong pin", address: "127.0.0.2", remoteAddress: "127.0.0.1",
                          httpsPort: Int(port), isPaired: true, serverCertificateDER: wrongPin)
+    #expect(await !client.verifyRemoteEndpoint(address: "127.0.0.1", httpsPort: Int(port), host: untrusted))
     await #expect(throws: (any Error).self) { try await client.fetchServerInfo(host: untrusted) }
 }

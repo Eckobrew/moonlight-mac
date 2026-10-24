@@ -121,13 +121,14 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         return nil
     }
 
-    public func fetchServerInfo(host: Host) async throws -> (Host, [String: String]) {
+    public func fetchServerInfo(host: Host, forceRemoteVerification: Bool = false) async throws -> (Host, [String: String]) {
         let uniqueId = uniqueID()
 
         AppLogger.shared.info("Fetching serverinfo for \(host.address)...", category: "HTTP")
 
         var candidates = [host.address]
-        if let remote = host.remoteAddress?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if host.isSecurelyPaired, host.serverId?.isEmpty == false,
+           let remote = host.remoteAddress?.trimmingCharacters(in: .whitespacesAndNewlines),
            !remote.isEmpty, remote != host.address {
             candidates.append(remote)
         }
@@ -136,7 +137,9 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         for address in candidates {
             try Task.checkCancellation()
             guard let (data, isHTTPS) = await queryServerInfo(
-                address: address, httpsPort: host.httpsPort, httpPort: host.httpPort,
+                address: address,
+                httpsPort: address == host.remoteAddress ? (host.remoteHTTPSPort ?? host.httpsPort) : host.httpsPort,
+                httpPort: address == host.remoteAddress ? (host.remoteHTTPPort ?? host.httpPort) : host.httpPort,
                 uniqueId: uniqueId, certificateDER: host.serverCertificateDER
             ) else { continue }
             let metadata = parseSimpleXML(data: data)
@@ -171,14 +174,11 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         if let mac = dict["mac"], !mac.isEmpty, SunshineHTTPClient.isValidMacAddress(mac) {
             updatedHost.macAddress = mac
         }
-        if let httpsPortStr = dict["HttpsPort"], let port = Int(httpsPortStr), (1...65535).contains(port) {
+        if activeAddr == host.address, let httpsPortStr = dict["HttpsPort"], let port = Int(httpsPortStr), (1...65535).contains(port) {
             updatedHost.httpsPort = port
         }
         // ExternalPort is a WAN HTTP mapping, not the host's LAN HTTP port.
         // Do not overwrite the configured listener port during every refresh.
-        if let extIp = dict["ExternalIP"], NetworkReachability.isUsableRemoteAddress(extIp) {
-            updatedHost.remoteAddress = NetworkReachability.normalizedAddress(extIp)
-        }
         if let codec = dict["ServerCodecModeSupport"], let codecVal = Int32(codec) {
             updatedHost.serverCodecModeSupport = codecVal
         }
@@ -211,13 +211,58 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
             }
         }
 
+        if activeAddr == host.address {
+            updatedHost = await RemoteAddressDiscovery.shared.update(
+                host: updatedHost, reportedAddress: dict["ExternalIP"],
+                reportedHTTPPort: dict["ExternalPort"].flatMap(Int.init), force: forceRemoteVerification
+            ) { [self] address, port, httpPort, expectedHost in
+                await verifyRemoteEndpoint(address: address, httpsPort: port, httpPort: httpPort, host: expectedHost)
+            }
+        }
+
         AppLogger.shared.info("Parsed host [\(updatedHost.name)] (Active: \(activeAddr), Remote: \(updatedHost.remoteAddress ?? "none")) - Paired: \(updatedHost.isPaired), Status: \(updatedHost.status)", category: "HTTP")
         return (updatedHost, dict)
     }
 
+    /// A reachable socket or an HTTP UUID alone cannot authenticate a remote PC.
+    func verifyRemoteEndpoint(address: String, httpsPort: Int, httpPort: Int? = nil, host: Host) async -> Bool {
+        guard host.isSecurelyPaired, let expectedID = host.serverId, !expectedID.isEmpty,
+              (1...65535).contains(httpsPort),
+              let url = URL(string: "https://\(Host.urlHost(address)):\(httpsPort)/serverinfo?uniqueid=\(uniqueID())") else {
+            return false
+        }
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 3
+            let (data, response) = try await self.data(for: request, host: host)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
+            let metadata = parseSimpleXML(data: data)
+            guard (metadata["status_code"] == nil || metadata["status_code"] == "200"),
+                  metadata["uniqueid"].map({ expectedID.caseInsensitiveCompare($0) == .orderedSame }) == true else {
+                return false
+            }
+            // ExternalPort describes HTTP. Check that listener too, after the
+            // HTTPS endpoint has authenticated the PC. HTTP alone is never proof.
+            if let httpPort {
+                guard (1...65535).contains(httpPort),
+                      let httpURL = URL(string: "http://\(Host.urlHost(address)):\(httpPort)/serverinfo?uniqueid=\(uniqueID())") else { return false }
+                var httpRequest = URLRequest(url: httpURL)
+                httpRequest.timeoutInterval = 3
+                let (httpData, httpResponse) = try await defaultSession.data(for: httpRequest)
+                let httpMetadata = parseSimpleXML(data: httpData)
+                guard (httpResponse as? HTTPURLResponse)?.statusCode == 200,
+                      httpMetadata["status_code"] == nil || httpMetadata["status_code"] == "200",
+                      httpMetadata["uniqueid"].map({ expectedID.caseInsensitiveCompare($0) == .orderedSame }) == true else { return false }
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
     public func fetchAppList(host: Host) async throws -> [StreamApp] {
         let uniqueId = uniqueID()
-        guard let url = URL(string: "https://\(host.urlAddress):\(host.httpsPort)/applist?uniqueid=\(uniqueId)") else {
+        guard let url = URL(string: "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/applist?uniqueid=\(uniqueId)") else {
             throw URLError(.badURL)
         }
 
@@ -241,7 +286,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
 
     public func fetchBoxArt(host: Host, appId: Int) async throws -> Data {
         let uniqueId = uniqueID()
-        guard let url = URL(string: "https://\(host.urlAddress):\(host.httpsPort)/appasset?uniqueid=\(uniqueId)&appid=\(appId)&AssetType=2&AssetIdx=0") else {
+        guard let url = URL(string: "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/appasset?uniqueid=\(uniqueId)&appid=\(appId)&AssetType=2&AssetIdx=0") else {
             throw URLError(.badURL)
         }
 
@@ -266,7 +311,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         let sops = settings.optimizeGameSettings ? "1" : "0"
         let extraParams = LiGetLaunchUrlQueryParameters().map { String(cString: $0) } ?? ""
 
-        var urlString = "https://\(host.urlAddress):\(host.httpsPort)/launch?uniqueid=\(uniqueId)&appid=\(appId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=\(localAudioPlayMode)&surroundAudioInfo=\(surroundAudioInfo)"
+        var urlString = "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/launch?uniqueid=\(uniqueId)&appid=\(appId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=\(localAudioPlayMode)&surroundAudioInfo=\(surroundAudioInfo)"
         urlString.append(HostLaunchOptions.query(settings: settings))
         if !extraParams.isEmpty { urlString.append(extraParams) }
 
@@ -318,7 +363,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         let sops = settings.optimizeGameSettings ? "1" : "0"
         let extraParams = LiGetLaunchUrlQueryParameters().map { String(cString: $0) } ?? ""
 
-        var urlString = "https://\(host.urlAddress):\(host.httpsPort)/resume?uniqueid=\(uniqueId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=\(localAudioPlayMode)&surroundAudioInfo=\(surroundAudioInfo)"
+        var urlString = "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/resume?uniqueid=\(uniqueId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=\(localAudioPlayMode)&surroundAudioInfo=\(surroundAudioInfo)"
         urlString.append(HostLaunchOptions.query(settings: settings))
         if !extraParams.isEmpty { urlString.append(extraParams) }
 
@@ -357,7 +402,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
 
     public func quitApp(host: Host) async throws {
         let uniqueId = uniqueID()
-        guard let url = URL(string: "https://\(host.urlAddress):\(host.httpsPort)/cancel?uniqueid=\(uniqueId)") else {
+        guard let url = URL(string: "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/cancel?uniqueid=\(uniqueId)") else {
             throw URLError(.badURL)
         }
 
@@ -371,20 +416,20 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         AppLogger.shared.info("Sending unpair request to \(host.effectiveAddress)...", category: "HTTP")
 
         // Send unpair to HTTP port (47989)
-        if let httpUrl = URL(string: "http://\(host.urlAddress):\(host.httpPort)/unpair?uniqueid=\(uniqueId)") {
+        if let httpUrl = URL(string: "http://\(host.urlAddress):\(host.effectiveHTTPPort)/unpair?uniqueid=\(uniqueId)") {
             _ = try? await defaultSession.data(from: httpUrl)
         }
 
         // Also send unpair to HTTPS port (47984)
         if host.httpsPort > 0,
-           let httpsUrl = URL(string: "https://\(host.urlAddress):\(host.httpsPort)/unpair?uniqueid=\(uniqueId)") {
+           let httpsUrl = URL(string: "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/unpair?uniqueid=\(uniqueId)") {
             _ = try? await data(for: URLRequest(url: httpsUrl), host: host)
         }
     }
 
     public func getClipboardContent(host: Host) async throws -> String {
         let uniqueId = uniqueID()
-        guard let url = URL(string: "https://\(host.urlAddress):\(host.httpsPort)/actions/clipboard?type=text&uniqueid=\(uniqueId)") else {
+        guard let url = URL(string: "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/actions/clipboard?type=text&uniqueid=\(uniqueId)") else {
             throw URLError(.badURL)
         }
         var request = URLRequest(url: url)
@@ -400,7 +445,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
     public func sendClipboardContent(host: Host, text: String) async throws {
         let uniqueId = uniqueID()
         let uuid = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        guard let url = URL(string: "https://\(host.urlAddress):\(host.httpsPort)/actions/clipboard?uniqueid=\(uniqueId)&uuid=\(uuid)&type=text") else {
+        guard let url = URL(string: "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/actions/clipboard?uniqueid=\(uniqueId)&uuid=\(uuid)&type=text") else {
             throw URLError(.badURL)
         }
         var request = URLRequest(url: url)
@@ -507,7 +552,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
 
                 let isCollector = (appDict["IsAppCollectorGame"] ?? appDict["isappcollectorgame"]) == "1"
-                let boxArtUrl = URL(string: "https://\(host.urlAddress):\(host.httpsPort)/appasset?uniqueid=\(uniqueID())&appid=\(appId)&AssetType=2&AssetIdx=0")
+                let boxArtUrl = URL(string: "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/appasset?uniqueid=\(uniqueID())&appid=\(appId)&AssetType=2&AssetIdx=0")
                 apps.append(StreamApp(id: appId, title: unescapedTitle, isAppCollectorGame: isCollector, boxArtUrl: boxArtUrl))
             }
         }
