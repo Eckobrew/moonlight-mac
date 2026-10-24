@@ -1,7 +1,7 @@
 import SwiftUI
 import MoonlightCommonC
 
-/// Read-only diagnostic view of everything known about a host.
+/// Host diagnostics, display preferences and explicitly confirmed power actions.
 ///
 /// Values come from the serverinfo response and the saved host record, which is what support
 /// requests usually need: addresses, ports, pairing state, protocol versions and codec support.
@@ -20,6 +20,9 @@ struct HostDetailsSheet: View {
     @State private var refreshError: String?
     @State private var testingPorts = false
     @State private var portResult: String?
+    @State private var confirmSleep = false
+    @State private var sleeping = false
+    @State private var sleepResult: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,6 +32,28 @@ struct HostDetailsSheet: View {
                 VStack(alignment: .leading, spacing: 16) {
                     identitySection
                     connectionSection
+                    if let capabilities = host.capabilities {
+                        detailGroup("Host features") {
+                            if capabilities.virtualDisplayCapable {
+                                Picker("Stream display", selection: Binding(
+                                    get: { host.virtualDisplayMode ?? .hostDefault },
+                                    set: { value in var updated = host; updated.virtualDisplayMode = value; appState.addOrUpdateHost(updated) })) {
+                                    ForEach(VirtualDisplayMode.allCases, id: \.self) { mode in Text(mode.rawValue).tag(mode) }
+                                }
+                                row("Virtual display driver", capabilities.virtualDisplayReady ? "Ready" : "Not ready")
+                            }
+                            if let permission = capabilities.permission {
+                                row("Permissions", String(format: "0x%08X", permission), mono: true)
+                                Text("Launch: \(capabilities.canLaunch ? "allowed" : "denied") · View: \(capabilities.canView ? "allowed" : "denied")")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            if capabilities.sleepAvailable {
+                                Button(sleeping ? "Requesting sleep…" : "Put PC to Sleep…") { confirmSleep = true }
+                                    .disabled(sleeping || appState.isStreaming)
+                            }
+                            if let sleepResult { Text(sleepResult).font(.caption).textSelection(.enabled) }
+                        }
+                    }
                     GroupBox("Network port test") {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Checks this network against Moonlight’s public test server; it does not test the host’s firewall.").font(.caption).foregroundStyle(.secondary)
@@ -57,6 +82,21 @@ struct HostDetailsSheet: View {
             footer
         }
         .frame(width: 560, height: 640)
+        .confirmationDialog("Put \(host.name) to sleep?", isPresented: $confirmSleep) {
+            Button("Put PC to Sleep") {
+                sleeping = true
+                Task {
+                    do {
+                        try await SunshineHTTPClient.shared.sleepHost(host: host)
+                        sleepResult = "The host accepted the sleep request. Completion depends on Windows."
+                    } catch { sleepResult = "\(error.localizedDescription) No automatic retry was made." }
+                    sleeping = false
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("All host sessions must be ended first. You can use Wake-on-LAN to wake the PC later.")
+        }
     }
 
     private var header: some View {
@@ -87,7 +127,10 @@ struct HostDetailsSheet: View {
         detailGroup("Host") {
             row("Name", host.name)
             row("Address", host.address)
-            row("Remote IP", host.remoteAddress.flatMap { $0.isEmpty ? nil : $0 } ?? "Not reported")
+            row("Remote IP", host.remoteAddress.flatMap { $0.isEmpty ? nil : $0 } ?? host.remoteAddressCandidate ?? "Not reported")
+            if let candidate = host.remoteAddressCandidate, let saved = host.remoteAddress, candidate != saved {
+                row("New remote candidate", candidate)
+            }
             if let port = host.remoteHTTPPort { row("Remote HTTP port", "\(port)") }
             if let port = host.remoteHTTPSPort { row("Remote HTTPS port", "\(port)") }
             if let verification = host.remoteAddressVerification {
@@ -191,6 +234,7 @@ struct HostDetailsSheet: View {
         Status: \(host.status.rawValue)
         Address: \(host.address)
         Remote: \(host.remoteAddress ?? "none")
+        Discovered remote candidate: \(host.remoteAddressCandidate ?? "none")
         Active: \(host.activeAddress ?? "none")
         Server ID: \(host.serverId ?? "none")
         MAC: \(host.macAddress ?? "none")

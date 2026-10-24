@@ -168,18 +168,34 @@ actor RemoteAddressDiscovery {
     }
     private struct Result: Sendable {
         var address: String?
+        var candidate: String?
         var httpsPort: Int?
         var httpPort: Int?
         var status: String
     }
-    private var attempts: [Key: (Date, Task<Result, Never>)] = [:]
-    private var stun: (Date, Task<String?, Never>)?
+    private struct Attempt {
+        let id = UUID()
+        let date: Date
+        let task: Task<Result, Never>
+        var lifetime: TimeInterval = 15
+    }
+    private var attempts: [Key: Attempt] = [:]
+    private struct STUNAttempt {
+        let id: UUID
+        let date: Date
+        let task: Task<String?, Never>
+        var lifetime: TimeInterval = 15
+    }
+    private var stun: STUNAttempt?
+    private let now: @Sendable () -> Date
     private let query: @Sendable () async -> String?
     private let isLocal: @Sendable (String) -> Bool
 
     init(query: @escaping @Sendable () async -> String? = {
         await Task.detached(priority: .utility) { NetworkReachability.queryClientExternalAddress() }.value
-    }, isLocal: @escaping @Sendable (String) -> Bool = { NetworkReachability.isDirectlyConnectedIPv4($0) }) {
+    }, isLocal: @escaping @Sendable (String) -> Bool = { NetworkReachability.isDirectlyConnectedIPv4($0) },
+         now: @escaping @Sendable () -> Date = { Date() }) {
+        self.now = now
         self.query = query
         self.isLocal = isLocal
     }
@@ -194,17 +210,24 @@ actor RemoteAddressDiscovery {
                       address: host.address, httpsPort: host.httpsPort, httpPort: host.httpPort,
                       reportedAddress: reportedAddress, reportedHTTPPort: reportedHTTPPort)
         let task: Task<Result, Never>
-        if !force, let (date, existing) = attempts[key], Date().timeIntervalSince(date) < 300 {
-            task = existing
+        let attemptID: UUID
+        if !force, let existing = attempts[key], now().timeIntervalSince(existing.date) < existing.lifetime {
+            task = existing.task
+            attemptID = existing.id
         } else {
             // Share one STUN request across hosts and cache failures too.
             let stunTask: Task<String?, Never>?
             if reportedAddress.map(NetworkReachability.isUsableRemoteAddress) != true && isLocal(host.address) {
-                if !force, let (date, existing) = stun, Date().timeIntervalSince(date) < 300 {
-                    stunTask = existing
+                if !force, let existing = stun, now().timeIntervalSince(existing.date) < existing.lifetime {
+                    stunTask = existing.task
                 } else {
-                    let pending = Task { await query() }
-                    stun = (Date(), pending)
+                    let id = UUID()
+                    let pending = Task {
+                        let value = await query()
+                        if self.stun?.id == id { self.stun?.lifetime = value == nil ? 15 : 300 }
+                        return value
+                    }
+                    stun = STUNAttempt(id: id, date: now(), task: pending)
                     stunTask = pending
                 }
             } else {
@@ -224,16 +247,20 @@ actor RemoteAddressDiscovery {
                 if httpPort > 5 && !ports.contains(httpPort - 5) { ports.append(httpPort - 5) }
                 for port in ports where (1...65535).contains(port) {
                     if await verify(address, port, httpPort, host) {
-                        return Result(address: address, httpsPort: port, httpPort: httpPort,
+                        return Result(address: address, candidate: address, httpsPort: port, httpPort: httpPort,
                                       status: "Verified: HTTPS certificate and server ID match; HTTP server ID matches (\(reported == nil ? "STUN" : "host-reported")).")
                     }
                 }
-                return Result(status: "Could not verify \(address) on HTTP port \(httpPort) and HTTPS ports \(ports.map(String.init).joined(separator: ", ")). The endpoint may be unreachable, or its identity did not match. Router loopback may be unavailable.")
+                return Result(candidate: address, status: "Could not verify \(address) on HTTP port \(httpPort) and HTTPS ports \(ports.map(String.init).joined(separator: ", ")). The endpoint may be unreachable, or its identity did not match. Router loopback may be unavailable.")
             }
-            attempts = attempts.filter { Date().timeIntervalSince($0.value.0) < 300 }
-            attempts[key] = (Date(), task)
+            attempts = attempts.filter { now().timeIntervalSince($0.value.date) < 300 }
+            let attempt = Attempt(date: now(), task: task)
+            attemptID = attempt.id
+            attempts[key] = attempt
         }
         let result = await task.value
+        if attempts[key]?.id == attemptID { attempts[key]?.lifetime = result.address == nil ? 15 : 300 }
+        updated.remoteAddressCandidate = result.candidate
         // Failed candidates never overwrite a previously saved route. Every use
         // of that route still rechecks the pin and server ID in fetchServerInfo.
         if let address = result.address {

@@ -106,11 +106,33 @@ access automatically. For paired PCs on a directly connected local IPv4 subnet, 
 client uses STUN when the host does not report an external address. A remote candidate
 is saved only after an HTTPS serverinfo check matches both the paired certificate and
 server ID, and the reported HTTP port returns the same server ID. Host Details shows the **Remote IP**, verified HTTPS port and check result.
-Checks are cached for five minutes; **Refresh** in Host Details runs a fresh check. Routers without NAT loopback may prevent verification
+Verified checks are cached for five minutes; failures retry after 15 seconds.
+Discovered addresses remain visible with an unverified status until the checks pass.
+**Refresh** in Host Details runs a fresh check. Routers without NAT loopback may prevent verification
 from home even when remote access would work from outside. Discovery does not open ports.
 Remote port mappings are stored separately from LAN listener ports. The client checks
 the primary address first and falls back to the saved remote IP, with the same
 certificate and host-identity checks. Unverified candidates cannot provide a fallback.
+
+## Vibepollo host features
+
+The client supports OTP pairing, stable application UUIDs, virtual-display launch
+preferences, host-configured server commands, permission-gated sleep, optional host
+hardware statistics, live bitrate changes and Remote Monitor sessions. Features
+appear according to the paired host's capabilities and permissions. PyroWave is
+not included.
+
+Statistics are read-only. Open **Session controls** with **Control + Option + Shift + C**
+to change bitrate, choose server commands or enable host statistics. Display
+preferences and **Put PC to Sleep** are in **Host Details**; display preferences can
+also be overridden per game. Sleep requires a separate host-side device grant and
+an explicit confirmation each time. Hardware metrics must be enabled on the host.
+
+Select **Remote Monitor** in the application list to use this Mac as an additional
+PC display. A normal disconnect follows the host's retention settings; **Release
+remote monitor** explicitly removes it without terminating the host's game. The
+client supports one active stream per process. See
+[feature details and validation](Docs/VIBEPOLLO_FEATURES.md).
 
 ## Streaming shortcuts
 
@@ -123,6 +145,7 @@ Hold **Control + Option + Shift** (`⌃ ⌥ ⇧`) and press:
 | `M` | Switch relative/desktop mouse mode |
 | `X` | Toggle fullscreen/windowed mode |
 | `S` | Toggle the performance HUD |
+| `C` | Open session controls (bitrate, host commands, monitor release) |
 | `D` | Minimize the stream window |
 | `V` | Paste text from the Mac clipboard to the PC |
 

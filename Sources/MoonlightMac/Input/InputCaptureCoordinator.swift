@@ -33,7 +33,8 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         onToggleStatsOverlay: (@Sendable () -> Void)? = nil,
         onToggleMouseMode: (@Sendable () -> Void)? = nil,
         onMinimize: (@Sendable () -> Void)? = nil,
-        onPaste: (@Sendable () -> Void)? = nil
+        onPaste: (@Sendable () -> Void)? = nil,
+        onSessionControls: (@Sendable () -> Void)? = nil
     ) {
         isActive = true
         self.systemKeyCaptureMode = systemKeyCaptureMode
@@ -46,6 +47,7 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         keyboardMonitor.onToggleMouseModeRequested = onToggleMouseMode
         keyboardMonitor.onMinimizeRequested = onMinimize
         keyboardMonitor.onPasteRequested = onPaste
+        keyboardMonitor.onSessionControlsRequested = onSessionControls
         keyboardMonitor.start()
 
         mouseMonitor.sensitivity = mouseSensitivity

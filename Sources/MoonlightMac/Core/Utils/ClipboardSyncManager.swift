@@ -116,7 +116,7 @@ public final class ClipboardSyncManager: ObservableObject {
 
     /// Pushes local macOS pasteboard string to the remote host.
     public func syncClipboardToHost() {
-        guard sendRetry.canAttempt(at: ProcessInfo.processInfo.systemUptime), let host = activeHost, !isSending else { return }
+        guard sendRetry.canAttempt(at: ProcessInfo.processInfo.systemUptime), let host = activeHost, host.capabilities?.allows(1 << 16) != false, !isSending else { return }
 
         let changeCount = NSPasteboard.general.changeCount
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
@@ -164,7 +164,7 @@ public final class ClipboardSyncManager: ObservableObject {
 
     /// Pulls remote host clipboard string to the macOS pasteboard.
     public func syncClipboardFromHost() {
-        guard pullRetry.canAttempt(at: ProcessInfo.processInfo.systemUptime), let host = activeHost, !isPulling, !isSending else { return }
+        guard pullRetry.canAttempt(at: ProcessInfo.processInfo.systemUptime), let host = activeHost, host.capabilities?.allows(1 << 17) != false, !isPulling, !isSending else { return }
 
         isPulling = true
         let changeCount = NSPasteboard.general.changeCount

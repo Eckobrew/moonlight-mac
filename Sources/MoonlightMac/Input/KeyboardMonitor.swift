@@ -11,6 +11,7 @@ public final class KeyboardMonitor: @unchecked Sendable {
     public var onToggleStatsOverlayRequested: (@Sendable () -> Void)?
     public var onToggleMouseModeRequested: (@Sendable () -> Void)?
     public var onMinimizeRequested: (@Sendable () -> Void)?
+    public var onSessionControlsRequested: (@Sendable () -> Void)?
     public var onPasteRequested: (@Sendable () -> Void)?
 
     /// Serial queue shared with `MouseMonitor` for Limelight input writes. All `LiSend*` calls take
@@ -115,6 +116,11 @@ public final class KeyboardMonitor: @unchecked Sendable {
                     DispatchQueue.main.async { [weak self] in
                         self?.onMinimizeRequested?()
                     }
+                    return nil
+
+                case 0x08: // C: Session controls
+                    raiseModifierKeys()
+                    DispatchQueue.main.async { [weak self] in self?.onSessionControlsRequested?() }
                     return nil
 
                 case 0x09: // V: Type Clipboard Text to Host

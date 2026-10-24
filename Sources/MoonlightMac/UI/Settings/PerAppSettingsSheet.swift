@@ -14,7 +14,7 @@ struct PerAppSettingsSheet: View {
         self.host = host
         self.app = app
         self.globalSettings = globalSettings
-        _overrides = State(initialValue: PerAppSettingsStore.shared.overrides(for: host, appId: app.id))
+        _overrides = State(initialValue: PerAppSettingsStore.shared.overrides(for: host, app: app))
     }
 
     var body: some View {
@@ -73,6 +73,19 @@ struct PerAppSettingsSheet: View {
                     }
 
                     overrideGroup("Host") {
+                        if host.capabilities?.virtualDisplayCapable == true {
+                            Picker("Display", selection: $overrides.virtualDisplayMode) {
+                                Text("Inherit host preference").tag(Optional<VirtualDisplayMode>.none)
+                                ForEach(VirtualDisplayMode.allCases, id: \.self) { mode in Text(mode.rawValue).tag(Optional(mode)) }
+                            }
+                            if !app.isHostAction {
+                                Toggle("This application is a Remote Monitor profile", isOn: Binding(
+                                    get: { overrides.remoteMonitorProfile == true },
+                                    set: { overrides.remoteMonitorProfile = $0 ? true : nil }))
+                                Text("Use for a custom monitor profile configured on the host. Disconnecting will preserve the host's game session.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                         if !host.supportsExtendedControllers {
                             optionalToggle(
                                 "Optimize game settings", value: $overrides.optimizeGameSettings,
@@ -100,7 +113,7 @@ struct PerAppSettingsSheet: View {
                     .keyboardShortcut(.cancelAction)
 
                 Button(AppLocalization.text("Save")) {
-                    PerAppSettingsStore.shared.setOverrides(overrides, for: host, appId: app.id)
+                    PerAppSettingsStore.shared.setOverrides(overrides, for: host, app: app)
                     dismiss()
                 }
                 .disabled(globalSettings.applying(overrides).validationMessage != nil)

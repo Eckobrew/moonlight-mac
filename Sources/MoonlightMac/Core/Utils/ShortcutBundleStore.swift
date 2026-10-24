@@ -9,6 +9,13 @@ enum ShortcutBundleStore {
         return "com.moonlight-stream.shortcut.\(digest)"
     }
 
+    static func identifier(host: Host, app: StreamApp) -> String {
+        guard app.uuid != nil else { return identifier(host: host, appID: app.id) }
+        let identity = "\(host.serverId?.lowercased() ?? host.address.lowercased())|\(app.stableIdentity)"
+        let digest = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+        return "com.moonlight-stream.shortcut.\(digest)"
+    }
+
     static func filename(title: String, hostName: String, identifier: String) -> String {
         func safe(_ text: String) -> String {
             let value = String(text.prefix(70)).replacingOccurrences(of: "[^\\p{L}\\p{N} ._()-]", with: "_", options: .regularExpression)

@@ -151,3 +151,5 @@ int initializeInputStream(void);
 void destroyInputStream(void);
 int startInputStream(void);
 int stopInputStream(void);
+
+int sendHostCommandOnControlStream(uint8_t commandIndex);

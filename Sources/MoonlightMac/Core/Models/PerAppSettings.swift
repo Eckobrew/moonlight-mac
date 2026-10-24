@@ -5,6 +5,8 @@ import Foundation
 /// Each field is optional: `nil` means "inherit the global setting", so adding new global options
 /// does not require touching this type. Resolution happens once when a session starts.
 public struct AppStreamOverrides: Codable, Equatable, Sendable {
+    public var virtualDisplayMode: VirtualDisplayMode?
+    public var remoteMonitorProfile: Bool?
     public var width: Int?
     public var height: Int?
     public var fps: Int?
@@ -23,7 +25,7 @@ public struct AppStreamOverrides: Codable, Equatable, Sendable {
 
     /// True when nothing is overridden (used to hide the badge in the UI).
     public var isEmpty: Bool {
-        width == nil && height == nil && fps == nil && bitrateMbps == nil && codec == nil &&
+        virtualDisplayMode == nil && remoteMonitorProfile == nil && width == nil && height == nil && fps == nil && bitrateMbps == nil && codec == nil &&
         audioMode == nil && enableHdr == nil && enableVsync == nil && enableFramePacing == nil &&
         mouseCaptureMode == nil && windowMode == nil && quitAppOnStop == nil &&
         optimizeGameSettings == nil
@@ -34,6 +36,7 @@ public extension StreamSettings {
     /// Returns a copy with this app's overrides applied on top of the global settings.
     func applying(_ overrides: AppStreamOverrides) -> StreamSettings {
         var result = self
+        if let value = overrides.virtualDisplayMode { result.features.virtualDisplayMode = value }
         if let value = overrides.width { result.width = value }
         if let value = overrides.height { result.height = value }
         if let value = overrides.fps { result.fps = value }
@@ -59,7 +62,11 @@ public final class PerAppSettingsStore {
     private let storageKey = "com.moonlight.mac.perAppOverrides"
     private var cache: [String: AppStreamOverrides] = [:]
 
-    private init() {
+    private let defaults: UserDefaults
+    private let fallback: UserDefaults?
+    init(defaults: UserDefaults = .sharedApp, fallback: UserDefaults? = .standard) {
+        self.defaults = defaults
+        self.fallback = fallback
         load()
     }
 
@@ -80,6 +87,30 @@ public final class PerAppSettingsStore {
         let addressKey = "\(host.address.lowercased())|\(appId)"
         if !keys.contains(addressKey) { keys.append(addressKey) }
         return keys
+    }
+
+    private func stableKey(host: Host, app: StreamApp) -> String {
+        let hostKey = host.serverId?.isEmpty == false ? host.serverId! : host.address
+        return "\(hostKey.lowercased())|\(app.stableIdentity)"
+    }
+
+    public func overrides(for host: Host, app: StreamApp) -> AppStreamOverrides {
+        let key = stableKey(host: host, app: app)
+        if let value = cache[key] { return value }
+        let legacy = overrides(for: host, appId: app.id)
+        if !legacy.isEmpty {
+            for old in candidateKeys(host: host, appId: app.id) { cache.removeValue(forKey: old) }
+            cache[key] = legacy
+            save()
+        }
+        return legacy
+    }
+
+    public func setOverrides(_ overrides: AppStreamOverrides, for host: Host, app: StreamApp) {
+        for old in candidateKeys(host: host, appId: app.id) { cache.removeValue(forKey: old) }
+        let key = stableKey(host: host, app: app)
+        cache[key] = overrides.isEmpty ? nil : overrides
+        save()
     }
 
     public func overrides(for host: Host, appId: Int) -> AppStreamOverrides {
@@ -110,7 +141,7 @@ public final class PerAppSettingsStore {
     }
 
     private func load() {
-        guard let data = UserDefaults.sharedApp.data(forKey: storageKey) ?? UserDefaults.standard.data(forKey: storageKey),
+        guard let data = defaults.data(forKey: storageKey) ?? fallback?.data(forKey: storageKey),
               let decoded = try? JSONDecoder().decode([String: AppStreamOverrides].self, from: data) else {
             return
         }
@@ -119,7 +150,7 @@ public final class PerAppSettingsStore {
 
     private func save() {
         guard let encoded = try? JSONEncoder().encode(cache) else { return }
-        UserDefaults.sharedApp.set(encoded, forKey: storageKey)
-        UserDefaults.standard.set(encoded, forKey: storageKey)
+        defaults.set(encoded, forKey: storageKey)
+        fallback?.set(encoded, forKey: storageKey)
     }
 }

@@ -91,14 +91,22 @@ public struct HostGridView: View {
                 }
             }
         }
-        .alert("Couldn’t connect to PC", isPresented: Binding(
-            get: { appState.hostConnectionError != nil },
-            set: { if !$0 { appState.hostConnectionError = nil } }
+        .alert("Host response", isPresented: Binding(
+            get: { appState.hostConnectionError != nil || appState.hostActionMessage != nil },
+            set: { if !$0 { appState.hostConnectionError = nil; appState.hostActionMessage = nil } }
         )) {
-            Button("OK", role: .cancel) { appState.hostConnectionError = nil }
+            Button("OK", role: .cancel) { appState.hostConnectionError = nil; appState.hostActionMessage = nil }
         } message: {
-            Text(appState.hostConnectionError ?? "")
+            Text(appState.hostConnectionError ?? appState.hostActionMessage ?? "")
         }
+        .confirmationDialog(appState.pendingHostAction?.title ?? "Host action", isPresented: Binding(
+            get: { appState.pendingHostAction != nil },
+            set: { if !$0 { appState.pendingHostAction = nil } })) {
+                Button("Confirm host action", role: .destructive) { appState.confirmHostAction() }
+                Button("Cancel", role: .cancel) { appState.pendingHostAction = nil }
+            } message: {
+                Text("This changes the host's session state. Terminate may stop a running game; disconnect actions release only the selected role.")
+            }
         .sheet(isPresented: $appState.isShowingAddHost) {
             AddHostSheet { newHost in
                 appState.addOrUpdateHost(newHost)
@@ -121,6 +129,7 @@ public struct HostGridView: View {
                     pin: appState.pairingPin,
                     error: appState.pairingError,
                     isPairing: appState.isPairingInProgress,
+                    onStart: { otp in Task { await appState.beginPairing(for: host, otp: otp) } },
                     onCancel: {
                         appState.cancelPairing()
                     }

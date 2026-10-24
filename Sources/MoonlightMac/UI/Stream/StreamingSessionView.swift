@@ -73,12 +73,21 @@ public struct StreamingSessionView: View {
                 VStack {
                     HStack {
                         Spacer()
-                        PerformanceHUDView(metrics: sessionController.metrics)
+                        PerformanceHUDView(session: sessionController)
                             .padding(16)
                     }
                     Spacer()
                 }
             }
+        }
+        .toolbar {
+            ToolbarItem {
+                Button("Session controls…") { sessionController.openSessionControls() }
+                    .keyboardShortcut("c", modifiers: [.control, .option, .shift])
+            }
+        }
+        .sheet(isPresented: $sessionController.showSessionControls, onDismiss: { sessionController.closeSessionControls() }) {
+            SessionControlsView(session: sessionController)
         }
     }
 }

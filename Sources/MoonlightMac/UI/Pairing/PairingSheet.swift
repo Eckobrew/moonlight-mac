@@ -7,6 +7,10 @@ public struct PairingSheet: View {
     public let pin: String?
     public let error: String?
     public let isPairing: Bool
+    public let onStart: (OTPPairing?) -> Void
+    @State private var useOTP = false
+    @State private var otp = ""
+    @State private var passphrase = ""
     public let onCancel: () -> Void
 
     public init(
@@ -14,6 +18,7 @@ public struct PairingSheet: View {
         pin: String?,
         error: String?,
         isPairing: Bool,
+        onStart: @escaping (OTPPairing?) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.host = host
@@ -21,6 +26,7 @@ public struct PairingSheet: View {
         self.error = error
         self.isPairing = isPairing
         self.onCancel = onCancel
+        self.onStart = onStart
     }
 
     public var body: some View {
@@ -67,6 +73,25 @@ public struct PairingSheet: View {
             } else if isPairing {
                 ProgressView("Initiating handshake...")
                     .progressViewStyle(.circular)
+            }
+
+            if !isPairing {
+                Picker("Pairing method", selection: $useOTP) {
+                    Text("PIN on host").tag(false)
+                    Text("Host OTP").tag(true)
+                }.pickerStyle(.segmented)
+                if useOTP {
+                    TextField("Four-digit OTP", text: $otp)
+                    SecureField("Host passphrase", text: $passphrase)
+                    Text("Generate the OTP in your host’s web interface. Codes expire after three minutes.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Button(error == nil ? "Pair" : "Retry pairing") {
+                    onStart(useOTP ? OTPPairing(code: otp.trimmingCharacters(in: .whitespacesAndNewlines), passphrase: passphrase) : nil)
+                    otp = ""; passphrase = ""
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(useOTP && !OTPPairing(code: otp.trimmingCharacters(in: .whitespacesAndNewlines), passphrase: passphrase).isValid)
             }
 
             if let error = error {

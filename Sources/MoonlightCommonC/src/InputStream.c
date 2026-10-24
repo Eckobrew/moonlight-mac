@@ -26,6 +26,8 @@ static uint8_t currentPenButtonState;
 #define CLAMP(val, min, max) (((val) < (min)) ? (min) : (((val) > (max)) ? (max) : (val)))
 
 #define MAX_INPUT_PACKET_SIZE 128
+// Local queue marker; never transmitted as an input packet.
+#define HOST_COMMAND_QUEUE_MAGIC 0x7ffffff0
 #define INPUT_STREAM_TIMEOUT_SEC 10
 
 #define MAX_QUEUED_INPUT_PACKETS 150
@@ -234,6 +236,14 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
 
 static bool sendInputPacket(PPACKET_HOLDER holder, bool moreData) {
     SOCK_RET err;
+    if (holder->packet.header.magic == LE32(HOST_COMMAND_QUEUE_MAGIC)) {
+        err = sendHostCommandOnControlStream((uint8_t)holder->packet.unicode.text[0]);
+        if (err < 0) {
+            ListenerCallbacks.connectionTerminated(err);
+            return false;
+        }
+        return true;
+    }
 
     // On GFE 3.22, the entire control stream is encrypted (and support for separate RI encrypted)
     // has been removed. We send the plaintext packet through and the control stream code will do
@@ -1637,5 +1647,21 @@ int LiSendControllerBatteryEvent(uint8_t controllerNumber, uint8_t batteryState,
         freePacketHolder(holder);
     }
 
+    return err;
+}
+
+// Queue through the input worker so control teardown cannot race a UI caller.
+int LiSendHostCommand(uint8_t commandIndex) {
+    if (!initialized || ConnectionInterrupted) return -2;
+    if (!IS_SUNSHINE() || !encryptedControlStream) return LI_ERR_UNSUPPORTED;
+    PPACKET_HOLDER holder = allocatePacketHolder(0);
+    if (holder == NULL) return -1;
+    holder->channelId = CTRL_CHANNEL_GENERIC;
+    holder->enetPacketFlags = ENET_PACKET_FLAG_RELIABLE;
+    holder->packet.header.size = BE32(sizeof(uint32_t) + 1);
+    holder->packet.header.magic = LE32(HOST_COMMAND_QUEUE_MAGIC);
+    holder->packet.unicode.text[0] = (char)commandIndex;
+    int err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+    if (err != LBQ_SUCCESS) freePacketHolder(holder);
     return err;
 }

@@ -92,7 +92,7 @@ public struct AppGridView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 24) {
-                            ForEach(apps) { app in
+                            ForEach(apps, id: \.stableIdentity) { app in
                                 appCard(for: app)
                                     .id(app.id)
                                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(focusedAppID == app.id ? Color.accentColor : .clear, lineWidth: 3))
@@ -113,7 +113,7 @@ public struct AppGridView: View {
         AppCardView(
             host: host,
             app: app,
-            isStreaming: host.currentAppId == app.id,
+            isStreaming: app.matchesRunning(on: host),
             globalSettings: globalSettings,
             onLaunch: { onLaunchApp(app) },
             onStop: { onQuitCurrentApp() }

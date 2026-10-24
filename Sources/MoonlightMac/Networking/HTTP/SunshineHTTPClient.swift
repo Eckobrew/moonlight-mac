@@ -5,9 +5,12 @@ import MoonlightCommonC
 public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
     public static let shared = SunshineHTTPClient()
     private let uniqueID: @Sendable () -> String
+    typealias ExtensionTransport = @Sendable (URLRequest, Host) async throws -> (Data, HTTPURLResponse)
+    private let extensionTransport: ExtensionTransport?
 
-    init(uniqueID: @escaping @Sendable () -> String = { CertificateManager.shared.uniqueId }) {
+    init(uniqueID: @escaping @Sendable () -> String = { CertificateManager.shared.uniqueId }, extensionTransport: ExtensionTransport? = nil) {
         self.uniqueID = uniqueID
+        self.extensionTransport = extensionTransport
         super.init()
     }
 
@@ -132,7 +135,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
            !remote.isEmpty, remote != host.address {
             candidates.append(remote)
         }
-        var result: (String, [String: String], Bool)?
+        var result: (String, [String: String], Bool, Data)?
         var lastError: Error = URLError(.cannotConnectToHost)
         for address in candidates {
             try Task.checkCancellation()
@@ -153,10 +156,10 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
                 lastError = HostTrustError.unexpectedHost
                 continue
             }
-            result = (address, metadata, isHTTPS)
+            result = (address, metadata, isHTTPS, data)
             break
         }
-        guard let (activeAddr, dict, isHttps) = result else { throw lastError }
+        guard let (activeAddr, dict, isHttps, serverInfoData) = result else { throw lastError }
         if host.isSecurelyPaired && !isHttps {
             // HTTP can tell us a listener is alive, but cannot authenticate metadata
             // or refresh the saved certificate's host identity.
@@ -166,6 +169,10 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         }
         var updatedHost = host
         updatedHost.activeAddress = activeAddr
+        if isHttps {
+            updatedHost.capabilities = HostCapabilities.parse(dict, commands: HostXMLValues.elements("ServerCommand", data: serverInfoData))
+            updatedHost.currentAppUUID = dict["currentgameuuid"].flatMap { $0.isEmpty ? nil : $0 }
+        }
         updatedHost.lastSeen = Date()
         if let hostname = dict["hostname"], !hostname.isEmpty { updatedHost.name = hostname }
         if let appVersion = dict["appversion"], !appVersion.isEmpty { updatedHost.appVersion = appVersion }
@@ -284,9 +291,9 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         return apps
     }
 
-    public func fetchBoxArt(host: Host, appId: Int) async throws -> Data {
+    public func fetchBoxArt(host: Host, appId: Int, appUUID: String? = nil) async throws -> Data {
         let uniqueId = uniqueID()
-        guard let url = URL(string: "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/appasset?uniqueid=\(uniqueId)&appid=\(appId)&AssetType=2&AssetIdx=0") else {
+        guard let url = URL(string: "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/appasset?uniqueid=\(uniqueId)&appid=\(appId)&AssetType=2&AssetIdx=0" + (appUUID.flatMap { UUID(uuidString: $0) != nil ? "&appuuid=\($0)" : nil } ?? "")) else {
             throw URLError(.badURL)
         }
 
@@ -300,6 +307,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
     public func launchApp(
         host: Host,
         appId: Int,
+        appUUID: String? = nil,
         settings: StreamSettings,
         rikey: String,
         rikeyId: UInt32
@@ -312,7 +320,8 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         let extraParams = LiGetLaunchUrlQueryParameters().map { String(cString: $0) } ?? ""
 
         var urlString = "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/launch?uniqueid=\(uniqueId)&appid=\(appId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=\(localAudioPlayMode)&surroundAudioInfo=\(surroundAudioInfo)"
-        urlString.append(HostLaunchOptions.query(settings: settings))
+        if let appUUID, UUID(uuidString: appUUID) != nil { urlString += "&appuuid=\(appUUID)" }
+        urlString.append(HostLaunchOptions.query(settings: settings, host: host))
         if !extraParams.isEmpty { urlString.append(extraParams) }
 
         guard let url = URL(string: urlString) else {
@@ -364,7 +373,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         let extraParams = LiGetLaunchUrlQueryParameters().map { String(cString: $0) } ?? ""
 
         var urlString = "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/resume?uniqueid=\(uniqueId)&mode=\(mode)&additionalStates=1&sops=\(sops)&rikey=\(rikey)&rikeyid=\(rikeyId)&localAudioPlayMode=\(localAudioPlayMode)&surroundAudioInfo=\(surroundAudioInfo)"
-        urlString.append(HostLaunchOptions.query(settings: settings))
+        urlString.append(HostLaunchOptions.query(settings: settings, host: host))
         if !extraParams.isEmpty { urlString.append(extraParams) }
 
         guard let url = URL(string: urlString) else {
@@ -461,6 +470,22 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         }
     }
 
+    func extensionRequest(host: Host, path: String, query: [URLQueryItem] = [], method: String = "GET") async throws -> (Data, HTTPURLResponse) {
+        guard host.isSecurelyPaired, let baseURL = host.baseUrlHttps, var parts = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else { throw HostTrustError.pairingRequired }
+        parts.path = path
+        parts.queryItems = (path.hasPrefix("/power-actions/") ? [] : [URLQueryItem(name: "uniqueid", value: uniqueID())]) + query
+        guard let url = parts.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 10
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        if method == "POST" { request.httpBody = Data() }
+        if let extensionTransport { return try await extensionTransport(request, host) }
+        let (bytes, response) = try await data(for: request, host: host)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        return (bytes, http)
+    }
+
     public func fetchRaw(urlString: String, timeout: TimeInterval = 10.0, usePairingSession: Bool = false, certificateDER: Data? = nil) async throws -> (Data, [String: String]) {
         guard let url = URL(string: urlString) else {
             AppLogger.shared.error("Invalid HTTP request URL", category: "HTTP")
@@ -506,7 +531,11 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
             for match in regex.matches(in: xmlString, options: [], range: fullRange) {
                 let key = nsString.substring(with: match.range(at: 1))
                 let val = nsString.substring(with: match.range(at: 2))
-                result[key] = val
+                result[key] = val.replacingOccurrences(of: "&quot;", with: "\"")
+                        .replacingOccurrences(of: "&apos;", with: "'")
+                        .replacingOccurrences(of: "&lt;", with: "<")
+                        .replacingOccurrences(of: "&gt;", with: ">")
+                        .replacingOccurrences(of: "&amp;", with: "&")
             }
         }
 
@@ -516,7 +545,11 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
                 let key = nsString.substring(with: match.range(at: 1))
                 let val = nsString.substring(with: match.range(at: 2))
                 if result[key] == nil {
-                    result[key] = val
+                    result[key] = val.replacingOccurrences(of: "&quot;", with: "\"")
+                        .replacingOccurrences(of: "&apos;", with: "'")
+                        .replacingOccurrences(of: "&lt;", with: "<")
+                        .replacingOccurrences(of: "&gt;", with: ">")
+                        .replacingOccurrences(of: "&amp;", with: "&")
                 }
             }
         }
@@ -524,7 +557,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         return result
     }
 
-    private func parseAppListXML(data: Data, host: Host) -> [StreamApp] {
+    func parseAppListXML(data: Data, host: Host) -> [StreamApp] {
         guard let xmlString = String(data: data, encoding: .utf8) else { return [] }
         var apps: [StreamApp] = []
 
@@ -543,17 +576,15 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
             let rawId = appDict["ID"] ?? appDict["id"]
 
             if let idStr = rawId, let appId = Int(idStr.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                let unescapedTitle = (rawTitle ?? "Unknown App")
-                    .replacingOccurrences(of: "&apos;", with: "'")
-                    .replacingOccurrences(of: "&quot;", with: "\"")
-                    .replacingOccurrences(of: "&amp;", with: "&")
-                    .replacingOccurrences(of: "&lt;", with: "<")
-                    .replacingOccurrences(of: "&gt;", with: ">")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let unescapedTitle = (rawTitle ?? "Unknown App").trimmingCharacters(in: .whitespacesAndNewlines)
 
                 let isCollector = (appDict["IsAppCollectorGame"] ?? appDict["isappcollectorgame"]) == "1"
                 let boxArtUrl = URL(string: "https://\(host.urlAddress):\(host.effectiveHTTPSPort)/appasset?uniqueid=\(uniqueID())&appid=\(appId)&AssetType=2&AssetIdx=0")
-                apps.append(StreamApp(id: appId, title: unescapedTitle, isAppCollectorGame: isCollector, boxArtUrl: boxArtUrl))
+                var app = StreamApp(id: appId, title: unescapedTitle, isAppCollectorGame: isCollector, boxArtUrl: boxArtUrl)
+                app.uuid = appDict["UUID"].flatMap { UUID(uuidString: $0) != nil ? $0 : nil }
+                app.hostOrder = appDict["IDX"].flatMap(Int.init)
+                app.artVersion = appDict["ArtVersion"]
+                apps.append(app)
             }
         }
 

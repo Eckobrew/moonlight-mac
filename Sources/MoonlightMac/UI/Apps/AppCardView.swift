@@ -124,7 +124,7 @@ public struct AppCardView: View {
             Button {
                 onLaunch()
             } label: {
-                Label(isStreaming ? "Resume Game" : "Launch Game", systemImage: isStreaming ? "play.fill" : "play")
+                Label(app.isHostAction ? app.title : app.isRemoteMonitor ? "Connect monitor" : isStreaming ? "Resume Game" : "Launch Game", systemImage: isStreaming ? "play.fill" : "play")
             }
 
             if isStreaming, let onStop = onStop {
@@ -137,6 +137,7 @@ public struct AppCardView: View {
 
             Divider()
 
+            if !app.isHostAction && app.control != .input {
             Button {
                 showingShortcutSheet = true
             } label: {
@@ -150,6 +151,7 @@ public struct AppCardView: View {
             } label: {
                 Label(AppLocalization.text("Game Settings..."), systemImage: "slider.horizontal.3")
             }
+            }
         }
         .sheet(isPresented: $showingShortcutSheet) {
             ShortcutIconPickerSheet(host: host, app: app, boxArtImage: boxArtImage)
@@ -157,7 +159,7 @@ public struct AppCardView: View {
         .sheet(isPresented: $showingPerAppSettings) {
             PerAppSettingsSheet(host: host, app: app, globalSettings: globalSettings)
         }
-        .task(id: app.id) {
+        .task(id: app.stableIdentity + (app.artVersion ?? "")) {
             isLoading = true
             boxArtImage = await BoxArtManager.shared.getBoxArt(host: host, app: app)
             isLoading = false
@@ -165,7 +167,7 @@ public struct AppCardView: View {
     }
 
     private var fallbackIcon: some View {
-        Image(systemName: "gamecontroller.fill")
+        Image(systemName: app.isRemoteMonitor ? "display" : app.isHostAction ? "switch.2" : app.control == .input ? "keyboard" : "gamecontroller.fill")
             .font(.system(size: 36, weight: .light))
             .foregroundStyle(.secondary)
     }

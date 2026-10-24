@@ -51,6 +51,7 @@ private actor DiscoveryCalls {
     }, isLocal: { _ in true })
     let host = remoteTestHost()
     let result = await discovery.update(host: host, reportedAddress: "203.0.113.21", reportedHTTPPort: 47989) { _, _, _, _ in false }
+    #expect(result.remoteAddressCandidate == "203.0.113.21")
     #expect(result.remoteAddress == nil)
     #expect(result.remoteHTTPSPort == nil)
     #expect(result.remoteAddressVerification?.contains("Could not verify") == true)
@@ -96,4 +97,41 @@ private actor DiscoveryCalls {
     let host = try JSONDecoder().decode(MoonlightMac.Host.self, from: JSONSerialization.data(withJSONObject: json))
     #expect(host.remoteHTTPSPort == nil)
     #expect(host.effectiveHTTPSPort == 47984)
+}
+
+private final class RemoteTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date = Date(timeIntervalSince1970: 1000)
+    func now() -> Date { lock.withLock { date } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { date += seconds } }
+}
+
+@Test func failedRemoteVerificationRetriesSoonWithoutLosingDiscoveredIP() async {
+    let clock = RemoteTestClock()
+    let discovery = RemoteAddressDiscovery(query: { "203.0.113.20" }, isLocal: { _ in true }, now: { clock.now() })
+    let host = remoteTestHost()
+    let failed = await discovery.update(host: host, reportedAddress: nil, reportedHTTPPort: nil) { _, _, _, _ in false }
+    #expect(failed.remoteAddress == nil)
+    #expect(failed.remoteAddressCandidate == "203.0.113.20")
+    clock.advance(16)
+    let recovered = await discovery.update(host: failed, reportedAddress: nil, reportedHTTPPort: nil) { _, _, _, _ in true }
+    #expect(recovered.remoteAddress == "203.0.113.20")
+}
+
+private actor FailingSTUN {
+    var count = 0
+    func query() -> String? { count += 1; return count == 1 ? nil : "203.0.113.20" }
+}
+
+@Test func failedSTUNLookupAlsoRetriesSoon() async {
+    let clock = RemoteTestClock()
+    let stun = FailingSTUN()
+    let discovery = RemoteAddressDiscovery(query: { await stun.query() }, isLocal: { _ in true }, now: { clock.now() })
+    let host = remoteTestHost()
+    let failed = await discovery.update(host: host, reportedAddress: nil, reportedHTTPPort: nil) { _, _, _, _ in true }
+    #expect(failed.remoteAddress == nil)
+    clock.advance(16)
+    let recovered = await discovery.update(host: host, reportedAddress: nil, reportedHTTPPort: nil) { _, _, _, _ in true }
+    #expect(recovered.remoteAddress == "203.0.113.20")
+    #expect(await stun.count == 2)
 }

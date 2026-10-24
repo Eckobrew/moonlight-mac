@@ -569,6 +569,10 @@ const char* LiGetStageName(int stage);
 // This function may only be called between LiStartConnection() and LiStopConnection().
 bool LiGetEstimatedRttInfo(uint32_t* estimatedRtt, uint32_t* estimatedRttVariance);
 
+// Queue an Apollo/Vibepollo host-configured command over encrypted control.
+// Zero means queued, not remote execution completed. Requires a running stream.
+int LiSendHostCommand(uint8_t commandIndex);
+
 // This function queues a relative mouse move event to be sent to the remote server.
 int LiSendMouseMoveEvent(short deltaX, short deltaY);
 

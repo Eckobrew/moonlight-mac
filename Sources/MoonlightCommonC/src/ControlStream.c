@@ -2084,3 +2084,11 @@ bool LiGetHdrMetadata(PSS_HDR_METADATA metadata) {
     *metadata = hdrMetadata;
     return true;
 }
+
+// Apollo/Vibepollo extension: configured server command index, encrypted control.
+// Invoked only by the owned input send worker, which stops before this stream.
+int sendHostCommandOnControlStream(uint8_t commandIndex) {
+    if (stopping || !IS_SUNSHINE() || !encryptedControlStream) return -1;
+    return sendMessageAndForget(0x3000, 1, &commandIndex, CTRL_CHANNEL_GENERIC,
+                                ENET_PACKET_FLAG_RELIABLE, false) ? 0 : -1;
+}

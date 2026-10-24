@@ -6,6 +6,7 @@ public enum DecoderPreference: String, Codable, CaseIterable, Sendable {
 
 /// New preferences are grouped to keep old saved settings compatible.
 public struct ClientFeatures: Codable, Equatable, Sendable {
+    public var virtualDisplayMode: VirtualDisplayMode = .hostDefault
     public var desktopMouse = false
     public var swapMouseButtons = false
     public var reverseScroll = false
@@ -20,10 +21,11 @@ public struct ClientFeatures: Codable, Equatable, Sendable {
     public var discordPresence = false
     public var discordApplicationID = "1563323903949021204"
     public init() {}
-    private enum CodingKeys: String, CodingKey { case desktopMouse, swapMouseButtons, reverseScroll, swapFaceButtons, gamepadMouse, backgroundGamepad, persistentGamepad, decoder, yuv444, enableMdns, language, discordPresence, discordApplicationID }
+    private enum CodingKeys: String, CodingKey { case virtualDisplayMode, desktopMouse, swapMouseButtons, reverseScroll, swapFaceButtons, gamepadMouse, backgroundGamepad, persistentGamepad, decoder, yuv444, enableMdns, language, discordPresence, discordApplicationID }
     public init(from decoder: Decoder) throws {
         self.init()
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        virtualDisplayMode = try values.decodeIfPresent(VirtualDisplayMode.self, forKey: .virtualDisplayMode) ?? .hostDefault
         desktopMouse = try values.decodeIfPresent(Bool.self, forKey: .desktopMouse) ?? desktopMouse
         swapMouseButtons = try values.decodeIfPresent(Bool.self, forKey: .swapMouseButtons) ?? swapMouseButtons
         reverseScroll = try values.decodeIfPresent(Bool.self, forKey: .reverseScroll) ?? reverseScroll

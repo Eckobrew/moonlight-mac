@@ -12,6 +12,10 @@ public final class AppState: @unchecked Sendable {
     public private(set) var connectingHost: Host?
     public private(set) var hostConnectionStatus = ""
     public var hostConnectionError: String?
+    public var pendingHostAction: StreamApp?
+    private var pendingActionHost: Host?
+    public var hostActionMessage: String?
+    private var hostActionInProgress = false
     private var hostConnectionTask: Task<Void, Never>?
     private var hostConnectionID = UUID()
     public var settings: StreamSettings = StreamSettings()
@@ -373,13 +377,21 @@ public final class AppState: @unchecked Sendable {
 
     public func startPairing(for host: Host) async {
         guard !isPairingInProgress else { return }
+        selectedHost = host
+        pairingPin = nil
+        pairingError = nil
+        isShowingPairing = true
+    }
+
+    public func beginPairing(for host: Host, otp: OTPPairing? = nil) async {
+        guard !isPairingInProgress else { return }
         isPairingInProgress = true
         pairingPin = nil
         pairingError = nil
         isShowingPairing = true
 
         let task = Task {
-            try await PairingService.shared.pair(host: host) { [weak self] pin in
+            try await PairingService.shared.pair(host: host, otp: otp) { [weak self] pin in
                 Task { @MainActor [weak self] in
                     guard let self, self.isShowingPairing else { return }
                     self.pairingPin = pin
@@ -420,7 +432,16 @@ public final class AppState: @unchecked Sendable {
     }
 
     public func launchStream(host: Host, app: StreamApp) {
-        guard !isStreaming else { return }
+        guard !isStreaming, !hostActionInProgress else { return }
+        if app.isHostAction {
+            pendingHostAction = app
+            pendingActionHost = host
+            return
+        }
+        if app.control == .input {
+            hostActionMessage = "Remote Input needs a control-only transport. Use Remote Monitor or a normal video session in this build."
+            return
+        }
         guard host.isSecurelyPaired else {
             Task { await self.startPairing(for: host) }
             return
@@ -432,11 +453,32 @@ public final class AppState: @unchecked Sendable {
         StreamSessionController.shared.isShortcutMode = self.isShortcutLaunch
 
         // Apply any per-app overrides on top of the global settings.
-        let overrides = PerAppSettingsStore.shared.overrides(for: host, appId: app.id)
-        let effectiveSettings = settings.applying(overrides)
+        let overrides = PerAppSettingsStore.shared.overrides(for: host, app: app)
+        var defaults = settings
+        if let mode = host.virtualDisplayMode { defaults.features.virtualDisplayMode = mode }
+        let effectiveSettings = defaults.applying(overrides)
 
         launchTask = Task {
             await StreamSessionController.shared.startSession(host: host, app: app, settings: effectiveSettings)
+        }
+    }
+
+    public func confirmHostAction() {
+        guard let app = pendingHostAction, let host = pendingActionHost, !hostActionInProgress, !isStreaming else { return }
+        pendingHostAction = nil
+        pendingActionHost = nil
+        hostActionInProgress = true
+        Task {
+            defer { hostActionInProgress = false }
+            do {
+                let (current, _) = try await SunshineHTTPClient.shared.fetchServerInfo(host: host)
+                let catalogue = try await SunshineHTTPClient.shared.fetchAppList(host: current)
+                guard let action = catalogue.first(where: { $0.stableIdentity == app.stableIdentity && $0.control == app.control }) else {
+                    throw HostControlError(code: 409, message: "The host's actions changed. Refresh the application list and confirm again.")
+                }
+                hostActionMessage = try await SunshineHTTPClient.shared.performHostAction(host: current, app: action)
+                await loadApps(for: current)
+            } catch { hostActionMessage = error.localizedDescription }
         }
     }
 
@@ -489,7 +531,7 @@ public final class AppState: @unchecked Sendable {
         var targetHost: Host? = hosts.first(where: {
             $0.name.localizedCaseInsensitiveCompare(hostQuery) == .orderedSame ||
             $0.address == hostQuery ||
-            $0.remoteAddress == hostQuery
+            $0.remoteAddress == hostQuery || $0.serverId?.caseInsensitiveCompare(hostQuery) == .orderedSame
         })
 
         if targetHost == nil {
@@ -529,6 +571,7 @@ public final class AppState: @unchecked Sendable {
             let apps = try await SunshineHTTPClient.shared.fetchAppList(host: host)
             guard !Task.isCancelled else { return }
             let matchedApp = apps.first(where: {
+                $0.uuid?.caseInsensitiveCompare(appQuery) == .orderedSame ||
                 $0.title.localizedCaseInsensitiveCompare(appQuery) == .orderedSame ||
                 String($0.id) == appQuery
             }) ?? apps.first(where: {

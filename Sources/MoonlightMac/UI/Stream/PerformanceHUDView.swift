@@ -1,11 +1,10 @@
 import SwiftUI
 
 public struct PerformanceHUDView: View {
-    public let metrics: PerformanceMetrics
+    @ObservedObject public var session: StreamSessionController
+    private var metrics: PerformanceMetrics { session.metrics }
 
-    public init(metrics: PerformanceMetrics) {
-        self.metrics = metrics
-    }
+    public init(session: StreamSessionController) { self.session = session }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -20,7 +19,7 @@ public struct PerformanceHUDView: View {
 
                 Spacer()
 
-                Text(AppLocalization.text("⌘⇧H to hide"))
+                Text("⌃⌥⇧S")
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(.tertiary)
             }
@@ -33,7 +32,7 @@ public struct PerformanceHUDView: View {
                 metricRow(label: "Decode Time", value: String(format: "%.2f ms", metrics.decodeTimeMs))
                 metricRow(label: "RTT Latency", value: String(format: "%.1f ms", metrics.roundTripTimeMs))
                 metricRow(label: "RTT Variation", value: String(format: "%.1f ms", metrics.roundTripTimeVarianceMs))
-                metricRow(label: "Bitrate", value: String(format: "%.1f Mbps", metrics.bitrateMbps))
+                metricRow(label: "Bitrate target", value: String(format: "%.1f Mbps", metrics.bitrateMbps))
                 metricRow(
                     label: "Packet Loss",
                     value: String(format: "%.1f%% (%d)", metrics.packetLossPercentage, metrics.networkDroppedFrames),
@@ -44,6 +43,22 @@ public struct PerformanceHUDView: View {
                 metricRow(label: "V-Sync", value: metrics.vsyncEnabled ? "On" : "Off (Unlocked)")
                 metricRow(label: "Pacing", value: metrics.pacingEnabled ? "On (CVDisplayLink)" : "Off (Immediate)")
             }
+            if session.showHostStatistics, session.activeHost?.capabilities?.hardwareMetricsVersion == 1 {
+                if let sample = session.hostStatistics {
+                    metricRow(label: "Host CPU", value: percent(sample.cpu.cpu_usage_percent))
+                    ForEach(sample.gpus, id: \.id) { gpu in
+                        Text(gpu.name).font(.caption2).lineLimit(1)
+                        metricRow(label: "Host GPU", value: percent(gpu.metrics["gpu_usage_percent"]))
+                        metricRow(label: "Host encoder", value: percent(gpu.metrics["gpu_encoder_percent"]))
+                        if let temperature = gpu.metrics["gpu_temperature_c"] {
+                            metricRow(label: "Host GPU temp", value: String(format: "%.0f °C", temperature))
+                        }
+                        if let vram = gpu.metrics["gpu_vram_used_mb"] {
+                            metricRow(label: "Host VRAM", value: String(format: "%.0f MiB", vram))
+                        }
+                    }
+                }
+            }
         }
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -52,7 +67,12 @@ public struct PerformanceHUDView: View {
                 .stroke(Color.white.opacity(0.15), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 4)
-        .frame(width: 220)
+        .frame(width: 300)
+        .allowsHitTesting(false)
+    }
+
+    private func percent(_ value: Double?) -> String {
+        value.map { String(format: "%.1f%%", $0) } ?? "Unavailable"
     }
 
     private var statusIndicatorColor: Color {

@@ -120,18 +120,28 @@ server.serve_forever()
     let server = Process()
     server.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     server.arguments = ["python3", "-c", """
-import http.server, ssl, sys, threading
-from urllib.parse import urlsplit
+import http.server, ssl, sys, threading, json
+from urllib.parse import urlsplit, parse_qs
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         # localhost is reachable but represents an unrelated host. Fallback must
         # still proceed after validation, using the same pinned certificate.
+        if path in ('/api/abr/capabilities', '/api/hardware-metrics'):
+            payload = {'supported': False, 'version': 1, 'features': ['runtime_bitrate']} if path.endswith('capabilities') else {'version': 1, 'sampled_at_unix_ms': 1, 'interval_ms': 1000, 'cpu': {'cpu_usage_percent': 0}, 'gpus': []}
+            body = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path == '/serverinfo':
             identity = 'wrong-host' if self.headers.get('Host', '').startswith('localhost:') else 'expected-host'
             if self.server.server_port == int(sys.argv[3]) and 'wrong-http-client' in self.path:
                 identity = 'wrong-http-host'
             content = '<hostname>Fixture</hostname><uniqueid>' + identity + '</uniqueid><appversion>7.1.0.-1</appversion><PairStatus>1</PairStatus><ExternalIP>0.0.0.0</ExternalIP><ExternalPort>12345</ExternalPort>'
+        elif path == '/bitrate':
+            content = '<bitrate>' + str(min(25000, int(parse_qs(urlsplit(self.path).query)['bitrate'][0]))) + '</bitrate>'
         elif path == '/applist':
             content = '<App><ID>1</ID><AppTitle>Desktop</AppTitle></App>'
         elif path in ('/launch', '/resume'):
@@ -217,6 +227,11 @@ server.serve_forever()
     let mappedApps = try await client.fetchAppList(host: mappedRoute)
     #expect(mappedApps.first?.boxArtUrl?.port == Int(port))
     #expect(mappedApps.first?.title == "Desktop")
+    #expect(await client.supportsRuntimeBitrate(host: mappedRoute))
+    #expect(try await client.setRuntimeBitrate(host: mappedRoute, kbps: 40000) == 25000)
+    let sample = try await client.fetchHardwareMetrics(host: mappedRoute)
+    #expect(sample.cpu.cpu_usage_percent == 0)
+    #expect(sample.gpus.isEmpty)
     let differentCertificateURL = try #require(Bundle.module.url(forResource: "host.der", withExtension: nil, subdirectory: "Fixtures"))
     let wrongPin = try Data(contentsOf: differentCertificateURL)
     let untrusted = Host(name: "Wrong pin", address: "127.0.0.2", remoteAddress: "127.0.0.1",

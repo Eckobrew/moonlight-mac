@@ -15,6 +15,7 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
     public var remoteAddress: String?
     public var remoteHTTPSPort: Int?
     public var remoteHTTPPort: Int?
+    public var remoteAddressCandidate: String?
     public var remoteAddressVerification: String?
     public var activeAddress: String?
     public var httpsPort: Int
@@ -28,6 +29,9 @@ public struct Host: Identifiable, Codable, Equatable, Hashable, Sendable {
     public var serverCodecModeSupport: Int32
     public var serverCertificateDER: Data?
     public var isPaired: Bool
+    public var capabilities: HostCapabilities?
+    public var virtualDisplayMode: VirtualDisplayMode?
+    public var currentAppUUID: String?
     public var currentAppId: Int?
     public var lastSeen: Date
 

@@ -84,7 +84,7 @@ public final class GameShortcutManager {
             throw NSError(domain: "GameShortcutManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not access Desktop folder."])
         }
 
-        let identifier = ShortcutBundleStore.identifier(host: host, appID: app.id)
+        let identifier = ShortcutBundleStore.identifier(host: host, app: app)
         let destination = desktopUrl.appendingPathComponent(
             ShortcutBundleStore.filename(title: app.title, hostName: host.name, identifier: identifier))
         let staging = desktopUrl.appendingPathComponent(".moonlight-shortcut-\(UUID().uuidString)")
@@ -175,12 +175,12 @@ public final class GameShortcutManager {
         try? FileManager.default.removeItem(at: bundleSymlink)
         try? FileManager.default.createSymbolicLink(at: bundleSymlink, withDestinationURL: appResources)
 
-        let escapedHost = host.name
+        let escapedHost = (host.serverId ?? host.address)
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "$", with: "\\$")
             .replacingOccurrences(of: "`", with: "\\`")
-        let escapedApp = app.title
+        let escapedApp = (app.uuid ?? app.title)
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "$", with: "\\$")

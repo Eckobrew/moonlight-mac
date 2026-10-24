@@ -58,6 +58,128 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     @Published public var showPerformanceOverlay: Bool = false
     #endif
 
+    @Published public private(set) var runtimeBitrateSupported = false
+    @Published public private(set) var runtimeBitrateKbps = 0
+    @Published public private(set) var bitrateRequestInProgress = false
+    @Published public private(set) var hostStatistics: HostHardwareMetrics?
+    @Published public var showHostStatistics = false { didSet { if !showHostStatistics { hostStatistics = nil } } }
+    @Published public private(set) var hostControlMessage: String?
+    @Published public private(set) var isRemoteMonitorSession = false
+    @Published public var showSessionControls = false
+    private var controlsWereCaptured = false
+    private var controlsGeneration: UInt64 = 0
+    public func openSessionControls() {
+        guard isStreaming, currentStageName == "Connected", !showSessionControls else { return }
+        controlsGeneration = sessionGeneration
+        controlsWereCaptured = inputCoordinator.mouseMonitor.isCaptured
+        inputCoordinator.keyboardMonitor.raiseAllKeys()
+        inputCoordinator.mouseMonitor.isCaptured = false
+        showSessionControls = true
+    }
+    public func closeSessionControls() {
+        guard isStreaming, controlsGeneration == sessionGeneration else { return }
+        inputCoordinator.mouseMonitor.isCaptured = controlsWereCaptured
+    }
+    private var bitrateTask: Task<Int, any Error>?
+    private var preserveHostApplication = false
+    private var hostServicesTask: Task<Void, Never>?
+
+    public func applyRuntimeBitrate(mbps: Double) async {
+        guard runtimeBitrateSupported, !bitrateRequestInProgress, isStreaming, currentStageName == "Connected",
+              let host = activeHost, mbps.isFinite, (0.001...500).contains(mbps) else { return }
+        let generation = sessionGeneration
+        bitrateRequestInProgress = true
+        defer { if sessionGeneration == generation { bitrateRequestInProgress = false; bitrateTask = nil } }
+        do {
+            let pending = Task { try await SunshineHTTPClient.shared.setRuntimeBitrate(host: host, kbps: Int((mbps * 1000).rounded())) }
+            bitrateTask = pending
+            let applied = try await pending.value
+            guard acceptsCallback(generation: generation) else { return }
+            runtimeBitrateKbps = applied
+            hostControlMessage = "Host applied \(String(format: "%.1f", Double(applied) / 1000)) Mbps."
+        } catch {
+            guard acceptsCallback(generation: generation) else { return }
+            hostControlMessage = error.localizedDescription
+        }
+    }
+
+    public func runServerCommand(index: Int, name: String) async {
+        guard isStreaming, currentStageName == "Connected", let host = activeHost,
+              host.capabilities?.canRunCommands == true, (0...255).contains(index) else { return }
+        let generation = sessionGeneration
+        do {
+            let (updated, _) = try await SunshineHTTPClient.shared.fetchServerInfo(host: host)
+            guard acceptsCallback(generation: generation), updated.capabilities?.canRunCommands == true,
+                  updated.capabilities?.commands.indices.contains(index) == true,
+                  updated.capabilities?.commands[index] == name else {
+                if acceptsCallback(generation: generation) { hostControlMessage = "Host commands changed. Reconnect before choosing a command again." }
+                return
+            }
+            // Serialize with queued key releases; never call common-c after teardown.
+            let queued = LiSendHostCommand(UInt8(index))
+            hostControlMessage = queued == 0 ? "Command submitted to host: \(name)" : "The command could not be queued."
+        } catch {
+            if acceptsCallback(generation: generation) { hostControlMessage = error.localizedDescription }
+        }
+    }
+
+    public func disconnectRemoteMonitor() async {
+        guard isRemoteMonitorSession, let host = activeHost, currentStageName == "Connected" else { return }
+        let generation = sessionGeneration
+        do {
+            let catalogue = try await SunshineHTTPClient.shared.fetchAppList(host: host)
+            guard acceptsCallback(generation: generation), let action = catalogue.first(where: { $0.control == .disconnectMonitor }) else { return }
+            // Release local video first; the explicit host action then releases
+            // any retained monitor. Never use /cancel for a monitor session.
+            stopSession()
+            let connectionStop = stoppingTask
+            let release = Task.detached {
+                await connectionStop?.value
+                return try await SunshineHTTPClient.shared.performHostAction(host: host, app: action)
+            }
+            // A reconnect must not create a new monitor until the old release
+            // request has finished; the host endpoint is bound to this client.
+            stoppingTask = Task.detached { _ = try? await release.value }
+            _ = try await release.value
+        } catch {
+            hostControlMessage = error.localizedDescription
+        }
+    }
+
+    private func startHostServices() {
+        hostServicesTask?.cancel()
+        guard let host = activeHost else { return }
+        let generation = sessionGeneration
+        hostServicesTask = Task { [weak self] in
+            let supported = await SunshineHTTPClient.shared.supportsRuntimeBitrate(host: host)
+            guard let self, self.acceptsCallback(generation: generation), !Task.isCancelled else { return }
+            self.runtimeBitrateSupported = supported
+            var delay = 1.0
+            while self.acceptsCallback(generation: generation), !Task.isCancelled {
+                if self.showHostStatistics && self.showPerformanceOverlay && host.capabilities?.hardwareMetricsVersion == 1 {
+                    do {
+                        let sample = try await SunshineHTTPClient.shared.fetchHardwareMetrics(host: host)
+                        guard self.acceptsCallback(generation: generation), !Task.isCancelled else { return }
+                        if self.showHostStatistics && self.showPerformanceOverlay { self.hostStatistics = sample }
+                        delay = max(1, Double(sample.interval_ms) / 1000)
+                    } catch {
+                        guard self.acceptsCallback(generation: generation), !Task.isCancelled else { return }
+                        self.hostStatistics = nil
+                        if let error = error as? HostControlError, [403, 409].contains(error.code) {
+                            self.showHostStatistics = false
+                            self.hostControlMessage = error.message
+                        }
+                        delay = min(30, max(2, delay * 2))
+                    }
+                } else {
+                    self.hostStatistics = nil
+                    delay = 1
+                }
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            }
+        }
+    }
+
     public func togglePerformanceOverlay() {
         showPerformanceOverlay.toggle()
     }
@@ -137,9 +259,9 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     }
 
     private var didLaunchHostApp = false
-    var hostAppIDForShutdown: Int? { isShortcutMode ? activeApp?.id : nil }
+    var hostAppIDForShutdown: Int? { isShortcutMode && !isRemoteMonitorSession ? activeApp?.id : nil }
     public var shouldQuitHostAppOnStop: Bool {
-        isShortcutMode ? didLaunchHostApp : activeSettings?.quitAppOnStop == true
+        !isRemoteMonitorSession && !preserveHostApplication && (isShortcutMode ? didLaunchHostApp : activeSettings?.quitAppOnStop == true)
     }
 
     public func startSession(host: Host, app: StreamApp, settings: StreamSettings) async {
@@ -175,6 +297,13 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         )
 
         self.didLaunchHostApp = false
+        self.preserveHostApplication = app.control == .resume
+        self.isRemoteMonitorSession = app.isRemoteMonitor || PerAppSettingsStore.shared.overrides(for: host, app: app).remoteMonitorProfile == true
+        self.hostControlMessage = nil
+        self.runtimeBitrateSupported = false
+        self.bitrateRequestInProgress = false
+        self.hostStatistics = nil
+        self.showHostStatistics = false
         self.activeHost = host
         self.activeApp = app
         self.activeSettings = effectiveSettings
@@ -205,7 +334,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             guard acceptsCallback(generation: generation), !Task.isCancelled else { return }
             self.activeHost = host
             let sessionUrl: String?
-            if host.currentAppId == app.id {
+            if app.matchesRunning(on: host) || app.control == .resume {
                 sessionUrl = try await SunshineHTTPClient.shared.resumeApp(
                     host: host,
                     settings: effectiveSettings,
@@ -216,6 +345,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
                 sessionUrl = try await SunshineHTTPClient.shared.launchApp(
                     host: host,
                     appId: app.id,
+                    appUUID: app.uuid,
                     settings: effectiveSettings,
                     rikey: rikeyHex,
                     rikeyId: rikeyId
@@ -224,7 +354,16 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
             guard isStreaming, sessionGeneration == generation else { return }
             try Task.checkCancellation()
-            didLaunchHostApp = host.currentAppId != app.id
+            didLaunchHostApp = !app.matchesRunning(on: host) && !isRemoteMonitorSession
+            // Custom monitor profiles are not marked in legacy applist XML.
+            // The authenticated post-launch catalogue identifies our owned role.
+            if host.capabilities?.permission != nil,
+               let catalogue = try? await SunshineHTTPClient.shared.fetchAppList(host: host),
+               catalogue.contains(where: { $0.control == .disconnectMonitor }) {
+                guard acceptsCallback(generation: generation) else { return }
+                isRemoteMonitorSession = true
+                didLaunchHostApp = false
+            }
 
             MetalStreamRenderer.shared.enableVsync = effectiveSettings.enableVsync
             MetalStreamRenderer.shared.isHdrActive = false
@@ -253,6 +392,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             let isRemote = await NetworkReachability.isRemoteSession(host: host)
             guard isStreaming, sessionGeneration == generation else { return }
             try Task.checkCancellation()
+            self.runtimeBitrateKbps = effectiveSettings.streamBitrateKbps(isRemote: isRemote)
             self.streamConfigRemotely = isRemote ? Int32(STREAM_CFG_REMOTE) : Int32(STREAM_CFG_LOCAL)
 
             // Probe and wait up to 3s for host RTSP port to accept connections before starting Limelight
@@ -337,6 +477,9 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
                         _ = LiSendUtf8TextEvent(cStr, UInt32(buffer.count))
                     }
                 }
+            },
+            onSessionControls: { [weak self] in
+                Task { @MainActor [weak self] in self?.openSessionControls() }
             }
         )
 
@@ -347,6 +490,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             DiscordPresence.shared.start(applicationID: settings.features.discordApplicationID, game: app.title, host: host.name)
         }
         startMetricsPolling()
+        startHostServices()
         if let host = activeHost, activeSettings?.enableClipboardSync == true {
             ClipboardSyncManager.shared.start(host: host)
         }
@@ -522,6 +666,8 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         }
     }
 
+    func waitForConnectionStop() async { await stoppingTask?.value }
+
     public func stopSession() {
         // Also invalidate a reconnect that is still waiting for old cleanup.
         sessionGeneration &+= 1
@@ -546,6 +692,15 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         isStreaming = false
         onSessionStopped?()
         stopMetricsPolling()
+        hostServicesTask?.cancel()
+        hostServicesTask = nil
+        let pendingBitrate = bitrateTask
+        pendingBitrate?.cancel()
+        bitrateTask = nil
+        hostStatistics = nil
+        runtimeBitrateSupported = false
+        bitrateRequestInProgress = false
+        showSessionControls = false
         ClipboardSyncManager.shared.stop()
         DiscordPresence.shared.stop()
         DisplaySleepManager.shared.stop()
@@ -577,6 +732,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             // LiStartConnection performs its own cleanup on failure. Never run
             // LiStopConnection concurrently with that cleanup.
             await inputStop.value
+            _ = try? await pendingBitrate?.value
             await connectionTask?.value
             LiStopConnection()
         }
@@ -640,7 +796,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         if let settings = activeSettings {
             updated.targetFps = settings.fps
             let isRemote = (streamConfigRemotely == STREAM_CFG_REMOTE)
-            updated.bitrateMbps = Double(settings.streamBitrateKbps(isRemote: isRemote)) / 1000
+            updated.bitrateMbps = Double(runtimeBitrateKbps > 0 ? runtimeBitrateKbps : settings.streamBitrateKbps(isRemote: isRemote)) / 1000
             let size = negotiatedVideoSize ?? CGSize(width: settings.width, height: settings.height)
             updated.resolution = "\(Int(size.width))x\(Int(size.height))"
             updated.vsyncEnabled = settings.videoRenderer == .native || settings.enableVsync
