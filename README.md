@@ -85,6 +85,12 @@ For development, use `swift build` or `./Scripts/package_app.sh debug`.
 3. Enter Moonlight's four-digit PIN in the host's web interface.
 4. After pairing succeeds, select a game or desktop session.
 
+Clicking an unreachable PC sends Wake-on-LAN using its saved MAC address and
+shows **Waking…** until serverinfo responds. The apps screen opens after fetching
+a fresh app list. You can cancel the wait; a PC that does not respond within
+about a minute shows an error. Wake-on-LAN must be enabled on the PC and supported
+by the network. App lists are not stored on disk; cover artwork remains cached.
+
 Pairing verifies the host's signature and PIN challenge, then confirms the
 connection over HTTPS using that host's certificate. The certificate is saved
 with the PC and checked on later authenticated requests.
@@ -96,7 +102,10 @@ reinstalling or replacing a host, unpair it and pair again.
 
 Remote connections require a working network route to the host, such as a VPN or
 an appropriately configured host/network. Discovery does not configure remote
-access automatically.
+access automatically. Host Details shows the reported **Remote IP** and the active
+address. The client checks the primary address first and falls back to the saved
+remote IP, with the same certificate and host-identity checks. An unreported or
+unspecified remote IP cannot provide a fallback.
 
 ## Streaming shortcuts
 
@@ -123,8 +132,11 @@ settings; desktop-shortcut sessions quit the game they launched on exit.
   resolves the physical resolution of the Mac's current display at session start.
   Select **Custom…** in either dropdown to reveal its labelled editor.
 - **Bitrate:** set the target stream bitrate. Enabling a custom remote bitrate
-  uses that value for connections classified as remote, including Tailscale; it
-  does not measure bandwidth or automatically tune the value.
+  uses that value for connections classified as remote, including Tailscale.
+  The default remote value, **0 (Auto)**, uses one quarter of the normal bitrate
+  (for example, 25 Mbps becomes 6.25 Mbps). With the remote override disabled,
+  both local and remote sessions use the normal bitrate. Changes take effect on
+  the next connection; this does not measure bandwidth or tune it during a stream.
 - **Renderer, V-Sync and frame pacing:** select the presentation path and whether
   to pace frames against display refresh. Manual V-Sync control applies to Metal;
   the native renderer manages synchronization automatically.
@@ -166,15 +178,28 @@ swift test --jobs 4
 ./Scripts/verify_app.sh Products/Moonlight.app
 ```
 
-The v0.2 code passes **64 regression tests** locally, plus optimized app packaging
+The current code passes **73 regression tests** locally, plus optimized app packaging
 and verification of the executable, shader/language resources, licenses, plist and
 ad-hoc signature. GitHub's [macOS validation run](https://github.com/Eckobrew/moonlight-mac/actions/runs/40039701717)
-also passed tests and release packaging for the final code cleanup.
+also passed tests and release packaging for the v0.2 code cleanup.
 
 Coverage includes audio buffering/recovery, input and window state, malformed
 video recovery, HDR metadata, RTT lifetime, controller requests, custom settings,
 Discord frame parsing, localized/relocated resources, TLS pins and pairing.
 Local TLS tests use `/usr/bin/openssl` and Python 3 and need localhost sockets.
+
+Two live tests are opt-in and use an already paired, saved PC. The first may wake
+the PC and verifies authenticated app listing and fallback from a deliberately
+unreachable primary address. The second opens Desktop, checks decoded frames at
+40 and 20 Mbps, then disconnects and closes Desktop if the test launched it:
+
+```sh
+MOONLIGHT_LIVE_HOST=Nathan-PC MOONLIGHT_LIVE_STREAM=1 swift test --jobs 4
+```
+
+Use your saved PC's name for `MOONLIGHT_LIVE_HOST`. These tests do not verify
+Internet routing or subjective mouse, audio or window behaviour.
+
 
 The [macOS CI workflow](.github/workflows/macos.yml) runs tests and release
 packaging. See [GitHub Actions](https://github.com/Eckobrew/moonlight-mac/actions/workflows/macos.yml)

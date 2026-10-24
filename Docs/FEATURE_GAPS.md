@@ -54,3 +54,28 @@ Idle work was reduced without changing the focus/fullscreen recovery state machi
 The complete regression suite still passes 64 tests. These changes reduce redundant work; they are not a new latency benchmark or a substitute for controller/HDR/device testing.
 
 Release metadata cleanup also removes the global `NSSupportsAppNap`, `NSAppSleepDisabled` and `NSApplicationUpdateCycleEnabled` overrides. The existing stream-scoped process activity and focused display-sleep assertions remain responsible for streaming power behaviour. App metadata identifies v0.2 as version 0.2.0, build 2.
+
+## Remote route and bitrate follow-up
+
+The suite now includes 73 tests. A localhost TLS fixture verifies fallback from an
+unreachable or mismatched primary host, certificate rejection, and app listing,
+launch and resume on the winning route. Bitrate coverage checks local/remote
+selection, explicit overrides, and the zero-value default (one quarter of normal
+bitrate, retaining fractional Mbps). These checks do not establish Internet
+reachability through a user's router. Runtime resource discovery no longer calls
+SwiftPM's build-path accessor; installed apps use their bundled resources.
+
+Host selection, controller selection and desktop shortcuts share a wake/readiness
+flow. Tests cover an already awake PC, delayed readiness, missing MAC addresses,
+cancellation, timeout and trust failures. A localhost UDP test verifies the
+nonblocking datagram sender. Hardware tests never put the PC to sleep.
+
+Live validation woke Nathan-PC and authenticated successfully about 10 seconds
+after the wake request. It fetched 13 apps and passed forced-primary-failure
+fallback against the same real PC with its saved certificate. The host did not
+advertise an ExternalIP, so the expected Host Details value is “Not reported”.
+This confirms the fallback path over LAN; it does not establish off-site routing.
+Two opt-in hardware tests supplement the 73 default regression tests. Desktop
+stream testing checks decoded frames, configuration changes between 40 and
+20 Mbps, resume and cleanup. Subjective input/audio/window behaviour and a true
+WAN connection remain separate hardware checks.
