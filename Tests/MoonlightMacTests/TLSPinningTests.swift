@@ -106,3 +106,85 @@ server.serve_forever()
         session.invalidateAndCancel()
     }
 }
+
+@Test func remoteFallbackAuthenticatesThenUsesWinningRoute() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try makeTestCertificate(in: directory)
+    let pem = try String(contentsOf: directory.appendingPathComponent("cert.pem"), encoding: .utf8)
+    let pin = try #require(HostTrust.certificateDER(pem: pem))
+    let port = try reserveTestPort()
+    let server = Process()
+    server.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    server.arguments = ["python3", "-c", """
+import http.server, ssl, sys
+from urllib.parse import urlsplit
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        path = urlsplit(self.path).path
+        # localhost is reachable but represents an unrelated host. Fallback must
+        # still proceed after validation, using the same pinned certificate.
+        if path == '/serverinfo':
+            identity = 'wrong-host' if self.headers.get('Host', '').startswith('localhost:') else 'expected-host'
+            content = '<hostname>Fixture</hostname><uniqueid>' + identity + '</uniqueid><appversion>7.1.0.-1</appversion><PairStatus>1</PairStatus><ExternalIP>0.0.0.0</ExternalIP><ExternalPort>12345</ExternalPort>'
+        elif path == '/applist':
+            content = '<App><ID>1</ID><AppTitle>Desktop</AppTitle></App>'
+        elif path in ('/launch', '/resume'):
+            content = '<gamesession>1</gamesession><sessionUrl0>rtsp://127.0.0.1:48010</sessionUrl0>'
+        else:
+            self.send_error(404)
+            return
+        body = ('<root status_code="200">' + content + '</root>').encode()
+        self.send_response(200)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+server = http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[2])), Handler)
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(sys.argv[1] + '/cert.pem', sys.argv[1] + '/key.pem')
+server.socket = context.wrap_socket(server.socket, server_side=True)
+server.serve_forever()
+""", directory.path, String(port)]
+    server.standardInput = FileHandle.nullDevice
+    server.standardOutput = FileHandle.nullDevice
+    server.standardError = FileHandle.nullDevice
+    try server.run()
+    defer {
+        if server.isRunning { server.terminate() }
+        server.waitUntilExit()
+    }
+    var ready = false
+    let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+    while ContinuousClock.now < deadline && server.isRunning {
+        if TCPProbe.canConnect(address: "127.0.0.1", port: port) { ready = true; break }
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    try #require(ready)
+    let client = SunshineHTTPClient(uniqueID: { "test-client" })
+    for primary in ["127.0.0.2", "localhost"] {
+        let host = Host(name: "Fixture", address: primary, remoteAddress: "127.0.0.1",
+                        httpsPort: Int(port), httpPort: 47989, serverId: "expected-host",
+                        isPaired: true, serverCertificateDER: pin)
+        let (resolved, _) = try await client.fetchServerInfo(host: host)
+        #expect(resolved.effectiveAddress == "127.0.0.1")
+        #expect(resolved.serverId == "expected-host")
+        #expect(resolved.isSecurelyPaired)
+        #expect(resolved.remoteAddress == "127.0.0.1") // Ignore unspecified ExternalIP.
+        #expect(resolved.httpPort == 47989) // ExternalPort must not corrupt LAN port.
+        let apps = try await client.fetchAppList(host: resolved)
+        #expect(apps.map(\.id) == [1])
+        #expect(apps.first?.boxArtUrl?.host == "127.0.0.1")
+        let url = try await client.launchApp(host: resolved, appId: 1, settings: StreamSettings(), rikey: String(repeating: "0", count: 32), rikeyId: 1)
+        #expect(url == "rtsp://127.0.0.1:48010")
+        let resumed = try await client.resumeApp(host: resolved, settings: StreamSettings(), rikey: String(repeating: "0", count: 32), rikeyId: 1)
+        #expect(resumed == url)
+    }
+    let differentCertificateURL = try #require(Bundle.module.url(forResource: "host.der", withExtension: nil, subdirectory: "Fixtures"))
+    let wrongPin = try Data(contentsOf: differentCertificateURL)
+    let untrusted = Host(name: "Wrong pin", address: "127.0.0.2", remoteAddress: "127.0.0.1",
+                         httpsPort: Int(port), isPaired: true, serverCertificateDER: wrongPin)
+    await #expect(throws: (any Error).self) { try await client.fetchServerInfo(host: untrusted) }
+}

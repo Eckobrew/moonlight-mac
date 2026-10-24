@@ -1,5 +1,4 @@
 import Foundation
-import Network
 
 public enum WakeOnLAN {
     /// Sends a Wake-on-LAN magic packet.
@@ -31,8 +30,9 @@ public enum WakeOnLAN {
         var lastError: Error?
         var sent = false
         for destination in destinations {
+            try Task.checkCancellation()
             do {
-                try await send(packetData, to: destination, port: port)
+                try send(packetData, to: destination, port: port)
                 sent = true
             } catch {
                 lastError = error
@@ -44,35 +44,33 @@ public enum WakeOnLAN {
         }
     }
 
-    private static func send(_ packetData: Data, to broadcastAddress: String, port: UInt16) async throws {
-        let host = NWEndpoint.Host(broadcastAddress)
-        let portEndpoint = NWEndpoint.Port(rawValue: port)!
-        let params = NWParameters.udp
-        params.allowLocalEndpointReuse = true
-
-        let connection = NWConnection(host: host, port: portEndpoint, using: params)
-
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    connection.send(content: packetData, completion: .contentProcessed { error in
-                        connection.cancel()
-                        if let error = error {
-                            continuation.resume(throwing: error)
-                        } else {
-                            continuation.resume(returning: ())
-                        }
-                    })
-                case .failed(let error):
-                    connection.cancel()
-                    continuation.resume(throwing: error)
-                default:
-                    break
+    /// UDP does not need a connection handshake. A nonblocking send avoids
+    /// waiting indefinitely for NWConnection to become ready on an offline network.
+    static func send(_ packetData: Data, to broadcastAddress: String, port: UInt16) throws {
+        let descriptor = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { close(descriptor) }
+        var broadcast: Int32 = 1
+        guard setsockopt(descriptor, SOL_SOCKET, SO_BROADCAST, &broadcast, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        let flags = fcntl(descriptor, F_GETFL, 0)
+        guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        guard inet_pton(AF_INET, broadcastAddress, &address.sin_addr) == 1 else { throw URLError(.badURL) }
+        let count = packetData.withUnsafeBytes { bytes in
+            withUnsafePointer(to: &address) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    sendto(descriptor, bytes.baseAddress, bytes.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
                 }
             }
-            connection.start(queue: .global(qos: .utility))
         }
+        guard count == packetData.count else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     }
 
     /// Computes `<network>.255`-style directed broadcast addresses for the machine's active

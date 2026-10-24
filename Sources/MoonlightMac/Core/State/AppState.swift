@@ -9,6 +9,11 @@ public final class AppState: @unchecked Sendable {
     public var controllerHostFocus: UUID?
     public var controllerAppFocus: Int?
     public var appsForSelectedHost: [StreamApp] = []
+    public private(set) var connectingHost: Host?
+    public private(set) var hostConnectionStatus = ""
+    public var hostConnectionError: String?
+    private var hostConnectionTask: Task<Void, Never>?
+    private var hostConnectionID = UUID()
     public var settings: StreamSettings = StreamSettings()
 
     public var isShowingAddHost: Bool = false
@@ -195,6 +200,7 @@ public final class AppState: @unchecked Sendable {
     }
 
     public func removeHost(_ host: Host) {
+        if connectingHost?.id == host.id { cancelHostConnection() }
         hosts.removeAll(where: { $0.id == host.id })
         if selectedHost?.id == host.id {
             selectedHost = nil
@@ -280,28 +286,84 @@ public final class AppState: @unchecked Sendable {
         saveHosts(ifChanged: true)
     }
 
+    /// Publish the app screen only after a live host has supplied a fresh list.
+    public func connectToHost(_ host: Host) {
+        guard !isStreaming, connectingHost?.id != host.id else { return }
+        cancelHostConnection()
+        selectedHost = nil
+        appsForSelectedHost.removeAll()
+        controllerAppFocus = nil
+        hostConnectionError = nil
+        connectingHost = host
+        hostConnectionStatus = "Connecting to \(host.name)…"
+        let request = hostConnectionID
+        hostConnectionTask = Task {
+            do {
+                let resolved = try await HostWakeConnection.resolve(host: host) {
+                    guard self.hostConnectionID == request else { return }
+                    self.hostConnectionStatus = "Waking \(host.name)…"
+                }
+                guard self.hostConnectionID == request, !Task.isCancelled else { return }
+                self.addOrUpdateHost(resolved)
+                if resolved.isSecurelyPaired {
+                    self.hostConnectionStatus = "Loading apps from \(resolved.name)…"
+                    let apps = try await SunshineHTTPClient.shared.fetchAppList(host: resolved)
+                    guard self.hostConnectionID == request, !Task.isCancelled else { return }
+                    self.appsForSelectedHost = apps
+                    self.selectedHost = resolved
+                    self.connectingHost = nil
+                } else {
+                    self.selectedHost = resolved
+                    self.connectingHost = nil
+                    await self.startPairing(for: resolved)
+                }
+            } catch {
+                guard self.hostConnectionID == request, !Task.isCancelled else { return }
+                self.connectingHost = nil
+                self.markPairingRequiredIfUnauthorized(host: host, error: error)
+                self.hostConnectionError = error.localizedDescription
+            }
+            if self.hostConnectionID == request { self.hostConnectionTask = nil }
+        }
+    }
+
+    public func cancelHostConnection() {
+        hostConnectionID = UUID()
+        hostConnectionTask?.cancel()
+        hostConnectionTask = nil
+        connectingHost = nil
+        hostConnectionStatus = ""
+    }
+
     public func loadApps(for host: Host) async {
+        let request = hostConnectionID
         do {
-            let apps = try await SunshineHTTPClient.shared.fetchAppList(host: host)
+            let (resolvedHost, _) = try await SunshineHTTPClient.shared.fetchServerInfo(host: host)
+            guard hostConnectionID == request, !Task.isCancelled else { return }
+            addOrUpdateHost(resolvedHost)
+            let apps = try await SunshineHTTPClient.shared.fetchAppList(host: resolvedHost)
             await MainActor.run {
-                guard self.selectedHost?.id == host.id else { return }
+                guard self.selectedHost?.id == host.id, self.hostConnectionID == request, !Task.isCancelled else { return }
                 self.appsForSelectedHost = apps
             }
         } catch {
+            guard hostConnectionID == request, !Task.isCancelled else { return }
             AppLogger.shared.error("Failed to load apps for \(host.name): \(error.localizedDescription)", category: "HTTP")
-            if let nsError = error as NSError?, nsError.code == 401 {
-                await MainActor.run {
-                    if let idx = self.hosts.firstIndex(where: { $0.id == host.id || $0.address == host.address }) {
-                        self.hosts[idx].isPaired = false
-                        self.hosts[idx].status = .pairingRequired
-                        self.saveHosts()
-                    }
-                    if self.selectedHost?.id == host.id {
-                        self.selectedHost = nil
-                        self.appsForSelectedHost.removeAll()
-                    }
-                }
-            }
+            markPairingRequiredIfUnauthorized(host: host, error: error)
+        }
+    }
+
+    private func markPairingRequiredIfUnauthorized(host: Host, error: Error) {
+        let error = error as NSError
+        guard error.domain == "SunshineHTTPClient", error.code == 401 else { return }
+        if let index = hosts.firstIndex(where: { $0.id == host.id || $0.address == host.address }) {
+            hosts[index].isPaired = false
+            hosts[index].status = .pairingRequired
+            saveHosts()
+        }
+        if selectedHost?.id == host.id {
+            selectedHost = nil
+            appsForSelectedHost.removeAll()
         }
     }
 
@@ -442,41 +504,18 @@ public final class AppState: @unchecked Sendable {
             return
         }
 
-        // 2. Connect to host (with automatic Wake-on-LAN recovery if sleeping or unreachable)
+        // Use the same wake/readiness flow as a normal host click.
         self.cliStreamStatus = "Connecting to '\(host.name)'..."
         do {
-            let (updated, _) = try await SunshineHTTPClient.shared.fetchServerInfo(host: host)
+            host = try await HostWakeConnection.resolve(host: host) {
+                self.cliStreamStatus = "Waking '\(host.name)' via Wake-on-LAN…"
+            }
             guard !Task.isCancelled else { return }
-            host = updated
-            self.addOrUpdateHost(updated)
+            self.addOrUpdateHost(host)
         } catch {
             guard !Task.isCancelled else { return }
-            if let mac = host.macAddress {
-                self.cliStreamStatus = "Host unreachable. Waking '\(host.name)' via Wake-on-LAN..."
-                AppLogger.shared.info("Initial connection failed for '\(host.name)'. Attempting Wake-on-LAN recovery...", category: "CLI")
-                var recovered = false
-                for i in 0..<24 {
-                    guard !Task.isCancelled else { return }
-                    self.cliStreamStatus = "Waking up '\(host.name)' (\(24 - i) attempts remaining)..."
-                    try? await WakeOnLAN.wake(macAddress: mac)
-                    try? await Task.sleep(for: .milliseconds(2500))
-                    guard !Task.isCancelled else { return }
-                    if let (updated, _) = try? await SunshineHTTPClient.shared.fetchServerInfo(host: host), updated.isOnline {
-                        guard !Task.isCancelled else { return }
-                        host = updated
-                        self.addOrUpdateHost(updated)
-                        recovered = true
-                        break
-                    }
-                }
-                if !recovered {
-                    self.cliStreamError = "Failed to connect to host '\(host.name)': Host did not respond to Wake-on-LAN."
-                    return
-                }
-            } else {
-                self.cliStreamError = "Failed to connect to host '\(host.name)': \(error.localizedDescription)"
-                return
-            }
+            self.cliStreamError = "Failed to connect to host '\(host.name)': \(error.localizedDescription)"
+            return
         }
 
         guard !Task.isCancelled else { return }

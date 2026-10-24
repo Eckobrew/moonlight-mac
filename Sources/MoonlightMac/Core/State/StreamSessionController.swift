@@ -199,6 +199,11 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         let rikeyHex = CryptoUtils.hexString(rikey)
 
         do {
+            // Resolve the current route immediately before launching. A saved LAN
+            // address may no longer be reachable when the client leaves home.
+            let (host, _) = try await SunshineHTTPClient.shared.fetchServerInfo(host: host)
+            guard acceptsCallback(generation: generation), !Task.isCancelled else { return }
+            self.activeHost = host
             let sessionUrl: String?
             if host.currentAppId == app.id {
                 sessionUrl = try await SunshineHTTPClient.shared.resumeApp(

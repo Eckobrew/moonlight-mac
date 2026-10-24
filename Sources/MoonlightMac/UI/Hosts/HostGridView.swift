@@ -13,7 +13,17 @@ public struct HostGridView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            if let selectedHost = appState.selectedHost, selectedHost.isSecurelyPaired {
+            if let host = appState.connectingHost {
+                VStack(spacing: 16) {
+                    Image(systemName: "display").font(.system(size: 48, weight: .light))
+                    ProgressView()
+                    Text(appState.hostConnectionStatus).font(.headline)
+                    Text(host.name).foregroundStyle(.secondary)
+                    Button("Cancel") { appState.cancelHostConnection() }
+                        .keyboardShortcut(.cancelAction)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let selectedHost = appState.selectedHost, selectedHost.isSecurelyPaired {
                 AppGridView(
                     host: selectedHost,
                     apps: appState.appsForSelectedHost,
@@ -26,9 +36,6 @@ public struct HostGridView: View {
                         Task {
                             try? await SunshineHTTPClient.shared.quitApp(host: selectedHost)
                             try? await Task.sleep(for: .milliseconds(300))
-                            if let (updatedHost, _) = try? await SunshineHTTPClient.shared.fetchServerInfo(host: selectedHost) {
-                                appState.addOrUpdateHost(updatedHost)
-                            }
                             await appState.loadApps(for: selectedHost)
                             await appState.refreshHosts()
                         }
@@ -84,6 +91,14 @@ public struct HostGridView: View {
                 }
             }
         }
+        .alert("Couldn’t connect to PC", isPresented: Binding(
+            get: { appState.hostConnectionError != nil },
+            set: { if !$0 { appState.hostConnectionError = nil } }
+        )) {
+            Button("OK", role: .cancel) { appState.hostConnectionError = nil }
+        } message: {
+            Text(appState.hostConnectionError ?? "")
+        }
         .sheet(isPresented: $appState.isShowingAddHost) {
             AddHostSheet { newHost in
                 appState.addOrUpdateHost(newHost)
@@ -123,14 +138,11 @@ public struct HostGridView: View {
                 guard !Task.isCancelled else { break }
 
                 // Avoid competing with low-latency streaming UDP traffic when active
-                guard !StreamSessionController.shared.isStreaming else { continue }
+                guard !StreamSessionController.shared.isStreaming, appState.connectingHost == nil else { continue }
 
                 if let selectedHost = appState.selectedHost, selectedHost.isSecurelyPaired {
                     // On the apps screen: refresh apps and host status (running app, etc.)
                     await appState.loadApps(for: selectedHost)
-                    if let (updatedHost, _) = try? await SunshineHTTPClient.shared.fetchServerInfo(host: selectedHost) {
-                        appState.addOrUpdateHost(updatedHost)
-                    }
                 } else {
                     // On the hosts screen: refresh all hosts
                     await appState.refreshHosts()
@@ -208,16 +220,7 @@ public struct HostGridView: View {
     }
 
     private func selectHost(_ host: Host) {
-        appState.selectedHost = host
-        if host.isSecurelyPaired {
-            Task {
-                await appState.loadApps(for: host)
-            }
-        } else {
-            Task {
-                await appState.startPairing(for: host)
-            }
-        }
+        appState.connectToHost(host)
     }
 
     private func pairHost(_ host: Host) {
@@ -228,18 +231,7 @@ public struct HostGridView: View {
     }
 
     private func wakeHost(_ host: Host) {
-        guard let mac = host.macAddress else { return }
-        Task {
-            AppLogger.shared.info("Sending Wake-on-LAN magic packet to \(host.name) (\(mac))...", category: "WOL")
-            try? await WakeOnLAN.wake(macAddress: mac)
-            for _ in 0..<5 {
-                try? await Task.sleep(for: .seconds(2))
-                await appState.refreshHosts()
-                if let current = appState.hosts.first(where: { $0.id == host.id }), current.isOnline {
-                    break
-                }
-            }
-        }
+        appState.connectToHost(host)
     }
 
     private func unpairHost(_ host: Host) {

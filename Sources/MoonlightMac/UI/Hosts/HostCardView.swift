@@ -136,15 +136,6 @@ public struct HostCardView: View {
                 .stroke(isSelected ? Color.accentColor : Color.gray.opacity(0.15), lineWidth: isSelected ? 2 : 1)
         )
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            if host.status == .offline {
-                onWakeOnLan()
-            } else if host.isSecurelyPaired {
-                onSelect()
-            } else {
-                onPair()
-            }
-        }
         .onTapGesture(count: 1) {
             onSelect()
         }

@@ -85,6 +85,10 @@ import GameController
             state.isShowingSettings = true
             return
         }
+        if state.connectingHost != nil {
+            if fresh.contains("back") { state.cancelHostConnection() }
+            return
+        }
         if fresh.contains("back") {
             state.selectedHost = nil
             return
@@ -113,14 +117,7 @@ import GameController
             }
             if fresh.contains("accept") {
                 let host = hosts[index]
-                state.selectedHost = host
-                Task {
-                    if host.isSecurelyPaired {
-                        await state.loadApps(for: host)
-                    } else {
-                        await state.startPairing(for: host)
-                    }
-                }
+                state.connectToHost(host)
             }
         }
     }

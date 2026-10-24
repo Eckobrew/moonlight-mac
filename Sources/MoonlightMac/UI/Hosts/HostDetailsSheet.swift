@@ -6,7 +6,13 @@ import MoonlightCommonC
 /// Values come from the serverinfo response and the saved host record, which is what support
 /// requests usually need: addresses, ports, pairing state, protocol versions and codec support.
 struct HostDetailsSheet: View {
-    let host: Host
+    private let originalHost: Host
+    private var host: Host { appState.hosts.first(where: { $0.id == originalHost.id }) ?? originalHost }
+
+    init(host: Host, appState: AppState) {
+        self.originalHost = host
+        self.appState = appState
+    }
     let appState: AppState
 
     @Environment(\.dismiss) private var dismiss
@@ -81,9 +87,7 @@ struct HostDetailsSheet: View {
         detailGroup("Host") {
             row("Name", host.name)
             row("Address", host.address)
-            if let remote = host.remoteAddress, !remote.isEmpty {
-                row("Remote address", remote)
-            }
+            row("Remote IP", host.remoteAddress.flatMap { $0.isEmpty ? nil : $0 } ?? "Not reported")
             if let active = host.activeAddress, active != host.address {
                 row("Active address", active)
             }

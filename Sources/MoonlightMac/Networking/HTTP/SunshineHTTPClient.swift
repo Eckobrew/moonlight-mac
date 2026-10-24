@@ -4,6 +4,12 @@ import MoonlightCommonC
 
 public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
     public static let shared = SunshineHTTPClient()
+    private let uniqueID: @Sendable () -> String
+
+    init(uniqueID: @escaping @Sendable () -> String = { CertificateManager.shared.uniqueId }) {
+        self.uniqueID = uniqueID
+        super.init()
+    }
 
     private let defaultSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -89,7 +95,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
                     }
                 }
             } catch {
-                AppLogger.shared.debug("HTTPS serverinfo failed for \(address): \(error.localizedDescription); falling back to HTTP", category: "HTTP")
+                AppLogger.shared.debug("HTTPS serverinfo failed for \(address): \(error.localizedDescription)", category: "HTTP")
             }
         }
 
@@ -116,41 +122,38 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
     }
 
     public func fetchServerInfo(host: Host) async throws -> (Host, [String: String]) {
-        let uniqueId = CertificateManager.shared.uniqueId
+        let uniqueId = uniqueID()
 
         AppLogger.shared.info("Fetching serverinfo for \(host.address)...", category: "HTTP")
 
-        // 1. Try primary address first
-        var successInfo = await queryServerInfo(address: host.address, httpsPort: host.httpsPort, httpPort: host.httpPort, uniqueId: uniqueId, certificateDER: host.serverCertificateDER)
-        var activeAddr = host.address
-
-        // 2. If primary address failed, attempt fallback to remoteAddress
-        if successInfo == nil,
-           let remote = host.remoteAddress,
-           !remote.isEmpty,
-           remote != host.address {
-            AppLogger.shared.info("Primary address \(host.address) unreachable for host \(host.name). Attempting fallback to remote address \(remote)...", category: "HTTP")
-            if let remoteSuccess = await queryServerInfo(address: remote, httpsPort: host.httpsPort, httpPort: host.httpPort, uniqueId: uniqueId, certificateDER: host.serverCertificateDER) {
-                successInfo = remoteSuccess
-                activeAddr = remote
-                AppLogger.shared.info("Successfully connected to \(host.name) via remote IP backup: \(remote)", category: "HTTP")
+        var candidates = [host.address]
+        if let remote = host.remoteAddress?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !remote.isEmpty, remote != host.address {
+            candidates.append(remote)
+        }
+        var result: (String, [String: String], Bool)?
+        var lastError: Error = URLError(.cannotConnectToHost)
+        for address in candidates {
+            try Task.checkCancellation()
+            guard let (data, isHTTPS) = await queryServerInfo(
+                address: address, httpsPort: host.httpsPort, httpPort: host.httpPort,
+                uniqueId: uniqueId, certificateDER: host.serverCertificateDER
+            ) else { continue }
+            let metadata = parseSimpleXML(data: data)
+            guard (metadata["status_code"] == nil || metadata["status_code"] == "200"),
+                  metadata["appversion"] != nil || metadata["uniqueid"] != nil || metadata["hostname"] != nil else {
+                lastError = URLError(.badServerResponse)
+                continue
             }
+            if let expected = host.serverId, !expected.isEmpty,
+               metadata["uniqueid"].map({ expected.caseInsensitiveCompare($0) != .orderedSame }) ?? true {
+                lastError = HostTrustError.unexpectedHost
+                continue
+            }
+            result = (address, metadata, isHTTPS)
+            break
         }
-
-        guard let (data, isHttps) = successInfo else {
-            throw URLError(.cannotConnectToHost)
-        }
-
-        let dict = parseSimpleXML(data: data)
-        guard dict["appversion"] != nil || dict["uniqueid"] != nil || dict["mac"] != nil || dict["hostname"] != nil else {
-            AppLogger.shared.error("Invalid serverinfo response from \(activeAddr): missing GameStream/Sunshine metadata", category: "HTTP")
-            throw URLError(.badServerResponse)
-        }
-
-        if let expected = host.serverId, !expected.isEmpty,
-           let actual = dict["uniqueid"], expected.caseInsensitiveCompare(actual) != .orderedSame {
-            throw HostTrustError.unexpectedHost
-        }
+        guard let (activeAddr, dict, isHttps) = result else { throw lastError }
         if host.isSecurelyPaired && !isHttps {
             // HTTP can tell us a listener is alive, but cannot authenticate metadata
             // or refresh the saved certificate's host identity.
@@ -160,6 +163,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         }
         var updatedHost = host
         updatedHost.activeAddress = activeAddr
+        updatedHost.lastSeen = Date()
         if let hostname = dict["hostname"], !hostname.isEmpty { updatedHost.name = hostname }
         if let appVersion = dict["appversion"], !appVersion.isEmpty { updatedHost.appVersion = appVersion }
         if let gfeVersion = dict["GfeVersion"], !gfeVersion.isEmpty { updatedHost.gfeVersion = gfeVersion }
@@ -167,14 +171,13 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         if let mac = dict["mac"], !mac.isEmpty, SunshineHTTPClient.isValidMacAddress(mac) {
             updatedHost.macAddress = mac
         }
-        if let httpsPortStr = dict["HttpsPort"], let port = Int(httpsPortStr), port > 0 {
+        if let httpsPortStr = dict["HttpsPort"], let port = Int(httpsPortStr), (1...65535).contains(port) {
             updatedHost.httpsPort = port
         }
-        if let extPortStr = dict["ExternalPort"], let port = Int(extPortStr), port > 0 {
-            updatedHost.httpPort = port
-        }
-        if let extIp = dict["ExternalIP"], !extIp.isEmpty {
-            updatedHost.remoteAddress = extIp
+        // ExternalPort is a WAN HTTP mapping, not the host's LAN HTTP port.
+        // Do not overwrite the configured listener port during every refresh.
+        if let extIp = dict["ExternalIP"], NetworkReachability.isUsableRemoteAddress(extIp) {
+            updatedHost.remoteAddress = NetworkReachability.normalizedAddress(extIp)
         }
         if let codec = dict["ServerCodecModeSupport"], let codecVal = Int32(codec) {
             updatedHost.serverCodecModeSupport = codecVal
@@ -213,7 +216,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
     }
 
     public func fetchAppList(host: Host) async throws -> [StreamApp] {
-        let uniqueId = CertificateManager.shared.uniqueId
+        let uniqueId = uniqueID()
         guard let url = URL(string: "https://\(host.urlAddress):\(host.httpsPort)/applist?uniqueid=\(uniqueId)") else {
             throw URLError(.badURL)
         }
@@ -237,7 +240,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
     }
 
     public func fetchBoxArt(host: Host, appId: Int) async throws -> Data {
-        let uniqueId = CertificateManager.shared.uniqueId
+        let uniqueId = uniqueID()
         guard let url = URL(string: "https://\(host.urlAddress):\(host.httpsPort)/appasset?uniqueid=\(uniqueId)&appid=\(appId)&AssetType=2&AssetIdx=0") else {
             throw URLError(.badURL)
         }
@@ -256,7 +259,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         rikey: String,
         rikeyId: UInt32
     ) async throws -> String? {
-        let uniqueId = CertificateManager.shared.uniqueId
+        let uniqueId = uniqueID()
         let mode = "\(settings.width)x\(settings.height)x\(settings.fps)"
         let surroundAudioInfo = settings.audioMode.surroundAudioInfo
         let localAudioPlayMode = settings.muteHostAudio ? 0 : 1
@@ -308,7 +311,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
         rikey: String,
         rikeyId: UInt32
     ) async throws -> String? {
-        let uniqueId = CertificateManager.shared.uniqueId
+        let uniqueId = uniqueID()
         let mode = "\(settings.width)x\(settings.height)x\(settings.fps)"
         let surroundAudioInfo = settings.audioMode.surroundAudioInfo
         let localAudioPlayMode = settings.muteHostAudio ? 0 : 1
@@ -353,7 +356,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
     }
 
     public func quitApp(host: Host) async throws {
-        let uniqueId = CertificateManager.shared.uniqueId
+        let uniqueId = uniqueID()
         guard let url = URL(string: "https://\(host.urlAddress):\(host.httpsPort)/cancel?uniqueid=\(uniqueId)") else {
             throw URLError(.badURL)
         }
@@ -363,7 +366,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
     }
 
     public func unpair(host: Host) async {
-        let uniqueId = CertificateManager.shared.uniqueId
+        let uniqueId = uniqueID()
 
         AppLogger.shared.info("Sending unpair request to \(host.effectiveAddress)...", category: "HTTP")
 
@@ -380,7 +383,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
     }
 
     public func getClipboardContent(host: Host) async throws -> String {
-        let uniqueId = CertificateManager.shared.uniqueId
+        let uniqueId = uniqueID()
         guard let url = URL(string: "https://\(host.urlAddress):\(host.httpsPort)/actions/clipboard?type=text&uniqueid=\(uniqueId)") else {
             throw URLError(.badURL)
         }
@@ -395,7 +398,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
     }
 
     public func sendClipboardContent(host: Host, text: String) async throws {
-        let uniqueId = CertificateManager.shared.uniqueId
+        let uniqueId = uniqueID()
         let uuid = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         guard let url = URL(string: "https://\(host.urlAddress):\(host.httpsPort)/actions/clipboard?uniqueid=\(uniqueId)&uuid=\(uuid)&type=text") else {
             throw URLError(.badURL)
@@ -504,7 +507,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
 
                 let isCollector = (appDict["IsAppCollectorGame"] ?? appDict["isappcollectorgame"]) == "1"
-                let boxArtUrl = URL(string: "https://\(host.urlAddress):\(host.httpsPort)/appasset?uniqueid=\(CertificateManager.shared.uniqueId)&appid=\(appId)&AssetType=2&AssetIdx=0")
+                let boxArtUrl = URL(string: "https://\(host.urlAddress):\(host.httpsPort)/appasset?uniqueid=\(uniqueID())&appid=\(appId)&AssetType=2&AssetIdx=0")
                 apps.append(StreamApp(id: appId, title: unescapedTitle, isAppCollectorGame: isCollector, boxArtUrl: boxArtUrl))
             }
         }
