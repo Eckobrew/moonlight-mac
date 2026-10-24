@@ -3,6 +3,16 @@ set -euo pipefail
 APP_DIR="${1:?Usage: verify_app.sh /path/to/Moonlight.app}"
 PLIST="$APP_DIR/Contents/Info.plist"
 plutil -lint "$PLIST"
+# Public-IP serverinfo uses HTTP. These narrower keys override the global
+# exception by their presence, including when their value is false.
+[[ "$(/usr/libexec/PlistBuddy -c 'Print NSAppTransportSecurity:NSAllowsArbitraryLoads' "$PLIST")" == true ]] || {
+    echo "GameStream HTTP requires NSAllowsArbitraryLoads" >&2; exit 1;
+}
+for override in NSAllowsLocalNetworking NSAllowsArbitraryLoadsForMedia NSAllowsArbitraryLoadsInWebContent; do
+    if /usr/libexec/PlistBuddy -c "Print NSAppTransportSecurity:$override" "$PLIST" >/dev/null 2>&1; then
+        echo "ATS key $override overrides GameStream's HTTP exception" >&2; exit 1
+    fi
+done
 EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$PLIST")"
 [[ -x "$APP_DIR/Contents/MacOS/$EXECUTABLE" ]] || { echo "App executable is missing" >&2; exit 1; }
 FILE_TYPE="$(file -b "$APP_DIR/Contents/MacOS/$EXECUTABLE")"
@@ -21,4 +31,4 @@ for license in LICENSE THIRD_PARTY_NOTICES.md moonlight-common-c.txt enet.txt na
     [[ -s "$APP_DIR/Contents/Resources/Licenses/$license" ]] || { echo "Missing license: $license" >&2; exit 1; }
 done
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
-echo "Verified executable, Metal and language resources, licenses, plist and signature."
+echo "Verified executable, Metal and language resources, licenses, transport policy, plist and signature."

@@ -238,6 +238,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
               let url = URL(string: "https://\(Host.urlHost(address)):\(httpsPort)/serverinfo?uniqueid=\(uniqueID())") else {
             return false
         }
+        var verificationStage = "HTTPS certificate and server ID"
         do {
             var request = URLRequest(url: url)
             request.timeoutInterval = 3
@@ -251,6 +252,7 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
             // ExternalPort describes HTTP. Check that listener too, after the
             // HTTPS endpoint has authenticated the PC. HTTP alone is never proof.
             if let httpPort {
+                verificationStage = "HTTP server ID"
                 guard (1...65535).contains(httpPort),
                       let httpURL = URL(string: "http://\(Host.urlHost(address)):\(httpPort)/serverinfo?uniqueid=\(uniqueID())") else { return false }
                 var httpRequest = URLRequest(url: httpURL)
@@ -263,6 +265,8 @@ public final class SunshineHTTPClient: NSObject, @unchecked Sendable {
             }
             return true
         } catch {
+            let failure = error as NSError
+            AppLogger.shared.warning("Remote verification for \(address) failed during \(verificationStage): \(failure.domain) \(failure.code): \(failure.localizedDescription)", category: "NETWORK")
             return false
         }
     }

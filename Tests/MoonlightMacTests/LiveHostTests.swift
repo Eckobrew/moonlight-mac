@@ -106,7 +106,7 @@ import Testing
     }
 }
 
-/// Read-only remote endpoint diagnostic; never wakes, sleeps or launches an app.
+/// Remote endpoint diagnostic; may wake the PC, never sleeps or launches an app.
 @Test(.enabled(if: ProcessInfo.processInfo.environment["MOONLIGHT_REMOTE_DIAGNOSTIC"] != nil))
 func liveRemoteAddressDiscoveryDiagnostic() async throws {
     let name = try #require(ProcessInfo.processInfo.environment["MOONLIGHT_REMOTE_DIAGNOSTIC"])

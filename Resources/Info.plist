@@ -38,9 +38,11 @@
     <string>Moonlight requires access to the local network to discover and stream gameplay from Sunshine and Apollo host servers.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
+        <!-- GameStream uses HTTP serverinfo on user-selected LAN/WAN endpoints.
+             Keep this effective: adding NSAllowsLocalNetworking (even false)
+             makes macOS ignore NSAllowsArbitraryLoads. HTTPS is still pinned
+             to the paired host certificate by PinnedHostDelegate. -->
         <key>NSAllowsArbitraryLoads</key>
-        <true/>
-        <key>NSAllowsLocalNetworking</key>
         <true/>
     </dict>
     <key>NSBonjourServices</key>

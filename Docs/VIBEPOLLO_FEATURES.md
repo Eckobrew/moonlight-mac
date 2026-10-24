@@ -47,3 +47,13 @@ Live Remote Monitor validation succeeded on NATHAN-PC: 67 decoded frames, an ack
 Final default regression suite: **94 tests passed**, with hardware tests opt-in. Release packaging verifies the executable, resource bundle, Metal source/library, translations, licenses, plist and code signature. The updated app is packaged in `Products/Moonlight.app`; the installed `/Applications/Moonlight.app` is not replaced by this feature task.
 
 A second live run verified the final statistics behaviour: 61 decoded monitor frames, host-applied 15,000 Kbps, and a read-only statistics target of 15.0 Mbps after the change. Monitor release again completed and the default 94-test regression suite passed afterward.
+
+## Packaged-app remote verification fix
+
+Public-address verification succeeded in Swift tests but failed in the installed app because its plist combined `NSAllowsArbitraryLoads` and `NSAllowsLocalNetworking`. On current macOS, the presence of the latter overrides the former. The public HTTP `/serverinfo` request was rejected by ATS with `NSURLErrorDomain -1022` before reaching the router. Removed the narrower key so GameStream HTTP can reach user-selected public endpoints; pinned HTTPS certificate and UUID verification still precede the HTTP UUID check. The packaging verifier now rejects any ATS key that silently overrides this exception, and network errors identify the verification stage in logs.
+
+Reproduced with two temporary app bundles running the same URLSession probe against NATHAN-PC's public HTTP port: the original policy returned -1022; the corrected policy returned HTTP 200. The authenticated live diagnostic also verified both public endpoints against the paired host. This packaging-specific check complements the protocol tests, whose command-line process does not load the shipped app plist.
+
+Apple documents the override behaviour in [NSAllowsArbitraryLoads](https://developer.apple.com/documentation/bundleresources/information-property-list/nsapptransportsecurity/nsallowsarbitraryloads).
+
+Follow-up validation: all seven targeted discovery/TLS tests passed, the release package passed signature/resource/transport-policy verification, and a probe using its exact plist returned HTTP 200 from the public endpoint. With explicit one-time user authorization, Moonlight was quit and `/Applications/Moonlight.app` replaced; its installed executable matches the verified release. It was left closed.
