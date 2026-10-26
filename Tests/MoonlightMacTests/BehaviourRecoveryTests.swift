@@ -103,22 +103,46 @@ import Testing
 
 private actor ShutdownProbe {
     var cancelled = false
+    private var started = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func markStarted() {
+        started = true
+        for waiter in waiters { waiter.resume() }
+        waiters.removeAll()
+    }
+
+    func waitForStart() async {
+        if started { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
     func markCancelled() { cancelled = true }
 }
 
-@Test func shutdownDeadlineCancelsOutstandingWork() async {
+@Test(.timeLimit(.minutes(1))) func shutdownDeadlineCancelsOutstandingWork() async {
     let probe = ShutdownProbe()
-    let start = ContinuousClock.now
-    await HostAppShutdown.run(timeout: .milliseconds(20)) {
+    // Release the deadline only after the operation starts. Scheduler load and
+    // cold GPU initialization elsewhere in the suite must not decide the winner.
+    await HostAppShutdown.run(timeout: .milliseconds(20), sleep: { duration in
+        #expect(duration == .milliseconds(20))
+        await probe.waitForStart()
+    }) {
+        await probe.markStarted()
         do { try await Task.sleep(for: .seconds(60)) }
         catch { await probe.markCancelled() }
     }
     #expect(await probe.cancelled)
-    #expect(start.duration(to: .now) < .seconds(1))
 }
 
-@Test func shutdownDoesNotWaitForDeadlineWhenRequestCompletes() async {
-    let start = ContinuousClock.now
-    await HostAppShutdown.run(timeout: .seconds(60)) {}
-    #expect(start.duration(to: .now) < .seconds(1))
+@Test(.timeLimit(.minutes(1))) func shutdownDoesNotWaitForDeadlineWhenRequestCompletes() async {
+    let deadline = ShutdownProbe()
+    await HostAppShutdown.run(sleep: { _ in
+        await deadline.markStarted()
+        do { try await Task.sleep(for: .seconds(60)) }
+        catch { await deadline.markCancelled() }
+    }) {
+        await deadline.waitForStart()
+    }
+    #expect(await deadline.cancelled)
 }
