@@ -2,10 +2,14 @@ import Foundation
 
 /// Both app termination and stream stop use the same cancellable deadline.
 enum HostAppShutdown {
-    static func run(timeout: Duration = .seconds(2), operation: @escaping @Sendable () async -> Void) async {
+    static func run(
+        timeout: Duration = .seconds(2),
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        operation: @escaping @Sendable () async -> Void
+    ) async {
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await operation() }
-            group.addTask { try? await Task.sleep(for: timeout) }
+            group.addTask { try? await sleep(timeout) }
             _ = await group.next()
             group.cancelAll()
         }
