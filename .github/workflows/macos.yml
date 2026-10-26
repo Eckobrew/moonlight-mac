@@ -16,5 +16,7 @@ jobs:
           python3 --version
       - name: Regression tests
         run: swift test --jobs 4
+      - name: Vulkan runtime packaging tests
+        run: python3 -B Tests/Packaging/test_vulkan_bundle.py
       - name: Release package and verification
         run: ./Scripts/package_app.sh release

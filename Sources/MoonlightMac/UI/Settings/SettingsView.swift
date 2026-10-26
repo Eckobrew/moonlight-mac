@@ -290,7 +290,13 @@ public struct SettingsView: View {
                 Picker(AppLocalization.text("Renderer:"), selection: $settings.videoRenderer) {
                     ForEach(VideoRendererMode.allCases, id: \.self) { mode in
                         Text(AppLocalization.text(mode.rawValue)).tag(mode)
+                            .disabled(mode == .libplacebo && !LibplaceboStreamRenderer.isAvailable)
                     }
+                }
+
+                if settings.videoRenderer == .libplacebo {
+                    Text("Experimental Vulkan via MoltenVK with direct GPU texture sharing. HDR sources are tone mapped to SDR.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Divider()

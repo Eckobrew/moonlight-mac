@@ -53,7 +53,7 @@ struct PerAppSettingsSheet: View {
                     overrideGroup("Rendering") {
                         optionalToggle(
                             "Enable HDR", value: $overrides.enableHdr, inherited: globalSettings.enableHdr)
-                        if globalSettings.videoRenderer == .metal {
+                        if globalSettings.videoRenderer != .native {
                             optionalToggle(
                                 "Enable V-Sync", value: $overrides.enableVsync,
                                 inherited: globalSettings.enableVsync)

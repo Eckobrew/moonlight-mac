@@ -1,0 +1,5 @@
+module CLibplacebo [system] {
+    header "shim.h"
+    link "placebo"
+    export *
+}

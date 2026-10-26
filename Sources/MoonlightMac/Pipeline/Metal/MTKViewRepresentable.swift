@@ -8,6 +8,16 @@ import SwiftUI
 public final class MetalStreamView: NSView {
     public override var acceptsFirstResponder: Bool { true }
     public var onWindowAttached: ((NSWindow) -> Void)?
+    public var rendererMode: VideoRendererMode = .metal
+    public var enableVsync = true
+
+    private func attachRenderer(_ layer: CAMetalLayer) {
+        if rendererMode == .libplacebo {
+            LibplaceboStreamRenderer.shared.attachLayer(layer, vsync: enableVsync)
+        } else {
+            MetalStreamRenderer.shared.attachLayer(layer)
+        }
+    }
 
     public override var wantsUpdateLayer: Bool { true }
 
@@ -59,7 +69,7 @@ public final class MetalStreamView: NSView {
             if window.attachedSheet == nil { window.makeFirstResponder(self) }
             onWindowAttached?(window)
             if let layer = self.metalLayer {
-                MetalStreamRenderer.shared.attachLayer(layer)
+                attachRenderer(layer)
             }
         }
     }
@@ -90,22 +100,36 @@ public final class MetalStreamView: NSView {
         if layer.drawableSize != targetSize {
             layer.drawableSize = targetSize
         }
+        if rendererMode == .libplacebo {
+            LibplaceboStreamRenderer.shared.resize(targetSize)
+        }
     }
 }
 
 @MainActor
 public struct MetalStreamViewRepresentable: NSViewRepresentable {
     public let onWindowAttached: ((NSWindow) -> Void)?
+    public var rendererMode: VideoRendererMode
+    public var enableVsync: Bool
 
-    public init(onWindowAttached: ((NSWindow) -> Void)? = nil) {
+    public init(rendererMode: VideoRendererMode = .metal, enableVsync: Bool = true,
+                onWindowAttached: ((NSWindow) -> Void)? = nil) {
+        self.rendererMode = rendererMode
+        self.enableVsync = enableVsync
         self.onWindowAttached = onWindowAttached
     }
 
     public func makeNSView(context: Context) -> MetalStreamView {
         let view = MetalStreamView()
+        view.rendererMode = rendererMode
+        view.enableVsync = enableVsync
         view.onWindowAttached = onWindowAttached
         if let layer = view.metalLayer {
-            MetalStreamRenderer.shared.attachLayer(layer)
+            if rendererMode == .libplacebo {
+                LibplaceboStreamRenderer.shared.attachLayer(layer, vsync: enableVsync)
+            } else {
+                MetalStreamRenderer.shared.attachLayer(layer)
+            }
         }
         return view
     }
@@ -115,7 +139,11 @@ public struct MetalStreamViewRepresentable: NSViewRepresentable {
     }
 
     public static func dismantleNSView(_ nsView: MetalStreamView, coordinator: ()) {
-        MetalStreamRenderer.shared.metalLayer = nil
+        if nsView.rendererMode == .libplacebo {
+            LibplaceboStreamRenderer.shared.reset()
+        } else {
+            MetalStreamRenderer.shared.metalLayer = nil
+        }
     }
 }
 
