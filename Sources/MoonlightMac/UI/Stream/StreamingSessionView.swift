@@ -80,12 +80,6 @@ public struct StreamingSessionView: View {
                 }
             }
         }
-        .toolbar {
-            ToolbarItem {
-                Button("Session controls…") { sessionController.openSessionControls() }
-                    .keyboardShortcut("c", modifiers: [.control, .option, .shift])
-            }
-        }
         .sheet(isPresented: $sessionController.showSessionControls, onDismiss: { sessionController.closeSessionControls() }) {
             SessionControlsView(session: sessionController)
         }

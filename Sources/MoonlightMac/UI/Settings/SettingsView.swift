@@ -508,6 +508,7 @@ public struct SettingsView: View {
                 shortcutRow(keys: "⌃ ⌥ ⇧ Z", label: "Release / recapture mouse cursor")
                 shortcutRow(keys: "⌃ ⌥ ⇧ X", label: "Toggle Fullscreen / Windowed")
                 shortcutRow(keys: "⌃ ⌥ ⇧ S", label: "Toggle Performance HUD overlay")
+                shortcutRow(keys: "⌃ ⌥ ⇧ C", label: "Open session controls")
                 shortcutRow(keys: "⌃ ⌥ ⇧ M", label: "Toggle Mouse Mode")
                 shortcutRow(keys: "⌃ ⌥ ⇧ D", label: "Minimize Window")
                 shortcutRow(keys: "⌃ ⌥ ⇧ V", label: "Type Mac clipboard text to host")
