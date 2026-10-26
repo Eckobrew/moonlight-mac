@@ -61,6 +61,8 @@ public final class NativeStreamPresenter: @unchecked Sendable {
     }
 
     private func present(pixelBuffer: CVPixelBuffer) {
+        let trace = VideoPipelineTrace.begin("Native present")
+        defer { VideoPipelineTrace.end("Native present", trace) }
         lock.lock()
         guard let displayLayer = self.displayLayer else {
             lock.unlock()

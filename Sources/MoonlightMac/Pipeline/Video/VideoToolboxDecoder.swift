@@ -105,6 +105,8 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
     }
 
     public func submitDecodeUnit(_ decodeUnit: PDECODE_UNIT) -> Int32 {
+        let trace = VideoPipelineTrace.begin("Decode unit")
+        defer { VideoPipelineTrace.end("Decode unit", trace) }
         submitLock.lock()
         defer { submitLock.unlock() }
 
@@ -144,32 +146,36 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         var chainBytes = 0
         var hasNewParamSets = false
 
-        while let entry = curEntry?.pointee {
-            guard let dataPtr = entry.data, entry.length > 0 else { free(rawData); return DR_NEED_IDR }
-            let bytePtr = UnsafeRawPointer(dataPtr).assumingMemoryBound(to: UInt8.self)
-            let length = Int(entry.length)
-            guard length <= Int(du.fullLength) - chainBytes else { free(rawData); return DR_NEED_IDR }
-            chainBytes += length
+        do {
+            let trace = VideoPipelineTrace.begin("Copy encoded chain")
+            defer { VideoPipelineTrace.end("Copy encoded chain", trace) }
+            while let entry = curEntry?.pointee {
+                guard let dataPtr = entry.data, entry.length > 0 else { free(rawData); return DR_NEED_IDR }
+                let bytePtr = UnsafeRawPointer(dataPtr).assumingMemoryBound(to: UInt8.self)
+                let length = Int(entry.length)
+                guard length <= Int(du.fullLength) - chainBytes else { free(rawData); return DR_NEED_IDR }
+                chainBytes += length
 
-            switch entry.bufferType {
-            case BUFFER_TYPE_SPS:
-                self.spsData = extractNaluPayload(from: bytePtr, length: length)
-                hasNewParamSets = true
-            case BUFFER_TYPE_PPS:
-                self.ppsData = extractNaluPayload(from: bytePtr, length: length)
-                hasNewParamSets = true
-            case BUFFER_TYPE_VPS:
-                self.vpsData = extractNaluPayload(from: bytePtr, length: length)
-                hasNewParamSets = true
-            case BUFFER_TYPE_PICDATA:
-                memcpy(rawData.advanced(by: picDataOffset), bytePtr, length)
-                picDataOffset += length
-            default:
-                memcpy(rawData.advanced(by: picDataOffset), bytePtr, length)
-                picDataOffset += length
+                switch entry.bufferType {
+                case BUFFER_TYPE_SPS:
+                    self.spsData = extractNaluPayload(from: bytePtr, length: length)
+                    hasNewParamSets = true
+                case BUFFER_TYPE_PPS:
+                    self.ppsData = extractNaluPayload(from: bytePtr, length: length)
+                    hasNewParamSets = true
+                case BUFFER_TYPE_VPS:
+                    self.vpsData = extractNaluPayload(from: bytePtr, length: length)
+                    hasNewParamSets = true
+                case BUFFER_TYPE_PICDATA:
+                    memcpy(rawData.advanced(by: picDataOffset), bytePtr, length)
+                    picDataOffset += length
+                default:
+                    memcpy(rawData.advanced(by: picDataOffset), bytePtr, length)
+                    picDataOffset += length
+                }
+
+                curEntry = entry.next
             }
-
-            curEntry = entry.next
         }
 
         guard chainBytes == Int(du.fullLength) else { free(rawData); return DR_NEED_IDR }
@@ -262,6 +268,8 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
                 sampleBufferOut: &sampleBuffer
             )
         } else {
+            let trace = VideoPipelineTrace.begin("Assemble NAL sample")
+            defer { VideoPipelineTrace.end("Assemble NAL sample", trace) }
             // Create empty frameBlockBuffer to hold 4-byte length prefixes and references to dataBuffer
             var frameBlockBuffer: CMBlockBuffer?
             status = CMBlockBufferCreateEmpty(
@@ -324,12 +332,15 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
                                     submissionTime: CACurrentMediaTime())
         let flags: VTDecodeFrameFlags = [._EnableAsynchronousDecompression, ._1xRealTimePlayback]
         var infoFlagsOut: VTDecodeInfoFlags = []
+        let submissionTrace = VideoPipelineTrace.begin("VideoToolbox submit")
         status = VTDecompressionSessionDecodeFrame(
             session, sampleBuffer: sample, flags: flags, infoFlagsOut: &infoFlagsOut
         ) { [weak self] status, infoFlags, imageBuffer, _, _ in
             self?.handleDecodedFrame(context: context, status: status,
                                      infoFlags: infoFlags, imageBuffer: imageBuffer)
         }
+
+        VideoPipelineTrace.end("VideoToolbox submit", submissionTrace)
 
         if status != noErr {
             AppLogger.shared.error("VTDecompressionSessionDecodeFrame failed: \(status) (frame: \(du.frameNumber))")
@@ -520,6 +531,8 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
     /// Picture units must contain complete Annex-B NAL payloads. Both three- and
     /// four-byte start codes are accepted; padding and empty/truncated NALs are not pictures.
     static func pictureNALRanges(in bytes: UnsafeBufferPointer<UInt8>) -> [Range<Int>]? {
+        let trace = VideoPipelineTrace.begin("Scan Annex B")
+        defer { VideoPipelineTrace.end("Scan Annex B", trace) }
         guard bytes.count >= 4 else { return nil }
         var starts: [Int] = []
         for index in 0...(bytes.count - 3) where bytes[index] == 0 && bytes[index + 1] == 0 && bytes[index + 2] == 1 {

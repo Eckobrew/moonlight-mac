@@ -50,3 +50,26 @@ Do not infer GPU utilization from CPU samples.
 Baseline package: `Products/Optimization-baseline/Moonlight.app` in the original
 repository. The installed app is preserved. Private profiles/logs stay outside
 Git; this document records only reproducible settings and aggregate results.
+
+## Profiling support
+
+`MOONLIGHT_PIPELINE_PROFILE=1` adds Points of Interest intervals for decode-unit
+submission, encoded-chain copying, Annex-B scanning, sample assembly,
+VideoToolbox submission, HDR attachments, native presentation, and Metal drawable
+acquisition/presentation. The default is off. Spans retain no buffers and add no
+queues, timers, waits, or per-frame logging. These are wall-time measurements;
+framework waits must not be reported as CPU time.
+
+`MOONLIGHT_STREAM_DIAGNOSTICS=1` also records cumulative decoded callbacks,
+decode drops and inferred missing frame numbers, plus renderer/codec/resolution
+and pacing/V-Sync. Frame gaps do not count individual lost network packets.
+
+For utilization, run `python3 Scripts/measure_stream.py PID --log LOG --seconds 30`.
+It uses process CPU-time deltas (100% means one logical CPU), resident memory,
+and diagnostic delivery averages. Run CPU/GPU/allocations profilers separately,
+and exclude all build activity from measurement windows. FPS in these logs is
+not an input-to-photon or physical display-present measurement.
+
+The profiling-only changes passed all 94 regression tests in Release mode.
+Time Profiler and Metal System Trace attached successfully to the packaged app.
+Allocations could not attach; no security settings were changed to enable it.

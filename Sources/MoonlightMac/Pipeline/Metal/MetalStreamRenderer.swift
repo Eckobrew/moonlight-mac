@@ -532,6 +532,8 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
     /// Returns `false` when presentation was not possible (e.g. no drawable), so the caller can stop draining.
     @discardableResult
     private func renderToMetalLayer(pixelBuffer: CVPixelBuffer) -> Bool {
+        let trace = VideoPipelineTrace.begin("Metal present")
+        defer { VideoPipelineTrace.end("Metal present", trace) }
         var pixelBuffer = pixelBuffer
         lock.lock()
         guard let layer = self.metalLayer,
@@ -542,7 +544,10 @@ public final class MetalStreamRenderer: NSObject, MTKViewDelegate, @unchecked Se
         }
         lock.unlock()
 
-        guard let drawable = layer.nextDrawable() else {
+        let drawableTrace = VideoPipelineTrace.begin("Acquire Metal drawable")
+        let acquiredDrawable = layer.nextDrawable()
+        VideoPipelineTrace.end("Acquire Metal drawable", drawableTrace)
+        guard let drawable = acquiredDrawable else {
             // No drawable available (window occluded/minimized, or the compositor is holding all of
             // them). Do not sleep here: return and let the next decoded frame restart the drain loop.
             // Sleeping on the render queue would delay the newest frame and stall presentation.

@@ -809,7 +809,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             let values = String(format: "decodeFPS=%.1f metalFPS=%.1f decodeMs=%.2f rttMs=%.1f rttVariationMs=%.1f",
                                 updated.currentFps, renderer.currentRenderFps, updated.decodeTimeMs,
                                 updated.roundTripTimeMs, updated.roundTripTimeVarianceMs)
-            AppLogger.shared.info("\(values) active=\(NSApp.isActive) key=\(window?.isKeyWindow == true) visible=\(window?.occlusionState.contains(.visible) == true) coalescing=\(NSEvent.isMouseCoalescingEnabled)", category: "STREAM-DIAGNOSTICS")
+            AppLogger.shared.info("\(values) decoded=\(snap.received) decoderDropped=\(snap.dropped) frameGaps=\(snap.netDropped) renderer=\(activeSettings?.videoRenderer.rawValue ?? "unknown") codec=\(updated.currentCodec) resolution=\(updated.resolution) pacing=\(updated.pacingEnabled) vsync=\(updated.vsyncEnabled) active=\(NSApp.isActive) key=\(window?.isKeyWindow == true) visible=\(window?.occlusionState.contains(.visible) == true) coalescing=\(NSEvent.isMouseCoalescingEnabled)", category: "STREAM-DIAGNOSTICS")
         }
         if showPerformanceOverlay { metrics = updated }
     }
