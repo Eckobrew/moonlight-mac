@@ -17,8 +17,18 @@ SOURCE = 'Sources/MoonlightMac/Pipeline/Video/VideoToolboxDecoder.swift'
 
 def scanner(source):
     start = source.index('    static func pictureNALRanges(')
-    end = source.index('\n    private func appendNalu', start)
-    method = source[start:end]
+    opening = source.index('{', start)
+    depth = 0
+    for end in range(opening, len(source)):
+        if source[end] == '{':
+            depth += 1
+        elif source[end] == '}':
+            depth -= 1
+            if depth == 0:
+                break
+    else:
+        raise ValueError('Unbalanced scanner method')
+    method = source[start:end + 1]
     # Keep instrumentation out of the isolated scanner comparison.
     method = re.sub(r'^        let trace = VideoPipelineTrace.begin.*\n', '', method, flags=re.M)
     method = re.sub(r'^        defer \{ VideoPipelineTrace.end.*\n', '', method, flags=re.M)
@@ -36,12 +46,16 @@ for size in [83_334, 262_144, 1_048_576] {
         // EBSP escapes 00 00 00/01/02; keep random payloads valid.
         if pattern != "dense-NALs" && i >= 2 && bytes[i-2] == 0 && bytes[i-1] == 0 && bytes[i] <= 3 { bytes[i] = 3 }
     }
-    for offset in [0, size / 4, size / 2, 3 * size / 4] {
+    for requestedOffset in [0, size / 4, size / 2, 3 * size / 4] {
+        // Do not overwrite the preceding one-byte NAL payload in dense fixtures.
+        let offset = pattern == "dense-NALs" ? (requestedOffset / 4) * 4 : requestedOffset
         bytes.replaceSubrange(offset..<(offset+5), with: [0,0,0,1,0x26])
     }
     let rounds = max(200, 30_000_000 / size)
     bytes.withUnsafeBufferPointer { buffer in
-        precondition(Baseline.pictureNALRanges(in: buffer) == Candidate.pictureNALRanges(in: buffer))
+        let expected = Baseline.pictureNALRanges(in: buffer)
+        precondition(expected != nil, "Benchmark fixture must be a valid picture")
+        precondition(expected == Candidate.pictureNALRanges(in: buffer))
         var oldTimes: [Double] = [], newTimes: [Double] = []
         for trial in 0..<10 {
             for candidate in (trial % 2 == 0 ? [false,true] : [true,false]) {

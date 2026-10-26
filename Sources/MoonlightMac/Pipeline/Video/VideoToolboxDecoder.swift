@@ -225,6 +225,22 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
             return DR_NEED_IDR
         }
 
+        // Common-c's bytes have already been copied into our allocation. When
+        // length prefixes fit before their payloads, pack in place and give VT
+        // one contiguous block. Three-byte prefixes that would expand retain
+        // the existing reference-based path, avoiding an extra payload copy.
+        var pictureRanges: [Range<Int>]?
+        var packedNALLength: Int?
+        if !isAV1 {
+            guard let ranges = Self.pictureNALRanges(in: UnsafeBufferPointer(start: rawData, count: picDataOffset)) else {
+                free(rawData)
+                return DR_NEED_IDR
+            }
+            pictureRanges = ranges
+            packedNALLength = Self.packNALPayloadsInPlace(rawData, ranges: ranges)
+        }
+        let sampleDataLength = packedNALLength ?? picDataOffset
+
         // Wrap rawData into dataBlockBuffer with kCFAllocatorDefault.
         // CoreMedia takes ownership of rawData and will call free(rawData) when dataBlockBuffer is released.
         var dataBlockBuffer: CMBlockBuffer?
@@ -235,7 +251,7 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
             blockAllocator: kCFAllocatorDefault,
             customBlockSource: nil,
             offsetToData: 0,
-            dataLength: picDataOffset,
+            dataLength: sampleDataLength,
             flags: 0,
             blockBufferOut: &dataBlockBuffer
         )
@@ -254,9 +270,10 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         )
 
         var sampleBuffer: CMSampleBuffer?
-        if isAV1 {
-            // AV1 frames arrive as raw OBU bitstreams (not Annex-B NALUs); wrap dataBuffer directly.
-            var sampleSize = picDataOffset
+        if isAV1 || packedNALLength != nil {
+            // AV1 remains an unmodified OBU stream; packed H.264/HEVC contains
+            // the same NAL payloads with contiguous four-byte length prefixes.
+            var sampleSize = sampleDataLength
             status = CMSampleBufferCreateReady(
                 allocator: kCFAllocatorDefault,
                 dataBuffer: dataBuffer,
@@ -284,7 +301,7 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
                 return DR_NEED_IDR
             }
 
-            guard let ranges = Self.pictureNALRanges(in: UnsafeBufferPointer(start: rawData, count: picDataOffset)) else { return DR_NEED_IDR }
+            guard let ranges = pictureRanges else { return DR_NEED_IDR }
             for range in ranges {
                 guard appendNalu(to: frameBuffer, from: dataBuffer, data: rawData,
                                  startOffset: range.lowerBound, endOffset: range.upperBound) else { return DR_NEED_IDR }
@@ -581,6 +598,30 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         }
         guard payloadStart != nil, appendPreviousNAL(upTo: bytes.count) else { return nil }
         return ranges
+    }
+
+    /// Ranges must come from pictureNALRanges for this owned allocation. A nil
+    /// result leaves every byte untouched so the reference-based path can use it.
+    static func packNALPayloadsInPlace(_ data: UnsafeMutablePointer<UInt8>, ranges: [Range<Int>]) -> Int? {
+        guard !ranges.isEmpty else { return nil }
+        var outputLength = 0
+        for range in ranges {
+            // Validate the entire layout before writing. Each destination must
+            // end no later than its source, so packing cannot overwrite a later
+            // payload or require growing the allocation.
+            guard outputLength + 4 <= range.lowerBound else { return nil }
+            outputLength += 4 + range.count
+        }
+        var offset = 0
+        for range in ranges {
+            var length = UInt32(range.count).bigEndian
+            memcpy(data.advanced(by: offset), &length, 4)
+            let source = data.advanced(by: range.lowerBound)
+            let destination = data.advanced(by: offset + 4)
+            if source != destination { memmove(destination, source, range.count) }
+            offset += 4 + range.count
+        }
+        return outputLength
     }
 
     private func appendNalu(

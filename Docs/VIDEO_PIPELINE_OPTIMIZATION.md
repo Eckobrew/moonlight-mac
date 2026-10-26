@@ -85,23 +85,97 @@ decode flags, rendering quality, frame queues or presentation timing are changed
 
 Reproduce with `python3 Scripts/benchmark_annexb.py`. It extracts the actual old
 and current methods and compiles them with `swiftc -O`; alternates order across
-10 trials and checks matching ranges. The synthetic inputs isolate scanning;
+10 trials and checks matching ranges. Every fixture must parse as a valid picture;
+dense start codes are aligned so fixture insertion cannot empty a preceding NAL. The synthetic inputs isolate scanning;
 they are not a replacement for live-stream measurements.
 
 Intel i3-1000NG4, macOS 15.8.1, median microseconds per scan:
 
 | Payload | Pattern | Main | Optimized | Speedup |
 | --- | --- | ---: | ---: | ---: |
-| 83,334 bytes | Random EBSP | 50.10 | 14.78 | 3.39x |
-| 262,144 bytes | Random EBSP | 159.58 | 43.33 | 3.68x |
-| 1,048,576 bytes | Random EBSP | 647.86 | 194.74 | 3.33x |
-| 83,334 bytes | Zero-heavy EBSP | 72.32 | 14.96 | 4.83x |
-| 83,334 bytes | One-heavy | 45.69 | 16.67 | 2.74x |
-| 83,334 bytes | Dense NALs | 241.99 | 90.86 | 2.66x |
-| 1,048,576 bytes | Dense NALs | 6332.79 | 4702.25 | 1.35x |
+| 83,334 bytes | Random EBSP | 45.84 | 12.06 | 3.80x |
+| 262,144 bytes | Random EBSP | 144.39 | 36.63 | 3.94x |
+| 1,048,576 bytes | Random EBSP | 511.43 | 143.80 | 3.56x |
+| 83,334 bytes | Zero-heavy EBSP | 58.03 | 11.92 | 4.87x |
+| 83,334 bytes | One-heavy | 35.20 | 12.94 | 2.72x |
+| 83,334 bytes | Dense NALs | 294.06 | 192.74 | 1.53x |
+| 1,048,576 bytes | Dense NALs | 6493.37 | 4959.03 | 1.31x |
 
 All 97 Release tests passed, including generated payload/vector-boundary cases,
 malformed/empty NALs at different offsets, and buffers ending at a protected
 memory page. The initial motion Time Profiler attributed about 1% of process
 samples to the old scanner; these microbenchmark speedups must not be described
 as whole-app CPU speedups. GPU work is unchanged by this parser change.
+
+## Contiguous sample assembly
+
+The four-byte-prefix path can reuse the encoded allocation that already belongs
+to the decoder. Validate all destination/source offsets first, then write length
+prefixes and compact padding with memmove only when source/destination differ.
+CoreMedia owns that same allocation until asynchronous consumers release it.
+No common-c-owned pointer escapes its callback.
+
+When any prefix would expand into its payload, return without changing a byte
+and use the original per-NAL CoreMedia references. A prototype that allocated
+and copied a second expanded buffer was rejected: it regressed large frames with
+few three-byte-prefix NALs. AV1 stays on its original unmodified OBU path.
+
+Reproduce assembly-only timings with `python3 Scripts/benchmark_nal_packing.py`.
+Both paths include the initial owned copy; ranges are precomputed to isolate
+assembly from scanning. Representative median microseconds on this Mac:
+
+| Payload | NALs | Prefix | Main | Fast path/fallback |
+| --- | ---: | ---: | ---: | ---: |
+| 83,334 bytes | 1 | 4 bytes | 4.33 | 3.38 |
+| 83,334 bytes | 4 | 4 bytes | 7.47 | 3.23 |
+| 83,334 bytes | 64 | 4 bytes | 68.35 | 3.68 |
+| 1,048,576 bytes | 64 | 4 bytes | 121.22 | 52.70 |
+| 1,048,576 bytes | 4 | 3 bytes | 59.37 | 58.29 |
+
+The three-byte-prefix cases use the original assembly path and varied within
+roughly -5% to +14% across these microbenchmarks; no fallback speedup is claimed.
+The main benefit is fewer prefix allocations/reference blocks for contiguous
+NAL layouts, without introducing a second full-payload copy.
+
+## Validation and limits — 26 October 2026
+
+All **99 Release tests** pass on the Intel test Mac, including byte-for-byte
+packing/padding tests and a late-expansion case that must leave the entire source
+unchanged. The separate `Products/Optimization-test/Moonlight.app` contains the
+tested Release executable and passed the app signature/resource verifier. The
+installed app and unchanged-main baseline remain available.
+
+NATHAN-PC Desktop, configured 2560x1600 / 60 FPS / 40 Mbps, SDR 4:2:0, V-Sync on,
+pacing off; actual changing-desktop delivery varied with the video playlist:
+
+| Presenter | Codec | Decoded callbacks observed | Decoder drops | Inferred frame gaps |
+| --- | --- | ---: | ---: | ---: |
+| AVSampleBuffer | HEVC | 4496 | 0 | 0 |
+| AVSampleBuffer | H.264 | 1482 | 0 | 0 |
+| Metal | H.264 | 1993 | 0 | 0 |
+| Metal | HEVC | At least 1800 | 0 | 0 |
+
+Pictures were visually checked; no VideoToolbox output/submission errors or
+common-c decode-queue overflow was logged. Separate processes exercised fresh
+connections/teardown and both codec/presenter combinations. An optimized native
+HEVC trace contained 535 decode/scan intervals and no segmented-assembly
+intervals, confirming use of the contiguous path on this workload.
+
+Whole-process measurements are context, not a controlled improvement claim:
+the baseline native window used 19.36% of one logical CPU at 38.78 decoded FPS;
+the optimized native window used 17.39% at 34.37 decoded FPS. Both work out to
+about 5 ms process CPU per decoded frame. The playlist, encoded complexity and
+frame rate changed, and transport/audio/framework work dominate these totals.
+The isolated preparation benchmarks establish the retained CPU improvements;
+this live comparison does not establish a whole-app percentage reduction.
+
+GPU commands, shaders, texture formats, scaling, display queues and input routing
+are unchanged. GPU tracing worked, but this pass does not claim GPU savings.
+No extra buffering or synchronization waits were added. Numerical input-to-photon
+latency is not measured by these tools; user responsiveness feedback remains a
+separate validation. HDR/4:4:4 and unsupported AV1 hardware are not claimed as new
+real-device validation; AV1's OBU path and HDR/presentation behavior are unchanged.
+
+The Apple Silicon CI run exposed main's existing one-second shutdown assertions
+under load. Only the previously validated deterministic shutdown/TLS test fixes
+were carried over; no Vulkan renderer/dependency code is part of this branch.
