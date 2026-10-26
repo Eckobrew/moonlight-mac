@@ -4,6 +4,7 @@ import CoreMedia
 import CoreVideo
 import QuartzCore
 import MoonlightCommonC
+import simd
 
 public protocol VideoDecoderDelegate: AnyObject, Sendable {
     func decoderDidOutputPixelBuffer(_ pixelBuffer: CVPixelBuffer, presentationTimeUs: UInt64, decodeTimeMs: Double)
@@ -534,19 +535,51 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         let trace = VideoPipelineTrace.begin("Scan Annex B")
         defer { VideoPipelineTrace.end("Scan Annex B", trace) }
         guard bytes.count >= 4 else { return nil }
-        var starts: [Int] = []
-        for index in 0...(bytes.count - 3) where bytes[index] == 0 && bytes[index + 1] == 0 && bytes[index + 2] == 1 {
-            starts.append(index)
-        }
-        guard let first = starts.first, bytes.prefix(first).allSatisfy({ $0 == 0 }) else { return nil }
         var ranges: [Range<Int>] = []
-        for (index, start) in starts.enumerated() {
-            let payload = start + 3
-            var end = index + 1 < starts.count ? starts[index + 1] : bytes.count
+        var payloadStart: Int?
+        func appendPreviousNAL(upTo limit: Int) -> Bool {
+            guard let payload = payloadStart else { return bytes.prefix(limit).allSatisfy { $0 == 0 } }
+            var end = limit
             while end > payload && bytes[end - 1] == 0 { end -= 1 }
-            guard end > payload else { return nil }
+            guard end > payload else { return false }
             ranges.append(payload..<end)
+            return true
         }
+        // Compare 16 start positions at once. Three overlapping 16-byte loads
+        // require 18 accessible bytes; use scalar comparisons for the tail.
+        let base = UnsafeRawPointer(bytes.baseAddress!)
+        let zeros = SIMD16<UInt8>(repeating: 0)
+        let ones = SIMD16<UInt8>(repeating: 1)
+        var cursor = 0
+        while cursor <= bytes.count - 18 {
+            let first = base.loadUnaligned(fromByteOffset: cursor, as: SIMD16<UInt8>.self)
+            let second = base.loadUnaligned(fromByteOffset: cursor + 1, as: SIMD16<UInt8>.self)
+            let third = base.loadUnaligned(fromByteOffset: cursor + 2, as: SIMD16<UInt8>.self)
+            let matches = (first .== zeros) .& (second .== zeros) .& (third .== ones)
+            if any(matches) {
+                var lane = 0
+                while lane < 16 {
+                    if matches[lane] {
+                        let start = cursor + lane
+                        guard appendPreviousNAL(upTo: start) else { return nil }
+                        payloadStart = start + 3
+                        // 00 00 01 cannot overlap another start in these bytes.
+                        lane += 3
+                    } else {
+                        lane += 1
+                    }
+                }
+            }
+            cursor += 16
+        }
+        while cursor <= bytes.count - 3 {
+            if bytes[cursor] == 0 && bytes[cursor + 1] == 0 && bytes[cursor + 2] == 1 {
+                guard appendPreviousNAL(upTo: cursor) else { return nil }
+                payloadStart = cursor + 3
+            }
+            cursor += 1
+        }
+        guard payloadStart != nil, appendPreviousNAL(upTo: bytes.count) else { return nil }
         return ranges
     }
 

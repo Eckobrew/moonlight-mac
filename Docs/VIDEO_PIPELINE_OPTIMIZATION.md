@@ -73,3 +73,35 @@ not an input-to-photon or physical display-present measurement.
 The profiling-only changes passed all 94 regression tests in Release mode.
 Time Profiler and Metal System Trace attached successfully to the packaged app.
 Allocations could not attach; no security settings were changed to enable it.
+
+## First retained change: Annex-B scanning
+
+Use 16-byte SIMD comparisons and construct payload ranges directly, avoiding the
+intermediate start-position array. Scalar tail handling, leading/trailing zero
+rules, empty-NAL rejection and returned ranges are preserved. Loads are
+unaligned and bounded to accessible bytes; the code uses standard Swift SIMD on
+both supported Mac architectures. No common-c code/capabilities, packet ownership,
+decode flags, rendering quality, frame queues or presentation timing are changed.
+
+Reproduce with `python3 Scripts/benchmark_annexb.py`. It extracts the actual old
+and current methods and compiles them with `swiftc -O`; alternates order across
+10 trials and checks matching ranges. The synthetic inputs isolate scanning;
+they are not a replacement for live-stream measurements.
+
+Intel i3-1000NG4, macOS 15.8.1, median microseconds per scan:
+
+| Payload | Pattern | Main | Optimized | Speedup |
+| --- | --- | ---: | ---: | ---: |
+| 83,334 bytes | Random EBSP | 50.10 | 14.78 | 3.39x |
+| 262,144 bytes | Random EBSP | 159.58 | 43.33 | 3.68x |
+| 1,048,576 bytes | Random EBSP | 647.86 | 194.74 | 3.33x |
+| 83,334 bytes | Zero-heavy EBSP | 72.32 | 14.96 | 4.83x |
+| 83,334 bytes | One-heavy | 45.69 | 16.67 | 2.74x |
+| 83,334 bytes | Dense NALs | 241.99 | 90.86 | 2.66x |
+| 1,048,576 bytes | Dense NALs | 6332.79 | 4702.25 | 1.35x |
+
+All 97 Release tests passed, including generated payload/vector-boundary cases,
+malformed/empty NALs at different offsets, and buffers ending at a protected
+memory page. The initial motion Time Profiler attributed about 1% of process
+samples to the old scanner; these microbenchmark speedups must not be described
+as whole-app CPU speedups. GPU work is unchanged by this parser change.
