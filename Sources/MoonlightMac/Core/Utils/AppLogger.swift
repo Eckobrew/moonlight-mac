@@ -51,7 +51,12 @@ public final class AppLogger: @unchecked Sendable {
 
     private init() {
         setupLogFile()
-        info("MoonlightMac Logger initialized. Log file: \(logFileURL.path)", category: "SYSTEM")
+        #if DEBUG
+        let build = "debug (unoptimized)"
+        #else
+        let build = "release (optimized)"
+        #endif
+        info("MoonlightMac Logger initialized. Build=\(build) pid=\(ProcessInfo.processInfo.processIdentifier). Log file: \(logFileURL.path)", category: "SYSTEM")
     }
 
     private func setupLogFile() {

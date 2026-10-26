@@ -31,4 +31,10 @@ for license in LICENSE THIRD_PARTY_NOTICES.md moonlight-common-c.txt enet.txt na
     [[ -s "$APP_DIR/Contents/Resources/Licenses/$license" ]] || { echo "Missing license: $license" >&2; exit 1; }
 done
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+if [[ -f "$APP_DIR/Contents/Resources/vulkan-runtime.json" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    python3 "$SCRIPT_DIR/bundle_vulkan_runtime.py" "$APP_DIR" --verify
+elif otool -L "$APP_DIR/Contents/MacOS/$EXECUTABLE" | /usr/bin/grep -q 'libplacebo'; then
+    echo "libplacebo-enabled app is missing its bundled Vulkan runtime" >&2; exit 1
+fi
 echo "Verified executable, Metal and language resources, licenses, transport policy, plist and signature."

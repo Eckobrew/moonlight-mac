@@ -29,6 +29,8 @@ public struct StreamingSessionView: View {
                 .ignoresSafeArea()
             } else {
                 MetalStreamViewRepresentable(
+                    rendererMode: sessionController.activeSettings?.videoRenderer ?? .metal,
+                    enableVsync: sessionController.activeSettings?.enableVsync ?? true,
                     onWindowAttached: { window in
                         window.acceptsMouseMovedEvents = true
                         InputCaptureCoordinator.shared.mouseMonitor.setStreamWindow(window)
@@ -56,7 +58,7 @@ public struct StreamingSessionView: View {
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
 
-            if let message = sessionController.connectionWarning ?? services.audio ?? clipboard.statusMessage ?? services.discord {
+            if let message = sessionController.connectionWarning ?? services.renderer ?? services.audio ?? clipboard.statusMessage ?? services.discord {
                 VStack {
                     Spacer()
                     Text(message)

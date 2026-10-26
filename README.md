@@ -278,3 +278,8 @@ provide the host software.
 MoonlightMac is licensed under [GPLv3](LICENSE). Bundled dependencies retain their
 own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md). Packaging includes
 the license texts in `Contents/Resources/Licenses`.
+
+## Experimental libplacebo/Vulkan branch
+
+An optional libplacebo renderer using Vulkan/MoltenVK is available on this branch.
+See [build instructions and current limits](Docs/LIBPLACEBO_VULKAN.md).

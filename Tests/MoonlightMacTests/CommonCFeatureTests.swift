@@ -134,14 +134,20 @@ import MoonlightCommonC
     let engine = StreamSessionEngine.shared
     engine.prepareConnection()
     var samples = 0
+    var videoSamples = 0
     func read() -> (Double, Double)? { samples += 1; return (2, 1) }
+    func videoRead() -> Int32 { videoSamples += 1; return 7 }
     #expect(engine.sampleRtt(read: read) == nil)
+    #expect(engine.samplePendingVideoFrames(read: videoRead) == nil)
     engine.connectionDidStart()
     #expect(engine.sampleRtt(read: read)?.0 == 2)
+    #expect(engine.samplePendingVideoFrames(read: videoRead) == 7)
     engine.connectionWillStop()
     engine.connectionDidStart() // A late startup callback must not re-enable sampling.
     #expect(engine.sampleRtt(read: read) == nil)
+    #expect(engine.samplePendingVideoFrames(read: videoRead) == nil)
     #expect(samples == 1)
+    #expect(videoSamples == 1)
 }
 
 @Test func controllerCountPolicyMatchesCommonCServerVersion() {

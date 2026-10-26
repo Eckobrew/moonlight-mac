@@ -25,3 +25,12 @@ Sources/Copus.
 The packaging script includes these notices and all listed license texts in
 Contents/Resources/Licenses. When distributing a binary, provide its matching
 source revision and build instructions as well.
+
+The optional experimental renderer uses
+[libplacebo](https://github.com/haasn/libplacebo) (LGPL 2.1 or later) and
+[MoltenVK](https://github.com/KhronosGroup/MoltenVK) (Apache 2.0). Enabled app
+packages embed these dylibs and their non-system linked dependencies. The
+packager requires license/notice files for every embedded library and includes
+them under `Contents/Resources/Licenses/Vulkan`; the exact runtime inventory is
+recorded in `Contents/Resources/vulkan-runtime.json`. Unbundled development
+executables use an external Vulkan loader. See [renderer build notes](Docs/LIBPLACEBO_VULKAN.md).

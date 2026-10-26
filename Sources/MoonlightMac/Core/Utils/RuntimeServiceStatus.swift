@@ -5,6 +5,7 @@ import Foundation
     static let shared = RuntimeServiceStatus()
     @Published var audio: String?
     @Published var discord: String?
+    @Published var renderer: String?
     nonisolated static func reportAudio(_ message: String?) {
         Task { @MainActor in if shared.audio != message { shared.audio = message } }
     }

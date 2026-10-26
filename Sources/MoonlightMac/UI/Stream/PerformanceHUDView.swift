@@ -34,10 +34,11 @@ public struct PerformanceHUDView: View {
                 metricRow(label: "RTT Variation", value: String(format: "%.1f ms", metrics.roundTripTimeVarianceMs))
                 metricRow(label: "Bitrate target", value: String(format: "%.1f Mbps", metrics.bitrateMbps))
                 metricRow(
-                    label: "Packet Loss",
-                    value: String(format: "%.1f%% (%d)", metrics.packetLossPercentage, metrics.networkDroppedFrames),
-                    isWarning: metrics.packetLossPercentage > 0.5
+                    label: "Frame Gaps",
+                    value: String(format: "%.1f%% (%d)", metrics.frameGapPercentage, metrics.networkDroppedFrames),
+                    isWarning: metrics.frameGapPercentage > 0.5
                 )
+                .help("Missing video frame numbers can result from network loss or local decode queue overflow.")
                 metricRow(label: "Codec", value: metrics.currentCodec)
                 metricRow(label: "Resolution", value: metrics.resolution)
                 metricRow(label: "V-Sync", value: metrics.vsyncEnabled ? "On" : "Off (Unlocked)")
@@ -76,9 +77,9 @@ public struct PerformanceHUDView: View {
     }
 
     private var statusIndicatorColor: Color {
-        if metrics.packetLossPercentage > 2.0 || metrics.roundTripTimeMs > 60 {
+        if metrics.frameGapPercentage > 2.0 || metrics.roundTripTimeMs > 60 {
             return .red
-        } else if metrics.packetLossPercentage > 0.5 || metrics.roundTripTimeMs > 30 {
+        } else if metrics.frameGapPercentage > 0.5 || metrics.roundTripTimeMs > 30 {
             return .orange
         } else {
             return .green

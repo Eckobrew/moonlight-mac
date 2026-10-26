@@ -38,6 +38,9 @@ public final class StreamSessionEngine: @unchecked Sendable {
     }) -> (Double, Double)? {
         lifetimeLock.withLock { connectionReady ? read() : nil }
     }
+    func samplePendingVideoFrames(read: () -> Int32 = { LiGetPendingVideoFrames() }) -> Int? {
+        lifetimeLock.withLock { connectionReady ? Int(read()) : nil }
+    }
 
     private init() {}
 }
@@ -267,6 +270,12 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
     public func startSession(host: Host, app: StreamApp, settings: StreamSettings) async {
         guard !isStreaming else { return }
         if let error = settings.validationMessage { sessionError = error; onSessionStopped?(); return }
+        if settings.videoRenderer == .libplacebo && !LibplaceboStreamRenderer.isAvailable {
+            sessionError = "This build does not include libplacebo/Vulkan. Build with MOONLIGHT_LIBPLACEBO=1 or select Metal."
+            onSessionStopped?()
+            return
+        }
+        RuntimeServiceStatus.shared.renderer = nil
         // Snapshot the launching window/display before awaiting teardown or
         // replacing views. AppKit's key window can change during those operations.
         let screen = WindowManager.shared.currentWindow?.screen ?? NSScreen.main
@@ -371,6 +380,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
             let displayID = (WindowManager.shared.currentWindow?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
             let useNativeRenderer = effectiveSettings.videoRenderer == .native
+            let useLibplacebo = effectiveSettings.videoRenderer == .libplacebo
 
             // Route audio to the selected output device and honour focus-loss muting.
             audioEngine.configureOutput(
@@ -384,6 +394,8 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             ) { pixelBuffer in
                 if useNativeRenderer {
                     NativeStreamPresenter.shared.enqueue(pixelBuffer: pixelBuffer)
+                } else if useLibplacebo {
+                    LibplaceboStreamRenderer.shared.render(pixelBuffer: pixelBuffer)
                 } else {
                     MetalStreamRenderer.shared.render(pixelBuffer: pixelBuffer)
                 }
@@ -717,6 +729,8 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         FramePacer.shared.stop()
         NativeStreamPresenter.shared.flush()
         MetalStreamRenderer.shared.reset()
+        LibplaceboStreamRenderer.shared.reset()
+        RuntimeServiceStatus.shared.renderer = nil
 
         // 3. Stop input capture on next main runloop tick to prevent reentrant NSEvent callback crashes
         let inputStop = Task { @MainActor [weak self] in
@@ -806,10 +820,13 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
         if streamDiagnosticsEnabled {
             let window = WindowManager.shared.currentWindow
-            let values = String(format: "decodeFPS=%.1f metalFPS=%.1f decodeMs=%.2f rttMs=%.1f rttVariationMs=%.1f",
-                                updated.currentFps, renderer.currentRenderFps, updated.decodeTimeMs,
+            let values = String(format: "decodeFPS=%.1f decodeMs=%.2f rttMs=%.1f rttVariationMs=%.1f",
+                                updated.currentFps, updated.decodeTimeMs,
                                 updated.roundTripTimeMs, updated.roundTripTimeVarianceMs)
-            AppLogger.shared.info("\(values) active=\(NSApp.isActive) key=\(window?.isKeyWindow == true) visible=\(window?.occlusionState.contains(.visible) == true) coalescing=\(NSEvent.isMouseCoalescingEnabled)", category: "STREAM-DIAGNOSTICS")
+            let mode = activeSettings?.videoRenderer ?? .metal
+            let presentation = mode == .metal ? String(format: " metalFPS=%.1f", renderer.currentRenderFps) : ""
+            let queued = StreamSessionEngine.shared.samplePendingVideoFrames().map(String.init) ?? "unavailable"
+            AppLogger.shared.info("pid=\(ProcessInfo.processInfo.processIdentifier) renderer=\(mode.rawValue) \(values)\(presentation) decodeQueued=\(queued) frameGaps=\(updated.networkDroppedFrames) decodeDrops=\(updated.totalFramesDropped) active=\(NSApp.isActive) key=\(window?.isKeyWindow == true) visible=\(window?.occlusionState.contains(.visible) == true) coalescing=\(NSEvent.isMouseCoalescingEnabled)", category: "STREAM-DIAGNOSTICS")
         }
         if showPerformanceOverlay { metrics = updated }
     }

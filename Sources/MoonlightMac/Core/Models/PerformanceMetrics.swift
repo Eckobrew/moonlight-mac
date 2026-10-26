@@ -48,9 +48,14 @@ public struct PerformanceMetrics: Sendable {
         self.pacingEnabled = pacingEnabled
     }
 
-    public var packetLossPercentage: Double {
+    /// Missing video frame numbers at decoder input. This includes local decode
+    /// queue flushes as well as transport loss; it is not a UDP packet counter.
+    public var frameGapPercentage: Double {
         let total = totalFramesReceived + UInt64(networkDroppedFrames)
         guard total > 0 else { return 0.0 }
         return (Double(networkDroppedFrames) / Double(total)) * 100.0
     }
+
+    /// Legacy API name retained for compatibility. Prefer frameGapPercentage.
+    public var packetLossPercentage: Double { frameGapPercentage }
 }

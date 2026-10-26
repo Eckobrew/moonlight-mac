@@ -1,5 +1,9 @@
 // swift-tools-version: 6.0
 import PackageDescription
+import Foundation
+
+// Opt-in so normal builds retain no libplacebo/Vulkan dependency.
+let enableLibplacebo = ProcessInfo.processInfo.environment["MOONLIGHT_LIBPLACEBO"] == "1"
 
 let package = Package(
     name: "MoonlightMac",
@@ -22,6 +26,14 @@ let package = Package(
         )
     ],
     targets: [
+        .target(
+            name: "CPlaceboBridge",
+            dependencies: enableLibplacebo ? ["CLibplacebo"] : [],
+            path: "Sources/CPlaceboBridge",
+            publicHeadersPath: "include",
+            cSettings: enableLibplacebo ? [.define("MOONLIGHT_LIBPLACEBO", to: "1")] : [],
+            linkerSettings: [.linkedFramework("QuartzCore"), .linkedFramework("CoreVideo"), .linkedFramework("Metal")]
+        ),
         .target(
             name: "Copus",
             path: "Sources/Copus",
@@ -136,7 +148,8 @@ let package = Package(
             name: "MoonlightMac",
             dependencies: [
                 "MoonlightCommonC",
-                "Copus"
+                "Copus",
+                "CPlaceboBridge"
             ],
             path: "Sources/MoonlightMac",
             resources: [
@@ -167,5 +180,7 @@ let package = Package(
             path: "Tests/MoonlightMacTests",
             resources: [.copy("Fixtures")]
         )
-    ]
+    ] + (enableLibplacebo ? [
+        .systemLibrary(name: "CLibplacebo", path: "Sources/CLibplacebo", pkgConfig: "libplacebo")
+    ] : [])
 )

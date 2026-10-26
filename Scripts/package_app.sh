@@ -16,6 +16,14 @@ mkdir -p "$CACHE_ROOT/clang" "$CACHE_ROOT/swift"
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$CACHE_ROOT/clang}"
 export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-$CACHE_ROOT/swift}"
 BUILD_ARGS=(-c "$CONFIGURATION" --scratch-path "$BUILD_PATH" --disable-sandbox --jobs "${MOONLIGHT_BUILD_JOBS:-4}")
+if [[ "${MOONLIGHT_LIBPLACEBO:-0}" == "1" ]]; then
+    : "${MOONLIGHT_MOLTENVK_DYLIB:?Set MOONLIGHT_MOLTENVK_DYLIB to the macOS libMoltenVK.dylib}"
+    : "${MOONLIGHT_RUNTIME_LICENSES:?Set MOONLIGHT_RUNTIME_LICENSES to the runtime license manifest JSON}"
+    [[ -f "$MOONLIGHT_MOLTENVK_DYLIB" && -f "$MOONLIGHT_RUNTIME_LICENSES" ]] || {
+        echo "MoltenVK dylib or runtime license manifest is missing" >&2; exit 1;
+    }
+    BUILD_ARGS+=(-Xlinker -headerpad_max_install_names)
+fi
 
 echo "==> Building Moonlight ($CONFIGURATION)..."
 swift build "${BUILD_ARGS[@]}"
@@ -25,7 +33,7 @@ RESOURCE_BUNDLE="$RELEASE_DIR/MoonlightMac_MoonlightMac.bundle"
 [[ -x "$BIN_PATH" ]] || { echo "Missing executable: $BIN_PATH" >&2; exit 1; }
 [[ -d "$RESOURCE_BUNDLE" ]] || { echo "Missing SwiftPM resource bundle: $RESOURCE_BUNDLE" >&2; exit 1; }
 
-OUTPUT_DIR="$PROJECT_DIR/Products"
+OUTPUT_DIR="${MOONLIGHT_PACKAGE_DIR:-$PROJECT_DIR/Products}"
 APP_DIR="$OUTPUT_DIR/Moonlight.app"
 mkdir -p "$OUTPUT_DIR"
 # Assemble in a new directory so a failed build/sign leaves the previous app intact.
@@ -36,6 +44,7 @@ mkdir -p "$STAGED_APP/Contents/MacOS" "$STAGED_APP/Contents/Resources/Licenses"
 cp "$BIN_PATH" "$STAGED_APP/Contents/MacOS/MoonlightMac"
 ln -s MoonlightMac "$STAGED_APP/Contents/MacOS/Moonlight"
 cp "$PROJECT_DIR/Resources/Info.plist" "$STAGED_APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :MoonlightBuildConfiguration string $CONFIGURATION" "$STAGED_APP/Contents/Info.plist"
 printf 'APPL????' > "$STAGED_APP/Contents/PkgInfo"
 cp "$PROJECT_DIR/Resources/AppIcon.icns" "$STAGED_APP/Contents/Resources/"
 cp -R "$RESOURCE_BUNDLE" "$STAGED_APP/Contents/Resources/"
@@ -46,10 +55,24 @@ cp Sources/MoonlightCommonC/enet/LICENSE "$LICENSES/enet.txt"
 cp Sources/MoonlightCommonC/nanors/LICENSE "$LICENSES/nanors.txt"
 cp Sources/Copus/COPYING "$LICENSES/opus.txt"
 
+if [[ "${MOONLIGHT_LIBPLACEBO:-0}" == "1" ]]; then
+    RUNTIME_ARGS=("$STAGED_APP" --moltenvk "$MOONLIGHT_MOLTENVK_DYLIB" --licenses "$MOONLIGHT_RUNTIME_LICENSES")
+    if [[ -n "${MOONLIGHT_RUNTIME_LIBRARY_DIR:-}" ]]; then
+        RUNTIME_ARGS+=(--search-path "$MOONLIGHT_RUNTIME_LIBRARY_DIR")
+    fi
+    python3 "$SCRIPT_DIR/bundle_vulkan_runtime.py" "${RUNTIME_ARGS[@]}"
+fi
+
 IDENTITY="${MOONLIGHT_SIGNING_IDENTITY:--}"
 SIGN_ARGS=(--force --sign "$IDENTITY")
 if [[ "$IDENTITY" != "-" ]]; then
     SIGN_ARGS+=(--options runtime --timestamp)
+fi
+# Sign nested code after relocation, then seal the app with the same identity.
+if [[ -d "$STAGED_APP/Contents/Frameworks" ]]; then
+    for library in "$STAGED_APP/Contents/Frameworks/"*.dylib; do
+        codesign "${SIGN_ARGS[@]}" "$library"
+    done
 fi
 codesign "${SIGN_ARGS[@]}" "$STAGED_APP"
 "$SCRIPT_DIR/verify_app.sh" "$STAGED_APP"

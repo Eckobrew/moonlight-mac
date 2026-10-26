@@ -102,6 +102,7 @@ public enum SystemKeyCaptureMode: String, Codable, CaseIterable, Sendable {
 public enum VideoRendererMode: String, Codable, CaseIterable, Sendable {
     case metal = "Metal"
     case native = "Native (AVSampleBuffer)"
+    case libplacebo = "libplacebo (Vulkan, Experimental)"
 }
 
 public struct StreamSettings: Codable, Equatable, Sendable {
