@@ -159,14 +159,14 @@ public final class GameShortcutManager {
         // 3. Launch script and internal binary symlinks
         let moonlightBin: String
         let mainExec = Bundle.main.executablePath ?? ""
-        if mainExec.contains("Moonlight.app") || mainExec.contains("MoonlightMac") {
+        if mainExec.contains("Moonlight.app") || URL(fileURLWithPath: mainExec).lastPathComponent == "moonlight-mac" {
             moonlightBin = mainExec
         } else {
-            moonlightBin = "/Applications/Moonlight.app/Contents/MacOS/MoonlightMac"
+            moonlightBin = "/Applications/Moonlight.app/Contents/MacOS/moonlight-mac"
         }
 
         // Create internal symlinks so the shortcut bundle runs as its own independent bundle process
-        let binSymlink = macOsDir.appendingPathComponent("MoonlightMac")
+        let binSymlink = macOsDir.appendingPathComponent("moonlight-mac")
         try? FileManager.default.removeItem(at: binSymlink)
         try? FileManager.default.createSymbolicLink(at: binSymlink, withDestinationURL: URL(fileURLWithPath: moonlightBin))
 
@@ -194,19 +194,16 @@ public final class GameShortcutManager {
             ICON="$DIR/../Resources/app.icns"
         fi
 
-        if [ -x "$DIR/MoonlightMac" ]; then
-            exec "$DIR/MoonlightMac" stream "\(escapedHost)" "\(escapedApp)" --icon "$ICON"
+        if [ -x "$DIR/moonlight-mac" ]; then
+            exec "$DIR/moonlight-mac" stream "\(escapedHost)" "\(escapedApp)" --icon "$ICON"
         fi
 
         MOONLIGHT_BIN="\(moonlightBin.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "$", with: "\\$").replacingOccurrences(of: "`", with: "\\`"))"
         if [ ! -x "$MOONLIGHT_BIN" ]; then
-            MOONLIGHT_BIN="/Applications/Moonlight.app/Contents/MacOS/MoonlightMac"
+            MOONLIGHT_BIN="/Applications/Moonlight.app/Contents/MacOS/moonlight-mac"
         fi
         if [ ! -x "$MOONLIGHT_BIN" ]; then
-            MOONLIGHT_BIN="/Applications/Moonlight.app/Contents/MacOS/Moonlight"
-        fi
-        if [ ! -x "$MOONLIGHT_BIN" ]; then
-            MOONLIGHT_BIN="$HOME/Applications/Moonlight.app/Contents/MacOS/MoonlightMac"
+            MOONLIGHT_BIN="$HOME/Applications/Moonlight.app/Contents/MacOS/moonlight-mac"
         fi
 
         exec "$MOONLIGHT_BIN" stream "\(escapedHost)" "\(escapedApp)" --icon "$ICON"

@@ -20,7 +20,7 @@ BUILD_ARGS=(-c "$CONFIGURATION" --scratch-path "$BUILD_PATH" --disable-sandbox -
 echo "==> Building Moonlight ($CONFIGURATION)..."
 swift build "${BUILD_ARGS[@]}"
 RELEASE_DIR="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)"
-BIN_PATH="$RELEASE_DIR/MoonlightMac"
+BIN_PATH="$RELEASE_DIR/moonlight-mac"
 RESOURCE_BUNDLE="$RELEASE_DIR/MoonlightMac_MoonlightMac.bundle"
 [[ -x "$BIN_PATH" ]] || { echo "Missing executable: $BIN_PATH" >&2; exit 1; }
 [[ -d "$RESOURCE_BUNDLE" ]] || { echo "Missing SwiftPM resource bundle: $RESOURCE_BUNDLE" >&2; exit 1; }
@@ -33,8 +33,7 @@ STAGING="$(mktemp -d "$OUTPUT_DIR/.moonlight-package.XXXXXX")"
 trap 'rm -rf "$STAGING"' EXIT
 STAGED_APP="$STAGING/Moonlight.app"
 mkdir -p "$STAGED_APP/Contents/MacOS" "$STAGED_APP/Contents/Resources/Licenses"
-cp "$BIN_PATH" "$STAGED_APP/Contents/MacOS/MoonlightMac"
-ln -s MoonlightMac "$STAGED_APP/Contents/MacOS/Moonlight"
+cp "$BIN_PATH" "$STAGED_APP/Contents/MacOS/moonlight-mac"
 cp "$PROJECT_DIR/Resources/Info.plist" "$STAGED_APP/Contents/Info.plist"
 printf 'APPL????' > "$STAGED_APP/Contents/PkgInfo"
 cp "$PROJECT_DIR/Resources/AppIcon.icns" "$STAGED_APP/Contents/Resources/"

@@ -14,6 +14,7 @@ for override in NSAllowsLocalNetworking NSAllowsArbitraryLoadsForMedia NSAllowsA
     fi
 done
 EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$PLIST")"
+[[ "$EXECUTABLE" == moonlight-mac ]] || { echo "Unexpected app executable name: $EXECUTABLE" >&2; exit 1; }
 [[ -x "$APP_DIR/Contents/MacOS/$EXECUTABLE" ]] || { echo "App executable is missing" >&2; exit 1; }
 FILE_TYPE="$(file -b "$APP_DIR/Contents/MacOS/$EXECUTABLE")"
 [[ "$FILE_TYPE" == *Mach-O* ]] || { echo "App executable is not Mach-O" >&2; exit 1; }

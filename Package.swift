@@ -9,7 +9,7 @@ let package = Package(
     ],
     products: [
         .executable(
-            name: "MoonlightMac",
+            name: "moonlight-mac",
             targets: ["MoonlightMac"]
         ),
         .library(
