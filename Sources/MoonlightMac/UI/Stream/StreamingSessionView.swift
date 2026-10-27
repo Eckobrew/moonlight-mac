@@ -4,11 +4,9 @@ public struct StreamingSessionView: View {
     @ObservedObject public var sessionController: StreamSessionController
     @ObservedObject private var clipboard = ClipboardSyncManager.shared
     @ObservedObject private var services = RuntimeServiceStatus.shared
-    public let onDisconnect: () -> Void
 
-    public init(sessionController: StreamSessionController, onDisconnect: @escaping () -> Void) {
+    public init(sessionController: StreamSessionController) {
         self.sessionController = sessionController
-        self.onDisconnect = onDisconnect
     }
 
     public var body: some View {
@@ -21,8 +19,6 @@ public struct StreamingSessionView: View {
                     onWindowAttached: { window in
                         window.acceptsMouseMovedEvents = true
                         InputCaptureCoordinator.shared.mouseMonitor.setStreamWindow(window)
-                        let mode = sessionController.activeSettings?.windowMode ?? .fullscreenDesktop
-                        WindowManager.shared.applyStartupWindowMode(mode, for: window)
                         FramePacer.shared.updateWindow(window)
                     }
                 )
@@ -32,8 +28,6 @@ public struct StreamingSessionView: View {
                     onWindowAttached: { window in
                         window.acceptsMouseMovedEvents = true
                         InputCaptureCoordinator.shared.mouseMonitor.setStreamWindow(window)
-                        let mode = sessionController.activeSettings?.windowMode ?? .fullscreenDesktop
-                        WindowManager.shared.applyStartupWindowMode(mode, for: window)
                         FramePacer.shared.updateWindow(window)
                     }
                 )
@@ -78,12 +72,6 @@ public struct StreamingSessionView: View {
                     }
                     Spacer()
                 }
-            }
-        }
-        .toolbar {
-            ToolbarItem {
-                Button("Session controls…") { sessionController.openSessionControls() }
-                    .keyboardShortcut("c", modifiers: [.control, .option, .shift])
             }
         }
         .sheet(isPresented: $sessionController.showSessionControls, onDismiss: { sessionController.closeSessionControls() }) {

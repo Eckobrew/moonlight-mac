@@ -47,17 +47,8 @@ struct RootContentView: View {
 
     var body: some View {
         Group {
-            if sessionController.isStreaming {
-                StreamingSessionView(
-                    sessionController: sessionController,
-                    onDisconnect: {
-                        appState.stopActiveStream()
-                    }
-                )
-            } else if appState.isShortcutLaunch && !appState.hasStartedStreaming {
+            if appState.isShortcutLaunch {
                 StreamNegotiationView(appState: appState)
-            } else if appState.isShortcutLaunch {
-                Color.black.ignoresSafeArea()
             } else {
                 NavigationStack {
                     HostGridView(appState: appState)
@@ -66,10 +57,10 @@ struct RootContentView: View {
             }
         }
         .frame(
-            minWidth: appState.isShortcutLaunch && !appState.hasStartedStreaming ? 460 : 800,
-            minHeight: appState.isShortcutLaunch && !appState.hasStartedStreaming ? 380 : 550
+            minWidth: appState.isShortcutLaunch ? 460 : 800,
+            minHeight: appState.isShortcutLaunch ? 380 : 550
         )
-        .background(ContentWindowReader())
+        .background(BrowserWindowReader())
         .onAppear { ControllerUINavigation.shared.start(state: appState) }
         .onChange(of: appState.isStreaming) { _, _ in ControllerUINavigation.shared.refresh() }
         .alert(AppLocalization.text("Stream Error"), isPresented: Binding(
@@ -93,13 +84,12 @@ struct RootContentView: View {
     }
 }
 
-/// Track the window hosting the UI instead of guessing from transient key-window
-/// state during sheet dismissal, view replacement, or fullscreen restoration.
-private struct ContentWindowReader: NSViewRepresentable {
+/// Track the browser independently of the ephemeral stream and its sheets.
+private struct BrowserWindowReader: NSViewRepresentable {
     final class WindowView: NSView {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if let window { WindowManager.shared.setContentWindow(window) }
+            if let window { WindowManager.shared.setBrowserWindow(window) }
         }
     }
 
@@ -113,12 +103,15 @@ struct MoonlightMacApp: App {
     @State private var appState = AppState()
 
     var body: some Scene {
-        WindowGroup {
+        Window("Moonlight", id: "host-browser") {
             RootContentView(appState: appState)
                 .task {
                     handleCommandLineArguments()
                 }
         }
+        // A separate identity also retires the old shared browser/stream state.
+        .defaultSize(width: appState.isShortcutLaunch ? 460 : 900,
+                     height: appState.isShortcutLaunch ? 380 : 600)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button(AppLocalization.text("Add Host...")) {
@@ -136,7 +129,11 @@ struct MoonlightMacApp: App {
 
             CommandGroup(after: .appSettings) {
                 Button(AppLocalization.text("Preferences...")) {
-                    appState.isShowingSettings = true
+                    if appState.isStreaming {
+                        StreamSessionController.shared.openSessionControls()
+                    } else {
+                        appState.isShowingSettings = true
+                    }
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }

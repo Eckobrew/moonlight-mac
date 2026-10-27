@@ -37,7 +37,6 @@ public final class AppState: @unchecked Sendable {
 
     // Shortcut / CLI Launch State
     public var isShortcutLaunch: Bool = false
-    public var hasStartedStreaming: Bool = false
     public var cliStreamStatus: String = "Connecting..."
     public var cliStreamError: String? = nil
     public var cliGameTitle: String = ""
@@ -51,6 +50,10 @@ public final class AppState: @unchecked Sendable {
     private var lastPersistedHosts: [Host] = []
 
     public init() {
+        StreamSessionController.shared.onSessionStarted = { [weak self] in
+            guard self != nil else { return }
+            WindowManager.shared.presentStreamWindow(session: StreamSessionController.shared)
+        }
         StreamSessionController.shared.onSessionStopped = { [weak self] in
             self?.isStreaming = false
             self?.activeHost = nil
@@ -449,7 +452,6 @@ public final class AppState: @unchecked Sendable {
         self.activeHost = host
         self.activeApp = app
         self.isStreaming = true
-        self.hasStartedStreaming = true
         StreamSessionController.shared.isShortcutMode = self.isShortcutLaunch
 
         // Apply any per-app overrides on top of the global settings.
@@ -499,9 +501,8 @@ public final class AppState: @unchecked Sendable {
         self.activeHost = nil
         self.activeApp = nil
 
-        WindowManager.shared.restoreWindowAfterStream()
+        WindowManager.shared.closeStreamWindow(showBrowser: true)
         if NSApp.isActive { WindowManager.shared.showCurrentWindow() }
-        hasStartedStreaming = false
     }
 
     public func cancelShortcutLaunch() {

@@ -70,7 +70,7 @@ public final class MouseMonitor: @unchecked Sendable {
     public func start() {
         guard !isMonitoring else { return }
         isMonitoring = true
-        if streamWindow == nil { streamWindow = WindowManager.shared.currentWindow }
+        if streamWindow == nil { streamWindow = WindowManager.shared.currentStreamWindow }
 
         let mask: NSEvent.EventTypeMask = [
             .mouseMoved,

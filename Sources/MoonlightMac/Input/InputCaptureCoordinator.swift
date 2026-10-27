@@ -91,8 +91,8 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
             systemKeyCaptureMode != .off &&
             mouseMonitor.isRelativeCaptureActive &&
             NSApp.isActive &&
-            (WindowManager.shared.currentWindow?.isKeyWindow == true) &&
-            (WindowManager.shared.currentWindow?.attachedSheet == nil)
+            (WindowManager.shared.currentStreamWindow?.isKeyWindow == true) &&
+            (WindowManager.shared.currentStreamWindow?.attachedSheet == nil)
 
         if shouldGrab && systemKeyCaptureMode == .fullscreenOnly {
             shouldGrab = isStreamWindowFullscreen()
@@ -107,7 +107,7 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
     /// implementation returned true whenever `currentMode` was `.fullscreen`/`.fullscreenDesktop`
     /// (the default), so "In fullscreen" behaved exactly like "Always" even in a windowed stream.
     private func isStreamWindowFullscreen() -> Bool {
-        guard let window = WindowManager.shared.currentWindow ?? NSApp.keyWindow else { return false }
+        guard let window = WindowManager.shared.currentStreamWindow else { return false }
 
         // Native macOS fullscreen Space.
         if window.styleMask.contains(.fullScreen) {
@@ -143,7 +143,7 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
                 let sourceWindow = notification.object as? NSWindow
                 MainActor.assumeIsolated {
                     guard let self = self else { return }
-                    if isResign || (isWindowResign && sourceWindow === WindowManager.shared.currentWindow) {
+                    if isResign || (isWindowResign && sourceWindow === WindowManager.shared.currentStreamWindow) {
                         // Never hold the grab while another app is focused
                         KeyboardGrab.shared.setGrabbed(false)
                         self.keyboardMonitor.raiseAllKeys()

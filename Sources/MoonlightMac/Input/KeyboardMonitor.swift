@@ -62,7 +62,7 @@ public final class KeyboardMonitor: @unchecked Sendable {
     }
 
     private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
-        guard NSApp.isActive, let window = WindowManager.shared.currentWindow, window.isKeyWindow,
+        guard NSApp.isActive, let window = WindowManager.shared.currentStreamWindow, window.isKeyWindow,
               window.attachedSheet == nil, NSApp.modalWindow == nil,
               event.window == nil || event.window === window else { return event }
         // Only trigger special key combos on keyDown events

@@ -42,7 +42,8 @@ public final class WindowManager: ObservableObject {
     }
 
     private var transitionDelegate: TransitionDelegate?
-    private weak var contentWindow: NSWindow?
+    private weak var browserWindow: NSWindow?
+    private var streamController: StreamWindowController?
     private weak var streamWindow: NSWindow?
     private var savedWindow: SavedWindow?
     private var transition: WindowModeTransition?
@@ -54,10 +55,50 @@ public final class WindowManager: ObservableObject {
 
     public var currentWindow: NSWindow? { targetWindow() }
 
-    public func setContentWindow(_ window: NSWindow) { contentWindow = window }
+    public var currentStreamWindow: NSWindow? { streamWindow }
+
+    public func setBrowserWindow(_ window: NSWindow) { browserWindow = window }
+
+    public func presentStreamWindow(session: StreamSessionController) {
+        guard streamController == nil else { return }
+        let controller = StreamWindowController(
+            screen: browserWindow?.screen ?? NSScreen.main,
+            title: "Moonlight — \(session.activeHost?.name ?? "Stream")",
+            onClose: { [weak session] in
+                // A close button can be dispatched inside an NSEvent monitor.
+                // Defer teardown until AppKit finishes dispatching the event.
+                Task { @MainActor [weak session] in session?.stopSession() }
+            }
+        )
+        streamController = controller
+        streamWindow = controller.window
+        controller.setContent(StreamingSessionView(sessionController: session))
+        // Finish attaching/layout of the hosting tree before changing styleMask.
+        // A borderless switch inside viewDidMoveToWindow can invalidate AppKit's
+        // titlebar/layout objects while it is still traversing them.
+        controller.window?.layoutIfNeeded()
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        browserWindow?.orderOut(nil)
+        applyStartupWindowMode(session.activeSettings?.windowMode ?? .fullscreenDesktop)
+    }
+
+    public func closeStreamWindow(showBrowser: Bool) {
+        guard let controller = streamController else { return }
+        // Destroy the ephemeral fullscreen window instead of restoring its
+        // geometry into the browser. AppKit removes the window's Space on close.
+        restorePresentationOptions()
+        finishRestoration()
+        streamController = nil
+        controller.close()
+        if showBrowser, let browserWindow {
+            if NSApp.isActive { browserWindow.makeKeyAndOrderFront(nil) }
+            else { browserWindow.orderFront(nil) }
+        }
+    }
 
     private func targetWindow(provided: NSWindow? = nil) -> NSWindow? {
-        provided ?? streamWindow ?? contentWindow ?? NSApp.keyWindow?.sheetParent ?? NSApp.mainWindow ?? NSApp.keyWindow
+        provided ?? streamWindow ?? browserWindow
     }
 
     /// Called once when the stream view attaches. Layout, connection callbacks
@@ -68,7 +109,7 @@ public final class WindowManager: ObservableObject {
     }
 
     public func applyWindowMode(_ mode: WindowMode, for window: NSWindow? = nil) {
-        guard let window = targetWindow(provided: window) else { return }
+        guard let window = window ?? streamWindow, window === streamWindow else { return }
         if savedWindow == nil {
             streamWindow = window
             savedWindow = SavedWindow(frame: window.frame, style: window.styleMask,
@@ -86,24 +127,17 @@ public final class WindowManager: ObservableObject {
     }
 
     public func toggleFullscreen(for window: NSWindow? = nil) {
-        guard let window = targetWindow(provided: window) else { return }
+        guard let window = window ?? streamWindow else { return }
         let fullscreenRequested = currentMode == .fullscreen || currentMode == .fullscreenDesktop
         let preferred = StreamSessionController.shared.activeSettings?.windowMode ?? .fullscreenDesktop
         applyWindowMode(fullscreenRequested ? .windowed : (preferred == .windowed ? .fullscreenDesktop : preferred),
                         for: window)
     }
 
-    public func restoreWindowAfterStream(for window: NSWindow? = nil) {
-        guard savedWindow != nil else { return }
-        transition?.requested = nil
-        currentMode = nil
-        processTransition()
-    }
-
     public func hideStreamWindow() {
-        // A shortcut process is about to exit. Hiding its one window is enough;
+        // A shortcut process is about to exit. Hiding the stream is enough;
         // AppKit removes its fullscreen Space when the process terminates.
-        targetWindow()?.orderOut(nil)
+        streamWindow?.orderOut(nil)
         restorePresentationOptions()
     }
 

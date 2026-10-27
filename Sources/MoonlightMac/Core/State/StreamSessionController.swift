@@ -198,6 +198,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
     public private(set) var activeHost: Host?
     public var isShortcutMode: Bool = false
+    public var onSessionStarted: (@MainActor () -> Void)?
     public var onSessionStopped: (@MainActor () -> Void)?
     private var activeApp: StreamApp?
     private var negotiatedVideoSize: CGSize?
@@ -313,6 +314,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         negotiatedVideoSize = nil
         negotiatedCodec = nil
         self.currentStageName = "Requesting session from host..."
+        onSessionStarted?()
 
         #if DEBUG
         self.showPerformanceOverlay = true
@@ -679,8 +681,6 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
 
         if isShortcut {
             WindowManager.shared.hideStreamWindow()
-        } else {
-            WindowManager.shared.restoreWindowAfterStream()
         }
 
         guard isStreaming else {
@@ -722,6 +722,7 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
         let inputStop = Task { @MainActor [weak self] in
             guard let self, !self.isStreaming else { return }
             self.inputCoordinator.stopCapturing()
+            WindowManager.shared.closeStreamWindow(showBrowser: !self.isShortcutMode)
         }
 
         // 4. Stop Limelight C connection on background thread (waits for and joins worker threads)
