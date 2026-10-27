@@ -21,6 +21,8 @@ final class StreamHDRState: @unchecked Sendable {
         }
     }
     func apply(to buffer: CVPixelBuffer) {
+        let trace = VideoPipelineTrace.begin("HDR attachments")
+        defer { VideoPipelineTrace.end("HDR attachments", trace) }
         let state = lock.withLock { (enabled, mastering, light) }
         let tenBit = [kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange, kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange, kCVPixelFormatType_420YpCbCr10BiPlanarFullRange, kCVPixelFormatType_444YpCbCr10BiPlanarFullRange].contains(CVPixelBufferGetPixelFormatType(buffer))
         let hdr = state.0 && tenBit

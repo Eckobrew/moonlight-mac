@@ -15,23 +15,24 @@ private func makeTestCertificate(in directory: URL) throws {
     #expect(process.terminationStatus == 0)
 }
 
-private func reserveTestPort() throws -> UInt16 {
-    let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
-    guard fd >= 0 else { throw POSIXError(.EIO) }
-    defer { close(fd) }
-    var address = sockaddr_in()
-    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-    address.sin_family = sa_family_t(AF_INET)
-    address.sin_addr.s_addr = inet_addr("127.0.0.1")
-    var size = socklen_t(MemoryLayout<sockaddr_in>.size)
-    let result = withUnsafeMutablePointer(to: &address) { pointer in
-        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            guard bind(fd, $0, size) == 0 else { return Int32(-1) }
-            return getsockname(fd, $0, &size)
+private struct FixturePorts: Decodable {
+    let https: UInt16
+    let http: UInt16?
+}
+
+private func awaitFixturePorts(_ server: Process, in directory: URL) async throws -> FixturePorts {
+    let readyURL = directory.appendingPathComponent("ready.json")
+    let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+    while ContinuousClock.now < deadline && server.isRunning {
+        if let data = try? Data(contentsOf: readyURL) {
+            return try JSONDecoder().decode(FixturePorts.self, from: data)
         }
+        try await Task.sleep(for: .milliseconds(20))
     }
-    guard result == 0 else { throw POSIXError(.EADDRINUSE) }
-    return UInt16(bigEndian: address.sin_port)
+    let diagnostics = (try? String(contentsOf: directory.appendingPathComponent("server-stderr.log"), encoding: .utf8)) ?? ""
+    let state = server.isRunning ? "still running" : "exited with status \(server.terminationStatus)"
+    throw NSError(domain: "TLSFixture", code: 1,
+                  userInfo: [NSLocalizedDescriptionKey: "TLS fixture server \(state): \(diagnostics)"])
 }
 
 @Test func tlsHandshakeAcceptsOnlyPinnedCertificate() async throws {
@@ -41,11 +42,16 @@ private func reserveTestPort() throws -> UInt16 {
     try makeTestCertificate(in: directory)
     let pem = try String(contentsOf: directory.appendingPathComponent("cert.pem"), encoding: .utf8)
     let pin = try #require(HostTrust.certificateDER(pem: pem))
-    let port = try reserveTestPort()
     let server = Process()
     server.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     server.arguments = ["python3", "-c", """
-import http.server, ssl, sys
+import http.server, socketserver, ssl, sys, json, os
+# Avoid HTTPServer's hostname lookup: these fixtures only serve loopback.
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = 'localhost'
+        self.server_port = self.server_address[1]
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         body = b'pinned host test'
@@ -55,12 +61,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
     def log_message(self, *args):
         pass
-server = http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[2])), Handler)
+server = Server(('127.0.0.1', 0), Handler)
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(sys.argv[1] + '/cert.pem', sys.argv[1] + '/key.pem')
 server.socket = context.wrap_socket(server.socket, server_side=True)
+with open(sys.argv[1] + '/ready.tmp', 'w') as ready:
+    json.dump({'https': server.server_port}, ready)
+os.replace(sys.argv[1] + '/ready.tmp', sys.argv[1] + '/ready.json')
 server.serve_forever()
-""", directory.path, String(port)]
+""", directory.path]
     server.standardInput = FileHandle.nullDevice
     server.standardOutput = FileHandle.nullDevice
     let errorURL = directory.appendingPathComponent("server-stderr.log")
@@ -73,17 +82,7 @@ server.serve_forever()
         if server.isRunning { server.terminate() }
         server.waitUntilExit()
     }
-    var ready = false
-    // Hosted runners and Xcode's Python launcher can take longer on a cold
-    // start. Wait for readiness rather than assuming startup fits in one second.
-    let deadline = ContinuousClock.now.advanced(by: .seconds(10))
-    while ContinuousClock.now < deadline && server.isRunning {
-        if TCPProbe.canConnect(address: "127.0.0.1", port: port) { ready = true; break }
-        try await Task.sleep(for: .milliseconds(20))
-    }
-    let diagnostics = (try? String(contentsOf: errorURL, encoding: .utf8)) ?? ""
-    let state = server.isRunning ? "still running" : "exited with status \(server.terminationStatus)"
-    try #require(ready, "TLS fixture server \(state): \(diagnostics)")
+    let port = try await awaitFixturePorts(server, in: directory).https
     let url = try #require(URL(string: "https://127.0.0.1:\(port)/"))
     // This server does not request a client identity, so the test never accesses
     // the user's real client credentials or contacts a streaming host.
@@ -114,14 +113,17 @@ server.serve_forever()
     try makeTestCertificate(in: directory)
     let pem = try String(contentsOf: directory.appendingPathComponent("cert.pem"), encoding: .utf8)
     let pin = try #require(HostTrust.certificateDER(pem: pem))
-    let port = try reserveTestPort()
-    var httpPort = try reserveTestPort()
-    while httpPort == port { httpPort = try reserveTestPort() }
     let server = Process()
     server.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     server.arguments = ["python3", "-c", """
-import http.server, ssl, sys, threading, json
+import http.server, socketserver, ssl, sys, threading, json, os
 from urllib.parse import urlsplit, parse_qs
+# Avoid HTTPServer's hostname lookup: these fixtures only serve loopback.
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = 'localhost'
+        self.server_port = self.server_address[1]
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
@@ -137,7 +139,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if path == '/serverinfo':
             identity = 'wrong-host' if self.headers.get('Host', '').startswith('localhost:') else 'expected-host'
-            if self.server.server_port == int(sys.argv[3]) and 'wrong-http-client' in self.path:
+            if self.server is plain and 'wrong-http-client' in self.path:
                 identity = 'wrong-http-host'
             content = '<hostname>Fixture</hostname><uniqueid>' + identity + '</uniqueid><appversion>7.1.0.-1</appversion><PairStatus>1</PairStatus><ExternalIP>0.0.0.0</ExternalIP><ExternalPort>12345</ExternalPort>'
         elif path == '/bitrate':
@@ -156,29 +158,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
     def log_message(self, *args):
         pass
-plain = http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[3])), Handler)
+plain = Server(('127.0.0.1', 0), Handler)
 threading.Thread(target=plain.serve_forever, daemon=True).start()
-server = http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[2])), Handler)
+server = Server(('127.0.0.1', 0), Handler)
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(sys.argv[1] + '/cert.pem', sys.argv[1] + '/key.pem')
 server.socket = context.wrap_socket(server.socket, server_side=True)
+with open(sys.argv[1] + '/ready.tmp', 'w') as ready:
+    json.dump({'https': server.server_port, 'http': plain.server_port}, ready)
+os.replace(sys.argv[1] + '/ready.tmp', sys.argv[1] + '/ready.json')
 server.serve_forever()
-""", directory.path, String(port), String(httpPort)]
+""", directory.path]
     server.standardInput = FileHandle.nullDevice
     server.standardOutput = FileHandle.nullDevice
-    server.standardError = FileHandle.nullDevice
+    let errorURL = directory.appendingPathComponent("server-stderr.log")
+    FileManager.default.createFile(atPath: errorURL.path, contents: nil)
+    let errorHandle = try FileHandle(forWritingTo: errorURL)
+    defer { try? errorHandle.close() }
+    server.standardError = errorHandle
     try server.run()
     defer {
         if server.isRunning { server.terminate() }
         server.waitUntilExit()
     }
-    var ready = false
-    let deadline = ContinuousClock.now.advanced(by: .seconds(10))
-    while ContinuousClock.now < deadline && server.isRunning {
-        if TCPProbe.canConnect(address: "127.0.0.1", port: port) { ready = true; break }
-        try await Task.sleep(for: .milliseconds(20))
-    }
-    try #require(ready)
+    let ports = try await awaitFixturePorts(server, in: directory)
+    let port = ports.https
+    let httpPort = try #require(ports.http)
     let client = SunshineHTTPClient(uniqueID: { "test-client" })
     let expected = Host(name: "Fixture", address: "127.0.0.1", serverId: "expected-host",
                         isPaired: true, serverCertificateDER: pin)

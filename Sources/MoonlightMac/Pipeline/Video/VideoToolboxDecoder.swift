@@ -4,6 +4,7 @@ import CoreMedia
 import CoreVideo
 import QuartzCore
 import MoonlightCommonC
+import simd
 
 public protocol VideoDecoderDelegate: AnyObject, Sendable {
     func decoderDidOutputPixelBuffer(_ pixelBuffer: CVPixelBuffer, presentationTimeUs: UInt64, decodeTimeMs: Double)
@@ -105,6 +106,8 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
     }
 
     public func submitDecodeUnit(_ decodeUnit: PDECODE_UNIT) -> Int32 {
+        let trace = VideoPipelineTrace.begin("Decode unit")
+        defer { VideoPipelineTrace.end("Decode unit", trace) }
         submitLock.lock()
         defer { submitLock.unlock() }
 
@@ -144,32 +147,36 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         var chainBytes = 0
         var hasNewParamSets = false
 
-        while let entry = curEntry?.pointee {
-            guard let dataPtr = entry.data, entry.length > 0 else { free(rawData); return DR_NEED_IDR }
-            let bytePtr = UnsafeRawPointer(dataPtr).assumingMemoryBound(to: UInt8.self)
-            let length = Int(entry.length)
-            guard length <= Int(du.fullLength) - chainBytes else { free(rawData); return DR_NEED_IDR }
-            chainBytes += length
+        do {
+            let trace = VideoPipelineTrace.begin("Copy encoded chain")
+            defer { VideoPipelineTrace.end("Copy encoded chain", trace) }
+            while let entry = curEntry?.pointee {
+                guard let dataPtr = entry.data, entry.length > 0 else { free(rawData); return DR_NEED_IDR }
+                let bytePtr = UnsafeRawPointer(dataPtr).assumingMemoryBound(to: UInt8.self)
+                let length = Int(entry.length)
+                guard length <= Int(du.fullLength) - chainBytes else { free(rawData); return DR_NEED_IDR }
+                chainBytes += length
 
-            switch entry.bufferType {
-            case BUFFER_TYPE_SPS:
-                self.spsData = extractNaluPayload(from: bytePtr, length: length)
-                hasNewParamSets = true
-            case BUFFER_TYPE_PPS:
-                self.ppsData = extractNaluPayload(from: bytePtr, length: length)
-                hasNewParamSets = true
-            case BUFFER_TYPE_VPS:
-                self.vpsData = extractNaluPayload(from: bytePtr, length: length)
-                hasNewParamSets = true
-            case BUFFER_TYPE_PICDATA:
-                memcpy(rawData.advanced(by: picDataOffset), bytePtr, length)
-                picDataOffset += length
-            default:
-                memcpy(rawData.advanced(by: picDataOffset), bytePtr, length)
-                picDataOffset += length
+                switch entry.bufferType {
+                case BUFFER_TYPE_SPS:
+                    self.spsData = extractNaluPayload(from: bytePtr, length: length)
+                    hasNewParamSets = true
+                case BUFFER_TYPE_PPS:
+                    self.ppsData = extractNaluPayload(from: bytePtr, length: length)
+                    hasNewParamSets = true
+                case BUFFER_TYPE_VPS:
+                    self.vpsData = extractNaluPayload(from: bytePtr, length: length)
+                    hasNewParamSets = true
+                case BUFFER_TYPE_PICDATA:
+                    memcpy(rawData.advanced(by: picDataOffset), bytePtr, length)
+                    picDataOffset += length
+                default:
+                    memcpy(rawData.advanced(by: picDataOffset), bytePtr, length)
+                    picDataOffset += length
+                }
+
+                curEntry = entry.next
             }
-
-            curEntry = entry.next
         }
 
         guard chainBytes == Int(du.fullLength) else { free(rawData); return DR_NEED_IDR }
@@ -218,6 +225,22 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
             return DR_NEED_IDR
         }
 
+        // Common-c's bytes have already been copied into our allocation. When
+        // length prefixes fit before their payloads, pack in place and give VT
+        // one contiguous block. Three-byte prefixes that would expand retain
+        // the existing reference-based path, avoiding an extra payload copy.
+        var pictureRanges: [Range<Int>]?
+        var packedNALLength: Int?
+        if !isAV1 {
+            guard let ranges = Self.pictureNALRanges(in: UnsafeBufferPointer(start: rawData, count: picDataOffset)) else {
+                free(rawData)
+                return DR_NEED_IDR
+            }
+            pictureRanges = ranges
+            packedNALLength = Self.packNALPayloadsInPlace(rawData, ranges: ranges)
+        }
+        let sampleDataLength = packedNALLength ?? picDataOffset
+
         // Wrap rawData into dataBlockBuffer with kCFAllocatorDefault.
         // CoreMedia takes ownership of rawData and will call free(rawData) when dataBlockBuffer is released.
         var dataBlockBuffer: CMBlockBuffer?
@@ -228,7 +251,7 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
             blockAllocator: kCFAllocatorDefault,
             customBlockSource: nil,
             offsetToData: 0,
-            dataLength: picDataOffset,
+            dataLength: sampleDataLength,
             flags: 0,
             blockBufferOut: &dataBlockBuffer
         )
@@ -247,9 +270,10 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
         )
 
         var sampleBuffer: CMSampleBuffer?
-        if isAV1 {
-            // AV1 frames arrive as raw OBU bitstreams (not Annex-B NALUs); wrap dataBuffer directly.
-            var sampleSize = picDataOffset
+        if isAV1 || packedNALLength != nil {
+            // AV1 remains an unmodified OBU stream; packed H.264/HEVC contains
+            // the same NAL payloads with contiguous four-byte length prefixes.
+            var sampleSize = sampleDataLength
             status = CMSampleBufferCreateReady(
                 allocator: kCFAllocatorDefault,
                 dataBuffer: dataBuffer,
@@ -262,6 +286,8 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
                 sampleBufferOut: &sampleBuffer
             )
         } else {
+            let trace = VideoPipelineTrace.begin("Assemble NAL sample")
+            defer { VideoPipelineTrace.end("Assemble NAL sample", trace) }
             // Create empty frameBlockBuffer to hold 4-byte length prefixes and references to dataBuffer
             var frameBlockBuffer: CMBlockBuffer?
             status = CMBlockBufferCreateEmpty(
@@ -275,7 +301,7 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
                 return DR_NEED_IDR
             }
 
-            guard let ranges = Self.pictureNALRanges(in: UnsafeBufferPointer(start: rawData, count: picDataOffset)) else { return DR_NEED_IDR }
+            guard let ranges = pictureRanges else { return DR_NEED_IDR }
             for range in ranges {
                 guard appendNalu(to: frameBuffer, from: dataBuffer, data: rawData,
                                  startOffset: range.lowerBound, endOffset: range.upperBound) else { return DR_NEED_IDR }
@@ -324,12 +350,15 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
                                     submissionTime: CACurrentMediaTime())
         let flags: VTDecodeFrameFlags = [._EnableAsynchronousDecompression, ._1xRealTimePlayback]
         var infoFlagsOut: VTDecodeInfoFlags = []
+        let submissionTrace = VideoPipelineTrace.begin("VideoToolbox submit")
         status = VTDecompressionSessionDecodeFrame(
             session, sampleBuffer: sample, flags: flags, infoFlagsOut: &infoFlagsOut
         ) { [weak self] status, infoFlags, imageBuffer, _, _ in
             self?.handleDecodedFrame(context: context, status: status,
                                      infoFlags: infoFlags, imageBuffer: imageBuffer)
         }
+
+        VideoPipelineTrace.end("VideoToolbox submit", submissionTrace)
 
         if status != noErr {
             AppLogger.shared.error("VTDecompressionSessionDecodeFrame failed: \(status) (frame: \(du.frameNumber))")
@@ -520,21 +549,79 @@ public final class VideoToolboxDecoder: @unchecked Sendable {
     /// Picture units must contain complete Annex-B NAL payloads. Both three- and
     /// four-byte start codes are accepted; padding and empty/truncated NALs are not pictures.
     static func pictureNALRanges(in bytes: UnsafeBufferPointer<UInt8>) -> [Range<Int>]? {
+        let trace = VideoPipelineTrace.begin("Scan Annex B")
+        defer { VideoPipelineTrace.end("Scan Annex B", trace) }
         guard bytes.count >= 4 else { return nil }
-        var starts: [Int] = []
-        for index in 0...(bytes.count - 3) where bytes[index] == 0 && bytes[index + 1] == 0 && bytes[index + 2] == 1 {
-            starts.append(index)
-        }
-        guard let first = starts.first, bytes.prefix(first).allSatisfy({ $0 == 0 }) else { return nil }
         var ranges: [Range<Int>] = []
-        for (index, start) in starts.enumerated() {
-            let payload = start + 3
-            var end = index + 1 < starts.count ? starts[index + 1] : bytes.count
+        var payloadStart: Int?
+        func appendPreviousNAL(upTo limit: Int) -> Bool {
+            guard let payload = payloadStart else { return bytes.prefix(limit).allSatisfy { $0 == 0 } }
+            var end = limit
             while end > payload && bytes[end - 1] == 0 { end -= 1 }
-            guard end > payload else { return nil }
+            guard end > payload else { return false }
             ranges.append(payload..<end)
+            return true
         }
+        // Compare 16 start positions at once. Three overlapping 16-byte loads
+        // require 18 accessible bytes; use scalar comparisons for the tail.
+        let base = UnsafeRawPointer(bytes.baseAddress!)
+        let zeros = SIMD16<UInt8>(repeating: 0)
+        let ones = SIMD16<UInt8>(repeating: 1)
+        var cursor = 0
+        while cursor <= bytes.count - 18 {
+            let first = base.loadUnaligned(fromByteOffset: cursor, as: SIMD16<UInt8>.self)
+            let second = base.loadUnaligned(fromByteOffset: cursor + 1, as: SIMD16<UInt8>.self)
+            let third = base.loadUnaligned(fromByteOffset: cursor + 2, as: SIMD16<UInt8>.self)
+            let matches = (first .== zeros) .& (second .== zeros) .& (third .== ones)
+            if any(matches) {
+                var lane = 0
+                while lane < 16 {
+                    if matches[lane] {
+                        let start = cursor + lane
+                        guard appendPreviousNAL(upTo: start) else { return nil }
+                        payloadStart = start + 3
+                        // 00 00 01 cannot overlap another start in these bytes.
+                        lane += 3
+                    } else {
+                        lane += 1
+                    }
+                }
+            }
+            cursor += 16
+        }
+        while cursor <= bytes.count - 3 {
+            if bytes[cursor] == 0 && bytes[cursor + 1] == 0 && bytes[cursor + 2] == 1 {
+                guard appendPreviousNAL(upTo: cursor) else { return nil }
+                payloadStart = cursor + 3
+            }
+            cursor += 1
+        }
+        guard payloadStart != nil, appendPreviousNAL(upTo: bytes.count) else { return nil }
         return ranges
+    }
+
+    /// Ranges must come from pictureNALRanges for this owned allocation. A nil
+    /// result leaves every byte untouched so the reference-based path can use it.
+    static func packNALPayloadsInPlace(_ data: UnsafeMutablePointer<UInt8>, ranges: [Range<Int>]) -> Int? {
+        guard !ranges.isEmpty else { return nil }
+        var outputLength = 0
+        for range in ranges {
+            // Validate the entire layout before writing. Each destination must
+            // end no later than its source, so packing cannot overwrite a later
+            // payload or require growing the allocation.
+            guard outputLength + 4 <= range.lowerBound else { return nil }
+            outputLength += 4 + range.count
+        }
+        var offset = 0
+        for range in ranges {
+            var length = UInt32(range.count).bigEndian
+            memcpy(data.advanced(by: offset), &length, 4)
+            let source = data.advanced(by: range.lowerBound)
+            let destination = data.advanced(by: offset + 4)
+            if source != destination { memmove(destination, source, range.count) }
+            offset += 4 + range.count
+        }
+        return outputLength
     }
 
     private func appendNalu(
