@@ -36,7 +36,7 @@ For startup/focus investigations, enable opt-in diagnostics when launching the
 release binary (substitute your saved host and app names):
 
 ```sh
-MOONLIGHT_STREAM_DIAGNOSTICS=1 ./Products/Moonlight.app/Contents/MacOS/MoonlightMac stream 'PC name' 'Desktop'
+MOONLIGHT_STREAM_DIAGNOSTICS=1 ./Products/Moonlight.app/Contents/MacOS/moonlight-mac stream 'PC name' 'Desktop'
 ```
 
 The `STREAM-DIAGNOSTICS` log records decode FPS, Metal submission FPS (only relevant

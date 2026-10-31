@@ -16,7 +16,14 @@ public final class BoxArtManager {
 
     private var cacheDirectory: URL {
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupport.appendingPathComponent("MoonlightMac/BoxArt", isDirectory: true)
+        let newDir = appSupport.appendingPathComponent("moonlight-mac/BoxArt", isDirectory: true)
+        let oldDir = appSupport.appendingPathComponent("MoonlightMac/BoxArt", isDirectory: true)
+        if !fileManager.fileExists(atPath: newDir.path) && fileManager.fileExists(atPath: oldDir.path) {
+            try? fileManager.moveItem(at: oldDir, to: newDir)
+        }
+        let dir = fileManager.fileExists(atPath: newDir.path) ? newDir : (fileManager.fileExists(atPath: oldDir.path) ? oldDir : newDir)
+        try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
     }
 
     static func identity(host: Host, app: StreamApp) -> String {

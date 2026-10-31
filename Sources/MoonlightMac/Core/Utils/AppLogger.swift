@@ -44,14 +44,19 @@ public final class AppLogger: @unchecked Sendable {
 
     public var logFileURL: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = appSupport.appendingPathComponent("MoonlightMac", isDirectory: true)
+        let newDir = appSupport.appendingPathComponent("moonlight-mac", isDirectory: true)
+        let oldDir = appSupport.appendingPathComponent("MoonlightMac", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: newDir.path) && FileManager.default.fileExists(atPath: oldDir.path) {
+            try? FileManager.default.moveItem(at: oldDir, to: newDir)
+        }
+        let dir = FileManager.default.fileExists(atPath: newDir.path) ? newDir : (FileManager.default.fileExists(atPath: oldDir.path) ? oldDir : newDir)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("moonlight.log")
     }
 
     private init() {
         setupLogFile()
-        info("MoonlightMac Logger initialized. Log file: \(logFileURL.path)", category: "SYSTEM")
+        info("moonlight-mac Logger initialized. Log file: \(logFileURL.path)", category: "SYSTEM")
     }
 
     private func setupLogFile() {

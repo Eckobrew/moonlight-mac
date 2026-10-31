@@ -175,7 +175,7 @@ import MoonlightCommonC
     let resources = app.appendingPathComponent("Contents/Resources/MoonlightMac_MoonlightMac.bundle")
     let language = resources.appendingPathComponent("de.lproj")
     try FileManager.default.createDirectory(at: language, withIntermediateDirectories: true)
-    let plist: [String: Any] = ["CFBundleIdentifier": "test.\(UUID().uuidString)", "CFBundlePackageType": "APPL", "CFBundleExecutable": "MoonlightMac"]
+    let plist: [String: Any] = ["CFBundleIdentifier": "test.\(UUID().uuidString)", "CFBundlePackageType": "APPL", "CFBundleExecutable": "moonlight-mac"]
     try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: app.appendingPathComponent("Contents/Info.plist"))
     try #""Settings" = "Relocated settings";"#.write(to: language.appendingPathComponent("Localizable.strings"), atomically: true, encoding: .utf8)
     let appBundle = try #require(Bundle(url: app))

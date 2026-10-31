@@ -1,6 +1,6 @@
 # Third-party software
 
-MoonlightMac is distributed under GPLv3; see `LICENSE`. The following components
+moonlight-mac is distributed under GPLv3; see `LICENSE`. The following components
 are vendored in this source tree and linked into the application:
 
 | Component | Upstream | Included license |

@@ -15,8 +15,8 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "9B00000B2A00000000000001"
-               BuildableName = "MoonlightMac.app"
-               BlueprintName = "MoonlightMac"
+               BuildableName = "Moonlight.app"
+               BlueprintName = "Moonlight"
                ReferencedContainer = "container:MoonlightMac.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -27,6 +27,8 @@
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES">
+      <Testables>
+      </Testables>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
@@ -43,8 +45,8 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "9B00000B2A00000000000001"
-            BuildableName = "MoonlightMac.app"
-            BlueprintName = "MoonlightMac"
+            BuildableName = "Moonlight.app"
+            BlueprintName = "Moonlight"
             ReferencedContainer = "container:MoonlightMac.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -60,8 +62,8 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "9B00000B2A00000000000001"
-            BuildableName = "MoonlightMac.app"
-            BlueprintName = "MoonlightMac"
+            BuildableName = "Moonlight.app"
+            BlueprintName = "Moonlight"
             ReferencedContainer = "container:MoonlightMac.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

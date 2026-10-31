@@ -20,11 +20,15 @@ FILE_TYPE="$(file -b "$APP_DIR/Contents/MacOS/$EXECUTABLE")"
 [[ "$FILE_TYPE" == *Mach-O* ]] || { echo "App executable is not Mach-O" >&2; exit 1; }
 RESOURCE_BUNDLE="$APP_DIR/Contents/Resources/MoonlightMac_MoonlightMac.bundle"
 [[ -d "$RESOURCE_BUNDLE" ]] || { echo "SwiftPM resources are missing" >&2; exit 1; }
-[[ -f "$RESOURCE_BUNDLE/Shaders.metal" || -f "$RESOURCE_BUNDLE/default.metallib" ]] || {
+BUNDLE_RES="$RESOURCE_BUNDLE"
+if [[ -d "$RESOURCE_BUNDLE/Contents/Resources" ]]; then
+    BUNDLE_RES="$RESOURCE_BUNDLE/Contents/Resources"
+fi
+[[ -f "$RESOURCE_BUNDLE/Shaders.metal" || -f "$RESOURCE_BUNDLE/default.metallib" || -f "$BUNDLE_RES/Shaders.metal" || -f "$BUNDLE_RES/default.metallib" ]] || {
     echo "Metal shader resource is missing" >&2; exit 1;
 }
 for language in en de fr es; do
-    STRINGS="$RESOURCE_BUNDLE/$language.lproj/Localizable.strings"
+    STRINGS="$BUNDLE_RES/$language.lproj/Localizable.strings"
     [[ -s "$STRINGS" ]] || { echo "Missing language resources: $language" >&2; exit 1; }
     plutil -lint "$STRINGS"
 done

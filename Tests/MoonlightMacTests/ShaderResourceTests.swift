@@ -9,7 +9,7 @@ import Testing
     let resources = app.appendingPathComponent("Contents/Resources/MoonlightMac_MoonlightMac.bundle")
     try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
     let plist: [String: Any] = ["CFBundleIdentifier": "test.\(UUID().uuidString)",
-                                "CFBundlePackageType": "APPL", "CFBundleExecutable": "MoonlightMac"]
+                                "CFBundlePackageType": "APPL", "CFBundleExecutable": "moonlight-mac"]
     try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         .write(to: app.appendingPathComponent("Contents/Info.plist"))
     let shader = resources.appendingPathComponent("Shaders.metal")
