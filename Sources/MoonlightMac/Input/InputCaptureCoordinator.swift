@@ -25,6 +25,10 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         mouseSensitivityX: Double = 1.0,
         mouseSensitivityY: Double = 1.0,
         mouseSubPixelAccumulation: Bool = true,
+        enableMagicMouseChording: Bool = false,
+        magicMouseLeftThreshold: Double = 0.46,
+        magicMouseRightThreshold: Double = 0.54,
+        magicMousePalmThreshold: Double = 0.20,
         swapWinAltKeys: Bool = true,
         systemKeyCaptureMode: SystemKeyCaptureMode = .off,
         onQuit: @escaping @Sendable () -> Void,
@@ -54,6 +58,10 @@ public final class InputCaptureCoordinator: @unchecked Sendable {
         mouseMonitor.sensitivityX = mouseSensitivityX
         mouseMonitor.sensitivityY = mouseSensitivityY
         mouseMonitor.useSubPixelAccumulation = mouseSubPixelAccumulation
+        mouseMonitor.enableMagicMouseChording = enableMagicMouseChording
+        mouseMonitor.magicMouseLeftThreshold = magicMouseLeftThreshold
+        mouseMonitor.magicMouseRightThreshold = magicMouseRightThreshold
+        mouseMonitor.magicMousePalmThreshold = magicMousePalmThreshold
         mouseMonitor.onCaptureStateChanged = { [weak self] in
             self?.updateKeyboardGrabState()
         }

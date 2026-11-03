@@ -430,6 +430,10 @@ public final class StreamSessionController: ObservableObject, VideoDecoderDelega
             mouseSensitivityX: settings.mouseSensitivityX,
             mouseSensitivityY: settings.mouseSensitivityY,
             mouseSubPixelAccumulation: settings.mouseSubPixelAccumulation,
+            enableMagicMouseChording: settings.features.enableMagicMouseChording,
+            magicMouseLeftThreshold: settings.features.magicMouseLeftThreshold,
+            magicMouseRightThreshold: settings.features.magicMouseRightThreshold,
+            magicMousePalmThreshold: settings.features.magicMousePalmThreshold,
             swapWinAltKeys: settings.swapWinAltKeys,
             systemKeyCaptureMode: settings.captureSystemKeys,
             onQuit: { [weak self] in

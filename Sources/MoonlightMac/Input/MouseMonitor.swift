@@ -33,6 +33,12 @@ public final class MouseMonitor: @unchecked Sendable {
     /// Preserve fractional sensitivity adjustments after SDL-compatible Cocoa delta conversion.
     public var useSubPixelAccumulation: Bool = true
 
+    // Magic Mouse Chording (MagicChord)
+    public var enableMagicMouseChording: Bool = false
+    public var magicMouseLeftThreshold: Double = 0.46
+    public var magicMouseRightThreshold: Double = 0.54
+    public var magicMousePalmThreshold: Double = 0.20
+
     private var localMonitor: Any?
     private var isMonitoring = false
     private var seenWarp = false
@@ -86,6 +92,10 @@ public final class MouseMonitor: @unchecked Sendable {
             return self.handleMouseEvent(event)
         }
 
+        if desktopMode {
+            activateMagicChordIfNeeded()
+        }
+
         // Release cursor hardware lock when app loses focus (e.g. Cmd+Tab, Mission Control)
         appResignObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification,
@@ -93,7 +103,9 @@ public final class MouseMonitor: @unchecked Sendable {
             queue: OperationQueue.main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self = self, self.isCaptured else { return }
+                guard let self = self else { return }
+                self.deactivateMagicChord()
+                guard self.isCaptured else { return }
                 self.cancelCaptureRecovery()
                 self.releaseRelativeCapture()
             }
@@ -133,6 +145,9 @@ public final class MouseMonitor: @unchecked Sendable {
                 guard let window = notification.object as? NSWindow else { return }
                 MainActor.assumeIsolated {
                     guard let self, window === self.streamWindow else { return }
+                    if name == NSWindow.didResignKeyNotification {
+                        self.deactivateMagicChord()
+                    }
                     self.scheduleCaptureRecovery()
                 }
             }
@@ -165,6 +180,7 @@ public final class MouseMonitor: @unchecked Sendable {
         windowObservers.removeAll()
         streamWindow = nil
         isMonitoring = false
+        deactivateMagicChord()
         releaseRelativeCapture()
     }
 
@@ -220,6 +236,7 @@ public final class MouseMonitor: @unchecked Sendable {
     }
 
     private func releaseRelativeCapture() {
+        deactivateMagicChord()
         for button in pressedButtons {
             inputQueue.async { LiSendMouseButtonEvent(CChar(BUTTON_ACTION_RELEASE), button) }
         }
@@ -263,6 +280,30 @@ public final class MouseMonitor: @unchecked Sendable {
             onCaptureStateChanged?()
         }
         hideCursorIfNeeded()
+        activateMagicChordIfNeeded()
+    }
+
+    // MARK: - Magic Mouse Chording Lifecycle
+
+    private func activateMagicChordIfNeeded() {
+        guard enableMagicMouseChording, isMonitoring else { return }
+        MagicChordEngine.shared.leftThreshold = magicMouseLeftThreshold
+        MagicChordEngine.shared.rightThreshold = magicMouseRightThreshold
+        MagicChordEngine.shared.palmThreshold = magicMousePalmThreshold
+        MagicChordEngine.shared.onButtonEvent = { [weak self] button, pressed in
+            Task { @MainActor [weak self] in
+                self?.sendButton(button, pressed: pressed)
+            }
+        }
+        MultitouchDeviceManager.shared.delegate = MagicChordEngine.shared
+        MultitouchDeviceManager.shared.start(requester: "MouseMonitor")
+    }
+
+    private func deactivateMagicChord() {
+        guard enableMagicMouseChording else { return }
+        MagicChordEngine.shared.reset()
+        MagicChordEngine.shared.onButtonEvent = nil
+        MultitouchDeviceManager.shared.stop(requester: "MouseMonitor")
     }
 
     // MARK: - Event Dispatching
@@ -315,17 +356,33 @@ public final class MouseMonitor: @unchecked Sendable {
 
         case .leftMouseDown:
             guard !desktopMode || sendDesktopPosition(event) else { return event }
-            sendButton(BUTTON_LEFT, pressed: true)
+            if enableMagicMouseChording && MagicMouseIdentifier.shared.isMagicMouse(event: event) {
+                MagicChordEngine.shared.handleMouseDown(button: BUTTON_LEFT)
+            } else {
+                sendButton(BUTTON_LEFT, pressed: true)
+            }
             return nil
         case .leftMouseUp:
-            sendButton(BUTTON_LEFT, pressed: false)
+            if enableMagicMouseChording && (MagicMouseIdentifier.shared.isMagicMouse(event: event) || MagicChordEngine.shared.isAnyButtonActive) {
+                MagicChordEngine.shared.handleMouseUp(button: BUTTON_LEFT)
+            } else {
+                sendButton(BUTTON_LEFT, pressed: false)
+            }
             return nil
         case .rightMouseDown:
             guard !desktopMode || sendDesktopPosition(event) else { return event }
-            sendButton(BUTTON_RIGHT, pressed: true)
+            if enableMagicMouseChording && MagicMouseIdentifier.shared.isMagicMouse(event: event) {
+                MagicChordEngine.shared.handleMouseDown(button: BUTTON_RIGHT)
+            } else {
+                sendButton(BUTTON_RIGHT, pressed: true)
+            }
             return nil
         case .rightMouseUp:
-            sendButton(BUTTON_RIGHT, pressed: false)
+            if enableMagicMouseChording && (MagicMouseIdentifier.shared.isMagicMouse(event: event) || MagicChordEngine.shared.isAnyButtonActive) {
+                MagicChordEngine.shared.handleMouseUp(button: BUTTON_RIGHT)
+            } else {
+                sendButton(BUTTON_RIGHT, pressed: false)
+            }
             return nil
         case .otherMouseDown, .otherMouseUp:
             guard !desktopMode || event.type == .otherMouseUp || sendDesktopPosition(event) else { return event }

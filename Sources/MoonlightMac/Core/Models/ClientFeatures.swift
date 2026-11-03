@@ -20,8 +20,17 @@ public struct ClientFeatures: Codable, Equatable, Sendable {
     public var language = "system"
     public var discordPresence = false
     public var discordApplicationID = "1563323903949021204"
+    public var enableMagicMouseChording = false
+    public var magicMouseLeftThreshold: Double = 0.46
+    public var magicMouseRightThreshold: Double = 0.54
+    public var magicMousePalmThreshold: Double = 0.20
     public init() {}
-    private enum CodingKeys: String, CodingKey { case virtualDisplayMode, desktopMouse, swapMouseButtons, reverseScroll, swapFaceButtons, gamepadMouse, backgroundGamepad, persistentGamepad, decoder, yuv444, enableMdns, language, discordPresence, discordApplicationID }
+    private enum CodingKeys: String, CodingKey {
+        case virtualDisplayMode, desktopMouse, swapMouseButtons, reverseScroll, swapFaceButtons,
+             gamepadMouse, backgroundGamepad, persistentGamepad, decoder, yuv444, enableMdns,
+             language, discordPresence, discordApplicationID,
+             enableMagicMouseChording, magicMouseLeftThreshold, magicMouseRightThreshold, magicMousePalmThreshold
+    }
     public init(from decoder: Decoder) throws {
         self.init()
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -39,6 +48,10 @@ public struct ClientFeatures: Codable, Equatable, Sendable {
         language = try values.decodeIfPresent(String.self, forKey: .language) ?? language
         discordPresence = try values.decodeIfPresent(Bool.self, forKey: .discordPresence) ?? discordPresence
         discordApplicationID = try values.decodeIfPresent(String.self, forKey: .discordApplicationID) ?? discordApplicationID
+        enableMagicMouseChording = try values.decodeIfPresent(Bool.self, forKey: .enableMagicMouseChording) ?? enableMagicMouseChording
+        magicMouseLeftThreshold = try values.decodeIfPresent(Double.self, forKey: .magicMouseLeftThreshold) ?? magicMouseLeftThreshold
+        magicMouseRightThreshold = try values.decodeIfPresent(Double.self, forKey: .magicMouseRightThreshold) ?? magicMouseRightThreshold
+        magicMousePalmThreshold = try values.decodeIfPresent(Double.self, forKey: .magicMousePalmThreshold) ?? magicMousePalmThreshold
     }
 }
 

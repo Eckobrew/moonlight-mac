@@ -4,6 +4,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case video = "Display & Video"
     case audio = "Audio"
     case input = "Keyboard & Mouse"
+    case magicMouse = "Magic Mouse"
     case host = "Host & Stream"
     case controllers = "Controllers"
     case application = "Application"
@@ -15,6 +16,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .video: return "display.2"
         case .audio: return "speaker.wave.2.fill"
         case .input: return "keyboard.fill"
+        case .magicMouse: return "magicmouse"
         case .host: return "server.rack"
         case .controllers: return "gamecontroller"
         case .application: return "gearshape"
@@ -26,6 +28,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .video: return .blue
         case .audio: return .purple
         case .input: return .teal
+        case .magicMouse: return .cyan
         case .host: return .orange
         case .controllers: return .green
         case .application: return .gray
@@ -37,6 +40,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .video: return "Configure stream resolution, frame rate, HDR, and rendering performance."
         case .audio: return "Manage speaker configuration and audio output behavior."
         case .input: return "Customize mouse sensitivity, keyboard shortcuts, and PC layout mapping."
+        case .magicMouse: return "Configure Apple Magic Mouse chording and live touch visualization."
         case .host: return "Set host game optimization, clipboard sync, and disconnection rules."
         case .controllers: return "Configure controller buttons, mouse control, and background input."
         case .application: return "Manage discovery, language, and Discord presence."
@@ -159,6 +163,8 @@ public struct SettingsView: View {
                             audioPane
                         case .input:
                             inputPane
+                        case .magicMouse:
+                            magicMousePane
                         case .host:
                             hostPane
                         case .controllers:
@@ -581,4 +587,99 @@ public struct SettingsView: View {
         }
     }
 
+    // MARK: - Magic Mouse Pane
+    @ViewBuilder
+    private var magicMousePane: some View {
+        GroupBox(AppLocalization.text("Live Touch Visualizer")) {
+            MagicMouseVisualizerView(
+                leftThreshold: settings.features.magicMouseLeftThreshold,
+                rightThreshold: settings.features.magicMouseRightThreshold,
+                palmThreshold: settings.features.magicMousePalmThreshold
+            )
+            .padding(12)
+        }
+
+        GroupBox(AppLocalization.text("Chording Configuration")) {
+            VStack(alignment: .leading, spacing: 14) {
+                Toggle(
+                    AppLocalization.text("Enable Magic Mouse Chording"),
+                    isOn: $settings.features.enableMagicMouseChording
+                )
+                Text(
+                    AppLocalization.text(
+                        "Enables simultaneous left + right clicks and cross-button finger transitions on Apple Magic Mouse during a stream. Only activates for Magic Mouse devices; other connected mice are untouched."
+                    )
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(AppLocalization.text("Left Zone Threshold:"))
+                        Spacer()
+                        Text("\(Int(settings.features.magicMouseLeftThreshold * 100))%")
+                            .monospacedDigit()
+                            .fontWeight(.semibold)
+                    }
+                    Slider(
+                        value: $settings.features.magicMouseLeftThreshold,
+                        in: 0.20...0.49,
+                        step: 0.01
+                    )
+                    Text(AppLocalization.text("Touches at or left of this boundary trigger the Left button."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(AppLocalization.text("Right Zone Threshold:"))
+                        Spacer()
+                        Text("\(Int(settings.features.magicMouseRightThreshold * 100))%")
+                            .monospacedDigit()
+                            .fontWeight(.semibold)
+                    }
+                    Slider(
+                        value: $settings.features.magicMouseRightThreshold,
+                        in: 0.51...0.80,
+                        step: 0.01
+                    )
+                    Text(AppLocalization.text("Touches at or right of this boundary trigger the Right button."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(AppLocalization.text("Palm Rejection Threshold:"))
+                        Spacer()
+                        Text("\(Int(settings.features.magicMousePalmThreshold * 100))%")
+                            .monospacedDigit()
+                            .fontWeight(.semibold)
+                    }
+                    Slider(
+                        value: $settings.features.magicMousePalmThreshold,
+                        in: 0.05...0.40,
+                        step: 0.01
+                    )
+                    Text(AppLocalization.text("Touches below this height from the base of the mouse are discarded to prevent palm contact from triggering accidental chords."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Divider()
+
+                Button(AppLocalization.text("Reset Thresholds to Defaults")) {
+                    settings.features.magicMouseLeftThreshold = 0.46
+                    settings.features.magicMouseRightThreshold = 0.54
+                    settings.features.magicMousePalmThreshold = 0.20
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+            }
+            .padding(12)
+        }
+    }
 }
