@@ -27,7 +27,7 @@ fi
 [[ -f "$RESOURCE_BUNDLE/Shaders.metal" || -f "$RESOURCE_BUNDLE/default.metallib" || -f "$BUNDLE_RES/Shaders.metal" || -f "$BUNDLE_RES/default.metallib" ]] || {
     echo "Metal shader resource is missing" >&2; exit 1;
 }
-for language in en de fr es; do
+for language in en de fr es sv it nl pl pt-BR ru ja ko zh-Hans zh-Hant; do
     STRINGS="$BUNDLE_RES/$language.lproj/Localizable.strings"
     [[ -s "$STRINGS" ]] || { echo "Missing language resources: $language" >&2; exit 1; }
     plutil -lint "$STRINGS"

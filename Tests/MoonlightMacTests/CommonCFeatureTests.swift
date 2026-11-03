@@ -152,7 +152,22 @@ import MoonlightCommonC
 
 @Test func bundledLanguagesResolveAndFallback() {
     defer { AppLocalization.apply(language: "system") }
-    for (language, value) in [("en", "Settings"), ("de", "Einstellungen"), ("fr", "Réglages"), ("es", "Ajustes")] {
+    for (language, value) in [
+        ("en", "Settings"),
+        ("de", "Einstellungen"),
+        ("fr", "Réglages"),
+        ("es", "Ajustes"),
+        ("sv", "Inställningar"),
+        ("it", "Impostazioni"),
+        ("nl", "Instellingen"),
+        ("pl", "Ustawienia"),
+        ("pt-BR", "Ajustes"),
+        ("ru", "Настройки"),
+        ("ja", "設定"),
+        ("ko", "설정"),
+        ("zh-Hans", "设置"),
+        ("zh-Hant", "設定")
+    ] {
         AppLocalization.apply(language: language)
         #expect(AppLocalization.text("Settings") == value)
         #expect(AppLocalization.text("An unknown technical message") == "An unknown technical message")

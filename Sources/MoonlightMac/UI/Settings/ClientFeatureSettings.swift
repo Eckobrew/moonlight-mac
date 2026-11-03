@@ -76,6 +76,19 @@ struct ApplicationSettings: View {
                     Text("Deutsch").tag("de")
                     Text("Français").tag("fr")
                     Text("Español").tag("es")
+                    Text("Svenska").tag("sv")
+                    Text("Italiano").tag("it")
+                    Text("Nederlands").tag("nl")
+                    Text("Polski").tag("pl")
+                    Text("Português (Brasil)").tag("pt-BR")
+                    Text("Русский").tag("ru")
+                    Text("日本語").tag("ja")
+                    Text("한국어").tag("ko")
+                    Text("简体中文").tag("zh-Hans")
+                    Text("繁體中文").tag("zh-Hant")
+                }
+                .onChange(of: features.language) { _, newLang in
+                    AppLocalization.apply(language: newLang)
                 }
                 Text(AppLocalization.text("Language changes apply when the application is reopened.")).font(
                     .caption

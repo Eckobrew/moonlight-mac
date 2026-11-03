@@ -46,10 +46,16 @@ chmod +x "$MACOS_DIR/moonlight-mac"
 
 # 2. Locate or copy the resource bundle
 BUNDLE_SRC=""
+CONFIG_LOWER="$(echo "$CONFIGURATION" | tr '[:upper:]' '[:lower:]')"
 if [[ -d "$BUILT_PRODUCTS_DIR/MoonlightMac_MoonlightMac.bundle" ]]; then
     BUNDLE_SRC="$BUILT_PRODUCTS_DIR/MoonlightMac_MoonlightMac.bundle"
+elif [[ -d "$SRCROOT/.build/$CONFIG_LOWER/MoonlightMac_MoonlightMac.bundle" ]]; then
+    BUNDLE_SRC="$SRCROOT/.build/$CONFIG_LOWER/MoonlightMac_MoonlightMac.bundle"
 else
-    FOUND_BUNDLE="$(find "$SRCROOT/.build" -name "MoonlightMac_MoonlightMac.bundle" -type d 2>/dev/null | head -n 1 || true)"
+    FOUND_BUNDLE="$(find "$SRCROOT/.build" -path "*/$CONFIG_LOWER/*" -name "MoonlightMac_MoonlightMac.bundle" -type d 2>/dev/null | head -n 1 || true)"
+    if [[ -z "$FOUND_BUNDLE" ]]; then
+        FOUND_BUNDLE="$(find "$SRCROOT/.build" -name "MoonlightMac_MoonlightMac.bundle" -type d 2>/dev/null | head -n 1 || true)"
+    fi
     if [[ -n "$FOUND_BUNDLE" && -d "$FOUND_BUNDLE" ]]; then
         BUNDLE_SRC="$FOUND_BUNDLE"
     fi
@@ -97,5 +103,7 @@ if [[ "$TARGET_BUILD_DIR" != "$SRCROOT/Products" ]]; then
     cp -R "$APP_DIR" "$SRCROOT/Products/Moonlight.app"
     codesign --force --sign - "$SRCROOT/Products/Moonlight.app" 2>/dev/null || true
 fi
+
+codesign --force --sign - "$APP_DIR" 2>/dev/null || true
 
 echo "==> Assembled Moonlight.app structure at $APP_DIR"
